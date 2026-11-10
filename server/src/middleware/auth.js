@@ -67,11 +67,18 @@ export async function optionalAuth(req, res, next) {
   }
 
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const queryTokenRaw =
+    req.query?.access_token ?? req.query?.accessToken ?? req.query?.token ?? null;
+  const queryToken =
+    queryTokenRaw != null && String(queryTokenRaw).trim() !== ''
+      ? String(queryTokenRaw).trim()
+      : '';
+  // Query-токен — для Print Helper (скачивает /orders/.../label без заголовка Authorization).
+  if ((!authHeader || !authHeader.startsWith('Bearer ')) && !queryToken) {
     req.user = null;
     return next();
   }
-  const token = authHeader.slice(7);
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : queryToken;
   let decoded;
   try {
     decoded = jwt.verify(token, config.jwt.secret);

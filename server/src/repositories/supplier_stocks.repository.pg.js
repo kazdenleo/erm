@@ -4,7 +4,10 @@
  */
 
 import { query, transaction } from '../config/database.js';
-import { sumOrderableSupplierWarehouseStock } from '../utils/supplierProcurementArrival.js';
+import {
+  sumOrderableSupplierWarehouseStock,
+  sumPurchasableSupplierWarehouseStock,
+} from '../utils/supplierProcurementArrival.js';
 import { resolveSupplierWarehouseNameForMainWarehouse } from '../utils/citySupplierWarehouse.js';
 
 class SupplierStocksRepositoryPG {
@@ -114,7 +117,13 @@ class SupplierStocksRepositoryPG {
   /**
    * Разбивка остатков по поставщикам для списка товаров (из кэша supplier_stocks).
    * @param {number[]} productIds
-   * @param {{ mainWarehouseId?: string|number|null, profileId?: string|number|null }} [options]
+   * @param {{
+   *   mainWarehouseId?: string|number|null,
+   *   profileId?: string|number|null,
+   *   availabilityMode?: 'orderable'|'purchasable'
+   * }} [options]
+   *   orderable — с учётом отсечки «прямо сейчас» (для пуша на МП / sellable);
+   *   purchasable — остаток к закупке без обнуления после отсечки (таблица остатков в UI).
    * @returns {Promise<Array>}
    */
   async findBreakdownByProductIds(productIds, options = {}) {
@@ -131,6 +140,8 @@ class SupplierStocksRepositoryPG {
       options.profileId != null && String(options.profileId).trim() !== ''
         ? String(options.profileId).trim()
         : null;
+    const availabilityMode =
+      options.availabilityMode === 'purchasable' ? 'purchasable' : 'orderable';
 
     const params = [ids];
     let warehouseFilterSql = `
@@ -219,17 +230,25 @@ class SupplierStocksRepositoryPG {
       .map((row) => {
         const sid = Number(row.supplier_id);
         const warehouseNameHint = cityHintBySupplier.get(sid) || null;
-        const orderable = sumOrderableSupplierWarehouseStock({
-          apiConfig: row.api_config,
-          stockWarehouses: row.warehouses,
-          aggregatedStock: row.stock,
-          now,
-          warehouseNameHint,
-        });
+        const available =
+          availabilityMode === 'purchasable'
+            ? sumPurchasableSupplierWarehouseStock({
+                apiConfig: row.api_config,
+                stockWarehouses: row.warehouses,
+                aggregatedStock: row.stock,
+                warehouseNameHint,
+              })
+            : sumOrderableSupplierWarehouseStock({
+                apiConfig: row.api_config,
+                stockWarehouses: row.warehouses,
+                aggregatedStock: row.stock,
+                now,
+                warehouseNameHint,
+              });
         const reserved = reservedByKey.get(`${row.supplier_id}:${row.product_id}`) || 0;
         return {
           product_id: row.product_id,
-          stock: Math.max(0, orderable - reserved),
+          stock: Math.max(0, available - reserved),
           price: row.price,
           delivery_days: row.delivery_days,
           stock_name: row.stock_name,

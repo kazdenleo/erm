@@ -143,7 +143,10 @@ export const purchasesApi = {
   },
 
   completeReceipt: async (receiptId, payload = {}) => {
-    const response = await api.post(`/purchases/receipts/${receiptId}/complete`, payload);
+    // Крупная приёмка + дозарезерв FBO на сервере — дольше обычного HTTP.
+    const response = await api.post(`/purchases/receipts/${receiptId}/complete`, payload, {
+      timeout: 300000,
+    });
     return response.data?.data ?? response.data;
   },
 

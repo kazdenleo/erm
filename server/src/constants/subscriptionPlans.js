@@ -186,6 +186,16 @@ export function planFeatureFlagsForProfile(planCode) {
   };
 }
 
+/** Урезанные флаги при past_due / suspended (пока нет оплаты). */
+export function restrictedFeatureFlags() {
+  return {
+    kits_enabled: false,
+    production_enabled: false,
+    fbo_enabled: false,
+    pricing_strategies_enabled: false,
+  };
+}
+
 export function formatPlanPriceMonth(plan) {
   if (!plan) return '';
   return `${Number(plan.priceMonthRub).toLocaleString('ru-RU')} ₽`;

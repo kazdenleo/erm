@@ -53,18 +53,23 @@ function fromB64url(s) {
   return Buffer.from(b64, 'base64');
 }
 
+function materialFromRaw(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (/^[0-9a-fA-F]{64}$/.test(s)) return Buffer.from(s, 'hex');
+  try {
+    const b = Buffer.from(s, 'base64');
+    if (b.length === 32) return b;
+  } catch {
+    /* fallthrough */
+  }
+  return crypto.scryptSync(s, 'erm-secrets-v1', 32);
+}
+
 function resolveKeyMaterial() {
   const raw = String(process.env.SECRETS_ENCRYPTION_KEY || '').trim();
   if (raw) {
-    if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, 'hex');
-    try {
-      const b = Buffer.from(raw, 'base64');
-      if (b.length === 32) return b;
-    } catch {
-      /* fallthrough */
-    }
-    // Любая строка → scrypt
-    return crypto.scryptSync(raw, 'erm-secrets-v1', 32);
+    return materialFromRaw(raw);
   }
   const jwt = String(config?.jwt?.secret || process.env.JWT_SECRET || 'change-this-secret-in-production');
   if (!warnedMissingExplicitKey && config?.isProduction) {
@@ -79,6 +84,15 @@ function resolveKeyMaterial() {
 function getKey() {
   if (!cachedKey) cachedKey = resolveKeyMaterial();
   return cachedKey;
+}
+
+/** Основной + SECRETS_ENCRYPTION_KEY_PREVIOUS (после смены ключа при миграции). */
+function getDecryptKeyCandidates() {
+  const primary = getKey();
+  const out = [primary];
+  const prev = materialFromRaw(process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS || '');
+  if (prev && !prev.equals(primary)) out.push(prev);
+  return out;
 }
 
 /** Для тестов. */
@@ -120,10 +134,21 @@ export function decryptSecret(value) {
     throw new Error('Некорректный формат зашифрованного секрета');
   }
   const [ivB, tagB, ctB] = parts;
-  const decipher = crypto.createDecipheriv(ALGO, getKey(), fromB64url(ivB));
-  decipher.setAuthTag(fromB64url(tagB));
-  const pt = Buffer.concat([decipher.update(fromB64url(ctB)), decipher.final()]);
-  return pt.toString('utf8');
+  const iv = fromB64url(ivB);
+  const tag = fromB64url(tagB);
+  const ct = fromB64url(ctB);
+  let lastErr = null;
+  for (const key of getDecryptKeyCandidates()) {
+    try {
+      const decipher = crypto.createDecipheriv(ALGO, key, iv);
+      decipher.setAuthTag(tag);
+      const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+      return pt.toString('utf8');
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Не удалось расшифровать секрет');
 }
 
 export function maskSecret(plain) {

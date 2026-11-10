@@ -459,7 +459,7 @@ async function submitAnswerOzon(profileId, row, text) {
     await integrationsService._ozonApiPost(
       '/v1/review/comment/create',
       { review_id: reviewId, text: String(text).trim(), mark_review_as_processed: true },
-      { profileId, ozonOverride }
+      { profileId, ozonOverride, priority: 'high', maxAttempts: 2 }
     );
   } catch (e) {
     if (isOzonPremiumPlusReviewsError(e)) {

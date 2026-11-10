@@ -1,7 +1,10 @@
 import express from 'express';
 import { promoPulseController } from '../controllers/promoPulse.controller.js';
+import { requirePlanFeature } from '../middleware/planFeatureAccess.js';
 
 const router = express.Router();
+
+router.use(requirePlanFeature('ads', { label: 'Реклама / Promo Pulse' }));
 
 router.get('/ports', (req, res, next) => promoPulseController.ports(req, res, next));
 router.get('/policies', (req, res, next) => promoPulseController.listPolicies(req, res, next));

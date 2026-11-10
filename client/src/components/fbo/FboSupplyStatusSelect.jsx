@@ -4,7 +4,9 @@ import {
   canSelectFboSupplyStatus,
   fboSupplyStatusBlockedTitle,
   getFboSupplyStatusClass,
+  getFboSupplyStatusFilterLabel,
   getFboSupplyStatusLabel,
+  normalizeFboSupplyStatus,
 } from '../../constants/fboSupplyStatuses';
 
 export function FboSupplyStatusSelect({
@@ -14,12 +16,16 @@ export function FboSupplyStatusSelect({
   className = '',
   title,
   hasDiscrepancy = false,
+  lastCollectAt = null,
+  lastPackAt = null,
 }) {
-  const statusClass = getFboSupplyStatusClass(status);
+  const normalized = normalizeFboSupplyStatus(status);
+  const activity = { lastCollectAt, lastPackAt };
+  const statusClass = getFboSupplyStatusClass(normalized, activity);
   return (
     <select
       className={`fbo-status-select fbo-status-select--${statusClass}${className ? ` ${className}` : ''}`}
-      value={status || 'new'}
+      value={normalized || 'new'}
       disabled={disabled}
       title={title || 'Сменить статус'}
       aria-label="Статус поставки"
@@ -32,9 +38,13 @@ export function FboSupplyStatusSelect({
       {FBO_SUPPLY_STATUS_OPTIONS.map((s) => {
         const blocked = !canSelectFboSupplyStatus(s, hasDiscrepancy);
         const blockedTitle = fboSupplyStatusBlockedTitle(s, hasDiscrepancy);
+        const label =
+          s === normalized
+            ? getFboSupplyStatusLabel(s, activity)
+            : getFboSupplyStatusFilterLabel(s);
         return (
           <option key={s} value={s} disabled={blocked} title={blockedTitle || undefined}>
-            {getFboSupplyStatusLabel(s)}
+            {label}
           </option>
         );
       })}

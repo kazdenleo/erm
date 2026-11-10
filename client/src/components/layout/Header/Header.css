@@ -43,13 +43,13 @@
 }
 
 .header-quick-action:hover {
-  background: var(--primary-50, rgba(63, 106, 216, 0.1));
-  color: var(--primary, #3f6ad8);
+  background: var(--primary-50, rgba(61, 207, 142, 0.14));
+  color: var(--primary-600, #1faa6e);
 }
 
 .header-quick-action--active {
-  color: var(--primary, #3f6ad8);
-  background: var(--primary-50, rgba(63, 106, 216, 0.12));
+  color: var(--primary-600, #1faa6e);
+  background: var(--primary-50, rgba(61, 207, 142, 0.16));
 }
 
 .header-quick-action__badge {
@@ -64,7 +64,7 @@
   line-height: 18px;
   text-align: center;
   color: #fff;
-  background: var(--danger, #d92550);
+  background: var(--error, #e11d48);
   border-radius: 9px;
   box-sizing: border-box;
   pointer-events: none;
@@ -167,11 +167,11 @@
 }
 
 .header-profile__item:hover {
-  background: var(--primary-50, rgba(63, 106, 216, 0.08));
-  color: var(--primary, #3f6ad8);
+  background: var(--primary-50, rgba(61, 207, 142, 0.12));
+  color: var(--primary-600, #1faa6e);
 }
 
 .header-profile__item--danger:hover {
-  background: rgba(217, 37, 80, 0.08);
-  color: var(--danger, #d92550);
+  background: rgba(225, 29, 72, 0.08);
+  color: var(--error, #e11d48);
 }

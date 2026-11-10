@@ -31,9 +31,10 @@
 /* Заголовок страницы */
 .title {
   margin: 0 0 16px;
+  font-family: var(--font-display, inherit);
   font-size: 20px;
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   color: var(--text);
   position: relative;
 }

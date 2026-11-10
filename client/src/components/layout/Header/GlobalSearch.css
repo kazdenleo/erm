@@ -48,13 +48,13 @@
 
 .global-search__item:hover,
 .global-search__item--active {
-  background: var(--primary-50, rgba(63, 106, 216, 0.08));
+  background: var(--primary-50, rgba(61, 207, 142, 0.12));
 }
 
 .global-search__item-sku {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--primary, #3f6ad8);
+  color: var(--primary-600, #1faa6e);
 }
 
 .global-search__item-name {
@@ -72,7 +72,7 @@
 }
 
 .global-search__error {
-  color: var(--danger, #d92550);
+  color: var(--error, #e11d48);
 }
 
 .global-search__footer {
@@ -88,12 +88,12 @@
   border: none;
   background: none;
   font-size: 0.8rem;
-  color: var(--primary, #3f6ad8);
+  color: var(--primary-600, #1faa6e);
   cursor: pointer;
   text-decoration: underline;
   font-family: inherit;
 }
 
 .global-search__footer-link:hover {
-  color: var(--primary-dark, #2d4fa8);
+  color: var(--primary-500, #2bb87a);
 }

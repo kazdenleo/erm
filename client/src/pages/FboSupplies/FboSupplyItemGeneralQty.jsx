@@ -5,7 +5,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { packedCellClass } from './fboPackedCell.js';
-import { getFboItemReserveParts } from './fboSupplyItemReserve.js';
+import {
+  formatFboReserveHoverTitle,
+  getFboItemReserveParts,
+} from './fboSupplyItemReserve.js';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 
 export function FboSupplyItemGeneralQty({
@@ -17,9 +20,17 @@ export function FboSupplyItemGeneralQty({
 }) {
   const itemId = item?.id;
   const planned = Number(item?.quantity) || 0;
-  const { stock, incoming, total: reservedRaw } = getFboItemReserveParts(item);
+  const { stock, incoming, unreserved, total: reservedRaw } = getFboItemReserveParts(item, planned);
   const total = reserveDisabled ? 0 : reservedRaw;
+  const gap = reserveDisabled ? planned : unreserved;
   const cls = packedCellClass(total, planned);
+  const qtyHoverTitle = formatFboReserveHoverTitle({
+    stock: reserveDisabled ? 0 : stock,
+    incoming: reserveDisabled ? 0 : incoming,
+    unreserved: gap,
+    planned,
+    reserveDisabled,
+  });
 
   const [editing, setEditing] = useState(false);
   const [plannedInput, setPlannedInput] = useState(String(planned));
@@ -111,6 +122,7 @@ export function FboSupplyItemGeneralQty({
         className={`fbo-supply-qty-main fbo-supply-qty-cell fbo-packed-${cls}${
           editing ? ' fbo-supply-qty-cell--editing' : ''
         }`}
+        title={editing ? undefined : qtyHoverTitle}
         onClick={(e) => e.stopPropagation()}
       >
         <span className="fbo-supply-qty-cell__plan-slot">
@@ -156,7 +168,7 @@ export function FboSupplyItemGeneralQty({
                   startPlanEdit(e);
                 }
               }}
-              title="Количество в поставке (нажмите, чтобы изменить)"
+              title={`${qtyHoverTitle}\n\nНажмите, чтобы изменить количество`}
             >
               {planned}
             </span>
@@ -165,7 +177,7 @@ export function FboSupplyItemGeneralQty({
         <span className="fbo-supply-qty-cell__sep"> / </span>
         <span
           className={`fbo-supply-qty-main__reserved fbo-packed-cell fbo-packed-${cls}`}
-          title="Зарезервировано под поставку"
+          title={qtyHoverTitle}
         >
           {total}
         </span>
@@ -175,6 +187,8 @@ export function FboSupplyItemGeneralQty({
         reserveDisabled={reserveDisabled}
         reservedFromStock={stock}
         reservedFromIncoming={incoming}
+        unreserved={gap}
+        planned={planned}
         sourceOnHand={item?.sourceOnHand ?? item?.source_on_hand}
         sourceIncoming={item?.sourceIncoming ?? item?.source_incoming}
       />

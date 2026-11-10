@@ -25,23 +25,31 @@ import {
   recalculateKitsForComponent,
 } from './kitStock.service.js';
 
-const FBO_RESERVE_ACTIVE_STATUSES = ['new', 'packed', 'ready_for_supply'];
+const FBO_RESERVE_ACTIVE_STATUSES = [
+  'new',
+  'collecting',
+  'packing',
+  'ready_for_supply',
+];
 
-/** Приоритет в очереди резерва: упакованные и готовые раньше черновиков. */
+/** Приоритет в очереди резерва: готовые раньше черновиков. */
 export function fboReserveStatusRank(status) {
   const s = String(status || '').trim();
-  if (s === 'packed') return 0;
-  if (s === 'ready_for_supply') return 1;
-  if (s === 'new') return 2;
-  return 3;
+  if (s === 'ready_for_supply' || s === 'packed') return 0;
+  if (s === 'packing') return 1;
+  if (s === 'collecting') return 2;
+  if (s === 'new') return 3;
+  return 4;
 }
 
 const FBO_RESERVE_QUEUE_ORDER_SQL = `
   CASE s.status
+    WHEN 'ready_for_supply' THEN 0
     WHEN 'packed' THEN 0
-    WHEN 'ready_for_supply' THEN 1
-    WHEN 'new' THEN 2
-    ELSE 3
+    WHEN 'packing' THEN 1
+    WHEN 'collecting' THEN 2
+    WHEN 'new' THEN 3
+    ELSE 4
   END,
   s.ready_at ASC NULLS LAST,
   s.id ASC,

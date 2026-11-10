@@ -94,6 +94,10 @@ router.post(
   wrapAsync(fboSuppliesController.collectScan.bind(fboSuppliesController))
 );
 router.post(
+  '/:id/express/scan',
+  wrapAsync(fboSuppliesController.expressScan.bind(fboSuppliesController))
+);
+router.post(
   '/:id/packing/ozon-cargoes/create',
   wrapAsync(fboSuppliesController.createOzonCargoUnits.bind(fboSuppliesController))
 );

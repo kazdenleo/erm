@@ -2681,6 +2681,39 @@ class StockMovementsService {
 
       await syncProductQuantityFromWarehouseStock(pid);
 
+      const skipMpSync =
+        metaObj.skip_marketplace_sync === true ||
+        metaObj.skip_marketplace_sync === 'true' ||
+        metaObj.fbo_bulk_rebalance === true;
+      if (!skipMpSync) {
+        const orgId = prodOrgNum ?? orgFrom ?? null;
+        // На МП уходит остаток только складов с сопоставлением. FBO без привязки
+        // не шлём повторно: резолвер всё равно подставит FBS и продублирует пуш.
+        let mpWarehouseIds = [fromId, toId];
+        try {
+          const mapped = await query(
+            `SELECT DISTINCT warehouse_id
+             FROM warehouse_mappings
+             WHERE warehouse_id = ANY($1::bigint[])`,
+            [[fromId, toId]]
+          );
+          const ids = (mapped.rows || [])
+            .map((row) => Number(row.warehouse_id))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          if (ids.length > 0) mpWarehouseIds = ids;
+          else mpWarehouseIds = [toId];
+        } catch {
+          mpWarehouseIds = [toId];
+        }
+        for (const wh of mpWarehouseIds) {
+          scheduleStockMovementMarketplaceSync(pid, {
+            source: 'stock_movement:transfer',
+            warehouseId: wh,
+            organizationId: orgId
+          });
+        }
+      }
+
       return {
         ok: true,
         productId: pid,

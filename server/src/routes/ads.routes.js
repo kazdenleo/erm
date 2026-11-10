@@ -1,10 +1,12 @@
 import express from 'express';
 import adsController from '../controllers/ads.controller.js';
 import { requireAuth } from '../middleware/auth.js';
+import { requirePlanFeature } from '../middleware/planFeatureAccess.js';
 
 const router = express.Router();
 
 router.use(requireAuth);
+router.use(requirePlanFeature('ads', { label: 'Реклама' }));
 
 router.get('/dashboard', (req, res, next) => adsController.dashboard(req, res, next));
 router.post('/sync', (req, res, next) => adsController.sync(req, res, next));

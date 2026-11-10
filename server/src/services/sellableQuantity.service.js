@@ -416,7 +416,9 @@ export async function computeAvailableQuantity(productId, opts = {}) {
           : null;
       const rows = await repo.findBreakdownByProductIds([pid], {
         mainWarehouseId,
-        profileId: opts.profileId ?? null
+        profileId: opts.profileId ?? null,
+        // Как в таблице остатков: к закупке, без обнуления после вечерней отсечки.
+        availabilityMode: 'purchasable',
       });
       // На МП — только остаток по цене дешёвого со свободным qty (не сумма всех поставщиков).
       if (opts.forMarketplace === true) {

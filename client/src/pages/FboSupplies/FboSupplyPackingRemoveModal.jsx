@@ -16,6 +16,8 @@ export function FboSupplyPackingRemoveModal({
   activeCargoUnitId,
   activeCargoBarcode,
   onPackingChange,
+  /** Экспресс: вместе с упаковкой откатываем и сборку (−1 collected). */
+  revertCollect = false,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -34,12 +36,14 @@ export function FboSupplyPackingRemoveModal({
       const data = await fboSuppliesApi.packingScanRemove(supplyId, {
         barcode: trimmed,
         activeCargoUnitId,
+        ...(revertCollect ? { revertCollect: true } : {}),
       });
       if (data?.packing) {
         onPackingChange?.(data.packing, {
           supplyStatus: data.supplyStatus,
           packingAllMatch: data.packingAllMatch,
           statusReverted: data.statusReverted,
+          collectReverted: data.collectReverted === true,
         });
       }
       setMsg(data?.message || 'Снято 1 шт.');
@@ -56,6 +60,12 @@ export function FboSupplyPackingRemoveModal({
     <Modal isOpen={isOpen} onClose={onClose} title="Убрать товар из грузоместа" size="medium">
       <p className="text-muted small mb-2">
         Каждый скан уменьшает количество на <strong>1 шт.</strong> в активном грузоместе.
+        {revertCollect ? (
+          <>
+            {' '}
+            В экспрессе также откатывается сборка (−1), чтобы позицию можно было отсканировать снова.
+          </>
+        ) : null}
       </p>
       {activeCargoBarcode ? (
         <p className="mb-3">
@@ -63,14 +73,14 @@ export function FboSupplyPackingRemoveModal({
         </p>
       ) : (
         <p className="alert alert-warning py-2 small mb-3">
-          Сначала отсканируйте коробку на вкладке «Упаковка».
+          Сначала отсканируйте коробку{revertCollect ? ' в Экспрессе' : ' на вкладке «Упаковка»'}.
         </p>
       )}
       <BarcodeScanField
         id="fbo-packing-remove-barcode"
         label="Штрихкод товара"
         className="form-control"
-        placeholder="Сканируйте товар для удаления"
+        placeholder="Сканируйте товар или комплектующую"
         loading={loading}
         disabled={loading || !activeCargoUnitId}
         onScan={handleScan}

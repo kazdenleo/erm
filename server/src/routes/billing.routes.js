@@ -45,5 +45,11 @@ router.get(
   requireAdmin,
   wrapAsync((req, res, next) => billingController.adminAudit(req, res, next))
 );
+router.get(
+  '/admin/ops-summary',
+  requireAuth,
+  requireAdmin,
+  wrapAsync((req, res, next) => billingController.adminOpsSummary(req, res, next))
+);
 
 export default router;

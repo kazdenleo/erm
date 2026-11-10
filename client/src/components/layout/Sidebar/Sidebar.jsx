@@ -142,10 +142,11 @@ const menuItems = [
     label: 'Реклама',
     iconClass: 'pe-7s-graph1',
     sectionKey: 'ads',
+    requiresPlanFeature: 'ads',
     children: [
-      { path: '/ads', label: 'Дашборд', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
-      { path: '/ads/campaigns', label: 'Кампании', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
-      { path: '/ads/automation', label: 'Автоматизация', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
+      { path: '/ads', label: 'Дашборд', iconClass: 'pe-7s-angle-right', sectionKey: 'ads', requiresPlanFeature: 'ads' },
+      { path: '/ads/campaigns', label: 'Кампании', iconClass: 'pe-7s-angle-right', sectionKey: 'ads', requiresPlanFeature: 'ads' },
+      { path: '/ads/automation', label: 'Автоматизация', iconClass: 'pe-7s-angle-right', sectionKey: 'ads', requiresPlanFeature: 'ads' },
     ],
   },
   {
@@ -188,6 +189,18 @@ export function Sidebar({ onNavigate }) {
       return isNavFeatureEnabled(features, sectionKey);
     },
     [features, isAccountAdmin, isAdmin]
+  );
+  const planFeatureAllowed = useCallback(
+    (key) => {
+      if (!key) return true;
+      if (isAdmin) return true;
+      const sub = profile?.subscription;
+      if (sub && sub.writeAllowed === false) return false;
+      const f = sub?.features;
+      if (f == null || typeof f !== 'object') return true;
+      return f[key] === true;
+    },
+    [isAdmin, profile?.subscription]
   );
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
@@ -405,6 +418,7 @@ export function Sidebar({ onNavigate }) {
         if (sub.requiresProduction && !productionMenuEnabled) return false;
         if (sub.requiresFbo && !fboMenuEnabled) return false;
         if (sub.requiresChestnyZnak && !chestnyZnakMenuEnabled) return false;
+        if (sub.requiresPlanFeature && !planFeatureAllowed(sub.requiresPlanFeature)) return false;
         if (!navAllowed(sub.sectionKey)) return false;
         return true;
       });
@@ -416,10 +430,11 @@ export function Sidebar({ onNavigate }) {
       .filter((i) => !i.requiresPrivateOrders || privateOrdersMenuEnabled)
       .filter((i) => !i.requiresProduction || productionMenuEnabled)
       .filter((i) => !i.requiresChestnyZnak || chestnyZnakMenuEnabled)
+      .filter((i) => !i.requiresPlanFeature || planFeatureAllowed(i.requiresPlanFeature))
       .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, privateOrdersMenuEnabled, chestnyZnakMenuEnabled, navAllowed]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, privateOrdersMenuEnabled, chestnyZnakMenuEnabled, navAllowed, planFeatureAllowed]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 

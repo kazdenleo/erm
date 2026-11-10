@@ -3,8 +3,12 @@
  */
 
 import { query } from '../config/database.js';
+import { getFboSupplyStatusRank } from '../constants/fboSupplyStatuses.js';
 
-const STATUSES_REQUIRING_COMPLETE_PACKING = new Set(['packed', 'ready_for_supply']);
+const STATUSES_REQUIRING_COMPLETE_PACKING = new Set(['ready_for_supply']);
+
+/** Статусы до «Готова к отгрузке», из которых можно автопродвинуть по полной упаковке. */
+const STATUSES_PROMOTE_TO_READY = new Set(['new', 'collecting', 'packing']);
 
 /**
  * @param {number|string} supplyId
@@ -96,10 +100,61 @@ export function packingEvalFromItemStats(itemStats = []) {
   };
 }
 
+async function resolveIncompleteWorkStatus(supplyId) {
+  const cargoR = await query(
+    `SELECT 1 FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 LIMIT 1`,
+    [supplyId]
+  );
+  if (cargoR.rows?.length) return 'packing';
+  const collectR = await query(
+    `SELECT 1 FROM fbo_supply_items
+     WHERE fbo_supply_id = $1 AND COALESCE(collected_quantity, 0) > 0
+     LIMIT 1`,
+    [supplyId]
+  );
+  if (collectR.rows?.length) return 'collecting';
+  return 'new';
+}
+
 /**
- * После изменения сборки:
- * — при расхождениях откатываем «Упакован» / «Готов к поставке» → «Новая»;
- * — при полной сборке из «Новая» → «Упакован».
+ * Поднять статус поставки минимум до target, если текущий «раньше» по цепочке.
+ * Не трогает shipped/closed/return и статусы уже не ниже target.
+ * @returns {Promise<{ status: string, changed: boolean }>}
+ */
+export async function ensureFboSupplyStatusAtLeast(supplyId, targetStatus) {
+  const sid = Number(supplyId);
+  const target = String(targetStatus || '').trim();
+  const targetRank = getFboSupplyStatusRank(target);
+  if (!Number.isFinite(sid) || sid < 1 || targetRank < 0) {
+    return { status: null, changed: false };
+  }
+
+  const statusR = await query(`SELECT status FROM fbo_supplies WHERE id = $1 LIMIT 1`, [sid]);
+  const current = String(statusR.rows?.[0]?.status || 'new');
+  if (current === 'shipped' || current === 'closed' || current === 'return') {
+    return { status: current, changed: false };
+  }
+  // Уже «Готова к отгрузке» — не откатываем стартом сборки/упаковки.
+  if (STATUSES_REQUIRING_COMPLETE_PACKING.has(current)) {
+    return { status: current, changed: false };
+  }
+  const curRank = getFboSupplyStatusRank(current);
+  if (curRank >= targetRank) {
+    return { status: current, changed: false };
+  }
+
+  await query(
+    `UPDATE fbo_supplies SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+    [sid, target]
+  );
+  return { status: target, changed: true };
+}
+
+/**
+ * После изменения упаковки:
+ * — при расхождениях откатываем «Готова к отгрузке» → Упаковка/Сборка/Новая;
+ * — при полной упаковке → «Готова к отгрузке»;
+ * — при начале упаковки (есть грузоместа, статус Новая/Сборка) → «Упаковка».
  * @returns {Promise<{ allMatch: boolean, hasItems: boolean, status: string, reverted: boolean, promoted: boolean, discrepancies: Array }>}
  */
 export async function syncSupplyStatusForPacking(supplyId, { packingEval: precomputed } = {}) {
@@ -112,23 +167,40 @@ export async function syncSupplyStatusForPacking(supplyId, { packingEval: precom
 
   const packingIncomplete = hasItems && !allMatch;
   if (packingIncomplete && STATUSES_REQUIRING_COMPLETE_PACKING.has(status)) {
+    const next = await resolveIncompleteWorkStatus(supplyId);
     await query(
-      `UPDATE fbo_supplies SET status = 'new', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-      [supplyId]
+      `UPDATE fbo_supplies SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [supplyId, next]
     );
-    status = 'new';
+    status = next;
     reverted = true;
-  } else if (status === 'new' && allMatch && hasPlannedQty) {
+  } else if (STATUSES_PROMOTE_TO_READY.has(status) && allMatch && hasPlannedQty) {
     const cargoR = await query(
       `SELECT 1 FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 LIMIT 1`,
       [supplyId]
     );
     if (cargoR.rows?.length) {
       await query(
-        `UPDATE fbo_supplies SET status = 'packed', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        `UPDATE fbo_supplies SET status = 'ready_for_supply', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [supplyId]
       );
-      status = 'packed';
+      status = 'ready_for_supply';
+      promoted = true;
+    }
+  } else if (
+    (status === 'new' || status === 'collecting') &&
+    packingIncomplete
+  ) {
+    const cargoR = await query(
+      `SELECT 1 FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 LIMIT 1`,
+      [supplyId]
+    );
+    if (cargoR.rows?.length) {
+      await query(
+        `UPDATE fbo_supplies SET status = 'packing', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [supplyId]
+      );
+      status = 'packing';
       promoted = true;
     }
   }
@@ -153,12 +225,37 @@ function assertPackingComplete(packingEval, statusLabel) {
   }
 }
 
-export function assertCanSetPackedStatus(packingEval) {
-  assertPackingComplete(packingEval, 'Упакован');
+export function assertCanSetReadyForSupply(packingEval) {
+  assertPackingComplete(packingEval, 'Готова к отгрузке');
 }
 
-export function assertCanSetReadyForSupply(packingEval) {
-  assertPackingComplete(packingEval, 'Готов к отгрузке');
+/** @deprecated алиас для старых деплоев / импортов со статусом packed */
+export function assertCanSetPackedStatus(packingEval) {
+  assertPackingComplete(packingEval, 'Готова к отгрузке');
+}
+
+/** Обновить метку «сейчас упаковывают» (окно 5 мин на клиенте). */
+export async function touchFboSupplyPackActivity(supplyId) {
+  const sid = Number(supplyId);
+  if (!Number.isFinite(sid) || sid < 1) return;
+  await query(
+    `UPDATE fbo_supplies
+     SET last_pack_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [sid]
+  );
+}
+
+/** Обновить метку «сейчас собирают». */
+export async function touchFboSupplyCollectActivity(supplyId) {
+  const sid = Number(supplyId);
+  if (!Number.isFinite(sid) || sid < 1) return;
+  await query(
+    `UPDATE fbo_supplies
+     SET last_collect_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [sid]
+  );
 }
 
 export function assertPackingReadyForMarketplaceSubmit(packingEval) {

@@ -43,7 +43,6 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
   'organizations',
   'ozon_ads_sku_stats',
   'ads_campaigns',
-  'ads_campaign_products',
   'ads_sku_stats',
   'ads_sku_stats_daily',
   'ads_sync_runs',
@@ -95,7 +94,6 @@ const TABLE_LABELS_RU = Object.freeze({
   organizations: 'Организации',
   ozon_ads_sku_stats: 'Реклама Ozon (статистика SKU)',
   ads_campaigns: 'Реклама — кампании',
-  ads_campaign_products: 'Реклама — товары кампаний',
   ads_sku_stats: 'Реклама — ДРР по SKU',
   ads_sku_stats_daily: 'Реклама — дневная статистика',
   ads_sync_runs: 'Реклама — синхронизации',
@@ -149,7 +147,6 @@ const TABLE_CATEGORIES = Object.freeze([
       'marketplace_price_changes',
       'ozon_ads_sku_stats',
       'ads_campaigns',
-      'ads_campaign_products',
       'ads_sku_stats',
       'ads_sku_stats_daily',
       'ads_sync_runs',
@@ -240,7 +237,25 @@ class ProfilesRepositoryPG {
     const params = filterId != null && Number.isFinite(filterId) ? [filterId] : [];
     const profileFilter = params.length ? 'AND t.profile_id = $1' : '';
 
-    const parts = PROFILE_SCOPED_TABLES.map((table) => {
+    // Только реально существующие таблицы с колонкой profile_id (прод может отставать по миграциям).
+    const eligible = await query(
+      `SELECT c.table_name
+       FROM information_schema.columns c
+       INNER JOIN information_schema.tables t
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+       WHERE c.table_schema = 'public'
+         AND c.column_name = 'profile_id'
+         AND t.table_type = 'BASE TABLE'
+         AND c.table_name = ANY($1::text[])`,
+      [PROFILE_SCOPED_TABLES]
+    );
+    const tables = eligible.rows
+      .map((r) => String(r.table_name))
+      .filter((name) => PROFILE_SCOPED_TABLES.includes(name));
+
+    if (tables.length === 0) return [];
+
+    const parts = tables.map((table) => {
       const q = quoteIdent(table);
       return `
         SELECT

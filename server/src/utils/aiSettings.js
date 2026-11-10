@@ -165,7 +165,12 @@ export function mergeAiSettings(existingRaw, incoming = {}) {
   if (incoming.credentials !== undefined) {
     const cred = String(incoming.credentials || '').trim();
     if (cred && cred !== CREDENTIALS_PLACEHOLDER) {
-      next.credentials = cred.replace(/^Basic\s+/i, '').trim();
+      // Сырой client_id:secret → base64; пробелы/переносы из вставки убираем
+      let key = cred.replace(/^Basic\s+/i, '').trim().replace(/\s+/g, '');
+      if (key.includes(':')) {
+        key = Buffer.from(key, 'utf8').toString('base64');
+      }
+      next.credentials = key;
     }
   }
   if (incoming.editorTemplates !== undefined || incoming.editor_templates !== undefined) {

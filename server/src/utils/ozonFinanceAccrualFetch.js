@@ -2,13 +2,25 @@
  * Ozon Finance: загрузка начислений через /v1/finance/accrual/*
  * (замена отключённого /v3/finance/transaction/list).
  *
- * Нормализуем ответ к «плоским» operation-объектам старого API,
+ * Нормализуем ответ by-day к «плоским» operation-объектам старого API,
  * чтобы mapOzonTransactionRow / extractOzonFinanceAmounts продолжали работать.
+ *
+ * Категории accrued_category:
+ * - POSTING — отправление (commission + delivery внутри posting.products[])
+ * - ITEM — сборы по товару (item_fees, часто эквайринг)
+ * - NON_ITEM — прочее без товара
  */
 
 function toNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Money-объект { amount, currency } или число/строка. */
+export function moneyAmount(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'object' && v.amount != null) return toNum(v.amount);
+  return toNum(v);
 }
 
 function ymd(d) {
@@ -73,6 +85,8 @@ export async function fetchOzonAccrualTypes({ clientId, apiKey }) {
   }
   const root = json?.result ?? json ?? {};
   const list =
+    (Array.isArray(json?.accrual_types) && json.accrual_types) ||
+    (Array.isArray(root.accrual_types) && root.accrual_types) ||
     (Array.isArray(root) && root) ||
     (Array.isArray(root.types) && root.types) ||
     (Array.isArray(root.accruals) && root.accruals) ||
@@ -82,8 +96,8 @@ export async function fetchOzonAccrualTypes({ clientId, apiKey }) {
   for (const item of list) {
     if (!item || typeof item !== 'object') continue;
     const id = item.id ?? item.accrual_id ?? item.type_id;
-    const code = String(item.code || item.operation_type || item.accrued_category || id || '').trim();
-    const name = String(item.name || item.title || item.operation_type_name || code).trim();
+    const code = String(item.code || item.name || item.operation_type || item.accrued_category || id || '').trim();
+    const name = String(item.name || item.title || item.operation_type_name || item.description || code).trim();
     const rec = { id, code, name };
     if (id != null) map.set(String(id), rec);
     if (code) map.set(code, rec);
@@ -91,93 +105,199 @@ export async function fetchOzonAccrualTypes({ clientId, apiKey }) {
   return map;
 }
 
-function resolveType(typesMap, accrual) {
-  const id = accrual?.accrual_id ?? accrual?.type_id ?? accrual?.id;
-  const code = accrual?.operation_type || accrual?.accrued_category || accrual?.code;
-  const hit =
-    (id != null && typesMap.get(String(id))) ||
-    (code && typesMap.get(String(code))) ||
-    null;
+function typeById(typesMap, typeId) {
+  if (typeId == null) return null;
+  return typesMap.get(String(typeId)) || null;
+}
+
+function servicesFromTypeFees(fees, typesMap) {
+  const out = [];
+  for (const fee of fees || []) {
+    const hit = typeById(typesMap, fee?.type_id);
+    const name = hit?.code || hit?.name || (fee?.type_id != null ? `type_${fee.type_id}` : 'fee');
+    out.push({ name, price: moneyAmount(fee?.accrued ?? fee?.amount ?? fee?.price) });
+  }
+  return out;
+}
+
+function productItemsFromPosting(products) {
+  return (Array.isArray(products) ? products : []).map((p) => ({
+    sku: p?.sku ?? p?.offer_id ?? p?.product_id ?? null,
+    name: p?.name ?? p?.product_name ?? null,
+    quantity: toNum(p?.quantity) || 1,
+  }));
+}
+
+function productItemsFromItemFees(itemFees) {
+  const fees = itemFees?.fees;
+  if (!Array.isArray(fees)) return [];
+  return fees.map((f) => ({
+    sku: f?.sku ?? null,
+    name: null,
+    quantity: toNum(f?.quantity) || 1,
+  }));
+}
+
+/**
+ * POSTING → продажа/сторно в формате старого transaction/list.
+ */
+function normalizePostingAccrual(accrual, typesMap, fallbackDate) {
+  const products = Array.isArray(accrual?.posting?.products) ? accrual.posting.products : [];
+  const first = products[0] || {};
+  const commission = first.commission && typeof first.commission === 'object' ? first.commission : {};
+  const sellerPrice = moneyAmount(commission.seller_price);
+  const saleAmount = moneyAmount(commission.sale_amount ?? commission.seller_price);
+  const saleCommission = moneyAmount(commission.sale_commission ?? commission.commission);
+  const retailSigned = sellerPrice !== 0 ? sellerPrice : saleAmount;
+  const total = moneyAmount(accrual.total_amount ?? accrual.amount);
+
+  const deliveryServices = [];
+  for (const p of products) {
+    const services = p?.delivery?.services;
+    if (!Array.isArray(services)) continue;
+    deliveryServices.push(...servicesFromTypeFees(services, typesMap));
+  }
+
+  // Знак seller_price/sale_amount: плюс — продажа, минус — сторно/возврат (как в кабинете Ozon).
+  const isSale = retailSigned > 0 || (retailSigned === 0 && total > 0);
+  const isStorno = retailSigned < 0 || (retailSigned === 0 && total < 0 && saleCommission !== 0);
+  let operationType = 'POSTING';
+  if (isSale) operationType = 'OperationAgentDeliveredToCustomer';
+  else if (isStorno) operationType = 'OperationAgentStornoDeliveredToCustomer';
+
+  const unit = accrual.unit_number != null ? String(accrual.unit_number) : null;
+
   return {
-    operation_type: hit?.code || code || (id != null ? String(id) : null),
-    operation_type_name: hit?.name || accrual?.operation_type_name || accrual?.name || null,
+    operation_id: accrual.accrual_id ?? accrual.operation_id ?? accrual.id ?? null,
+    operation_type: operationType,
+    operation_type_name: isSale ? 'Продажа' : isStorno ? 'Сторно продажи' : 'POSTING',
+    operation_date: accrual.date || accrual.operation_date || fallbackDate,
+    amount: total,
+    accruals_for_sale: retailSigned,
+    sale_commission: saleCommission,
+    delivery_charge: 0,
+    return_delivery_charge: 0,
+    services: deliveryServices,
+    items: productItemsFromPosting(products).length
+      ? productItemsFromPosting(products)
+      : [{ sku: null, name: null, quantity: 1 }],
+    posting: {
+      posting_number: unit,
+      delivery_schema: accrual.posting?.delivery_schema ?? null,
+      order_date: accrual.posting?.order_date ?? null,
+      order_id: unit,
+      warehouse_id: accrual.posting?.warehouse_id ?? null,
+    },
+    type: 'orders',
+    accrued_category: 'POSTING',
+    unit_number: unit,
   };
 }
 
-function pickProducts(src) {
-  if (Array.isArray(src?.products) && src.products.length) return src.products;
-  if (Array.isArray(src?.items) && src.items.length) return src.items;
-  if (Array.isArray(src?.posting?.products) && src.posting.products.length) return src.posting.products;
-  return [];
-}
-
-function pickServices(src) {
-  if (Array.isArray(src?.services) && src.services.length) return src.services;
-  const nested = src?.delivery?.services || src?.posting?.products?.[0]?.delivery?.services;
-  if (Array.isArray(nested) && nested.length) {
-    return nested.map((s) =>
-      s && typeof s === 'object'
-        ? { name: s.name || s.service_name || s.code, price: s.price ?? s.amount }
-        : s
-    );
+function normalizeItemAccrual(accrual, typesMap, fallbackDate) {
+  const feeGroups = Array.isArray(accrual?.item_fees?.fees) ? accrual.item_fees.fees : [];
+  const services = [];
+  let primaryType = null;
+  for (const group of feeGroups) {
+    for (const fee of group?.fees || []) {
+      if (!primaryType) primaryType = typeById(typesMap, fee?.type_id);
+      services.push(...servicesFromTypeFees([fee], typesMap));
+    }
   }
-  if (Array.isArray(src?.container_fees) && src.container_fees.length) {
-    return src.container_fees.map((s) => ({
-      name: s?.name || 'CONTAINER_FEES',
-      price: s?.price ?? s?.amount,
-    }));
-  }
-  return [];
-}
-
-function productToItem(p) {
-  if (!p || typeof p !== 'object') return { sku: null, name: null, quantity: 1 };
+  const total = moneyAmount(accrual.total_amount ?? accrual.amount);
+  const code = primaryType?.code || primaryType?.name || 'ITEM';
+  const unit = accrual.unit_number != null ? String(accrual.unit_number) : null;
+  const items = productItemsFromItemFees(accrual.item_fees);
   return {
-    sku: p.sku ?? p.offer_id ?? p.product_id ?? null,
-    name: p.name ?? p.product_name ?? null,
-    quantity: toNum(p.quantity) || 1,
+    operation_id: accrual.accrual_id ?? accrual.operation_id ?? accrual.id ?? null,
+    operation_type: code,
+    operation_type_name: primaryType?.name || code,
+    operation_date: accrual.date || accrual.operation_date || fallbackDate,
+    amount: total,
+    accruals_for_sale: 0,
+    sale_commission: 0,
+    delivery_charge: 0,
+    return_delivery_charge: 0,
+    services,
+    items: items.length ? items : [{ sku: null, name: null, quantity: 1 }],
+    posting: {
+      posting_number: unit,
+      delivery_schema: null,
+      order_date: null,
+      order_id: unit,
+      warehouse_id: null,
+    },
+    type: code,
+    accrued_category: 'ITEM',
+    unit_number: unit,
   };
 }
 
-/** Одна запись by-day / postings → operation-like. */
+function normalizeNonItemAccrual(accrual, typesMap, fallbackDate) {
+  const fee = accrual?.non_item_fee;
+  const hit = typeById(typesMap, fee?.type_id);
+  const code = hit?.code || hit?.name || 'NON_ITEM';
+  const total = moneyAmount(accrual.total_amount ?? fee?.accrued ?? accrual.amount);
+  const unit = accrual.unit_number != null ? String(accrual.unit_number) : null;
+  const services = fee ? servicesFromTypeFees([fee], typesMap) : [];
+  return {
+    operation_id: accrual.accrual_id ?? accrual.operation_id ?? accrual.id ?? null,
+    operation_type: code,
+    operation_type_name: hit?.name || code,
+    operation_date: accrual.date || accrual.operation_date || fallbackDate,
+    amount: total,
+    accruals_for_sale: 0,
+    sale_commission: 0,
+    delivery_charge: 0,
+    return_delivery_charge: 0,
+    services,
+    items: [{ sku: null, name: null, quantity: 1 }],
+    posting: {
+      posting_number: unit,
+      delivery_schema: null,
+      order_date: null,
+      order_id: unit,
+      warehouse_id: null,
+    },
+    type: code,
+    accrued_category: 'NON_ITEM',
+    unit_number: unit,
+  };
+}
+
+/** Одна запись by-day → operation-like (или несколько, если вложенные accruals). */
 export function normalizeAccrualToOperation(accrual, typesMap = new Map(), fallbackDate = null) {
   if (!accrual || typeof accrual !== 'object') return null;
-  const posting = accrual.posting && typeof accrual.posting === 'object' ? accrual.posting : accrual;
-  const type = resolveType(typesMap, accrual);
-  const products = pickProducts(accrual).map(productToItem);
-  const amount =
-    accrual.amount != null
-      ? toNum(accrual.amount)
-      : accrual.accrual_amount != null
-        ? toNum(accrual.accrual_amount)
-        : toNum(accrual.total);
+  const cat = String(accrual.accrued_category || '').toUpperCase();
+  if (cat === 'POSTING') return normalizePostingAccrual(accrual, typesMap, fallbackDate);
+  if (cat === 'ITEM') return normalizeItemAccrual(accrual, typesMap, fallbackDate);
+  if (cat === 'NON_ITEM') return normalizeNonItemAccrual(accrual, typesMap, fallbackDate);
 
+  // Устаревший/неожиданный формат — пытаемся не потерять сумму.
+  const total = moneyAmount(accrual.total_amount ?? accrual.amount ?? accrual.accrual_amount ?? accrual.total);
+  const unit = accrual.unit_number != null ? String(accrual.unit_number) : accrual.posting_number || null;
   return {
-    operation_id: accrual.operation_id ?? accrual.accrual_id ?? accrual.id ?? null,
-    operation_type: type.operation_type,
-    operation_type_name: type.operation_type_name,
-    operation_date:
-      accrual.operation_date ||
-      accrual.date ||
-      posting.order_date ||
-      posting.accrual_date ||
-      fallbackDate,
-    amount,
-    accruals_for_sale: toNum(accrual.accruals_for_sale ?? accrual.sale_amount ?? accrual.revenue),
-    sale_commission: toNum(accrual.sale_commission ?? accrual.commission),
-    delivery_charge: toNum(accrual.delivery_charge),
-    return_delivery_charge: toNum(accrual.return_delivery_charge),
-    services: pickServices(accrual),
-    items: products.length ? products : [{ sku: accrual.sku ?? null, name: accrual.name ?? null, quantity: 1 }],
+    operation_id: accrual.accrual_id ?? accrual.operation_id ?? accrual.id ?? null,
+    operation_type: accrual.operation_type || accrual.accrued_category || 'UNKNOWN',
+    operation_type_name: accrual.operation_type_name || null,
+    operation_date: accrual.date || accrual.operation_date || fallbackDate,
+    amount: total,
+    accruals_for_sale: moneyAmount(accrual.accruals_for_sale ?? accrual.sale_amount),
+    sale_commission: moneyAmount(accrual.sale_commission ?? accrual.commission),
+    delivery_charge: moneyAmount(accrual.delivery_charge),
+    return_delivery_charge: moneyAmount(accrual.return_delivery_charge),
+    services: Array.isArray(accrual.services) ? accrual.services : [],
+    items: [{ sku: accrual.sku ?? null, name: accrual.name ?? null, quantity: 1 }],
     posting: {
-      posting_number: posting.posting_number ?? accrual.posting_number ?? null,
-      delivery_schema: posting.delivery_schema ?? accrual.delivery_schema ?? null,
-      order_date: posting.order_date ?? null,
-      order_id: posting.order_id ?? accrual.order_id ?? null,
-      warehouse_id: posting.warehouse_id ?? null,
+      posting_number: unit,
+      delivery_schema: accrual.posting?.delivery_schema ?? accrual.delivery_schema ?? null,
+      order_date: accrual.posting?.order_date ?? null,
+      order_id: unit,
+      warehouse_id: accrual.posting?.warehouse_id ?? null,
     },
     type: accrual.type ?? accrual.accrued_category ?? null,
     accrued_category: accrual.accrued_category ?? null,
+    unit_number: unit,
   };
 }
 
@@ -208,7 +328,9 @@ function expandPostingOrAccrual(row, typesMap, fallbackDate) {
               order_date: row.order_date,
               order_id: row.order_id,
               warehouse_id: row.warehouse_id,
+              products: row.products,
             },
+            unit_number: acc.unit_number || row.unit_number || row.posting_number,
             products: acc.products || row.products,
           },
           typesMap,
@@ -247,61 +369,9 @@ async function fetchAccrualsByDay({ clientId, apiKey, dateFrom, dateTo, typesMap
   return all;
 }
 
-async function fetchAccrualsByPostings({ clientId, apiKey, dateFrom, dateTo, typesMap }) {
-  const all = [];
-  let page = 1;
-  const pageSize = 500;
-  const fromIso = `${ymd(dateFrom)}T00:00:00.000Z`;
-  const toIso = `${ymd(dateTo)}T23:59:59.999Z`;
-  const bodyFactories = [
-    (p) => ({ page: p, page_size: pageSize, date: { from: fromIso, to: toIso } }),
-    (p) => ({ page: p, page_size: pageSize, filter: { date: { from: fromIso, to: toIso } } }),
-    (p) => ({
-      page: p,
-      page_size: pageSize,
-      filter: { date: { from: fromIso, to: toIso }, posting_number: '' },
-    }),
-  ];
-  let chosenFactory = null;
-
-  for (let guard = 0; guard < 200; guard += 1) {
-    let lastErr = null;
-    let list = [];
-    let okPage = false;
-    const factories = chosenFactory ? [chosenFactory] : bodyFactories;
-
-    for (const makeBody of factories) {
-      const { ok, status, json, text } = await ozonPostJson({
-        clientId,
-        apiKey,
-        path: '/v1/finance/accrual/postings',
-        body: makeBody(page),
-      });
-      if (ok) {
-        ({ list } = extractAccrualList(json));
-        chosenFactory = makeBody;
-        okPage = true;
-        break;
-      }
-      lastErr = new Error(`Ozon finance/accrual/postings: ${status} ${String(text).slice(0, 300)}`);
-      lastErr.status = status;
-      if (status !== 400 && status !== 422) break;
-    }
-
-    if (!okPage) throw lastErr || new Error('Ozon finance/accrual/postings: unknown error');
-
-    for (const row of list) {
-      all.push(...expandPostingOrAccrual(row, typesMap, null));
-    }
-    if (list.length < pageSize) break;
-    page += 1;
-  }
-  return all;
-}
-
 /**
  * Загрузить начисления за период и вернуть operation-like массив (как у v3/transaction/list).
- * Сначала postings (удобнее для диапазона), при 404/400 — by-day по дням.
+ * Используем by-day: postings не содержит ITEM (эквайринг) и часто отвечает 429.
  */
 export async function fetchOzonFinanceAccrualOperations({ clientId, apiKey, dateFrom, dateTo }) {
   const cid = String(clientId || '').trim();
@@ -315,39 +385,30 @@ export async function fetchOzonFinanceAccrualOperations({ clientId, apiKey, date
     typesMap = new Map();
   }
 
-  try {
-    return await fetchAccrualsByPostings({
-      clientId: cid,
-      apiKey: key,
-      dateFrom,
-      dateTo,
-      typesMap,
-    });
-  } catch (err) {
-    const st = err?.status;
-    if (st === 404 || st === 400 || st === 405 || st === 501) {
-      return fetchAccrualsByDay({
-        clientId: cid,
-        apiKey: key,
-        dateFrom,
-        dateTo,
-        typesMap,
-      });
-    }
-    // Сеть / 5xx — тоже пробуем by-day как запасной контур.
-    if (st >= 500 || st == null) {
-      try {
-        return await fetchAccrualsByDay({
-          clientId: cid,
-          apiKey: key,
-          dateFrom,
-          dateTo,
-          typesMap,
-        });
-      } catch {
-        throw err;
-      }
-    }
-    throw err;
+  return fetchAccrualsByDay({
+    clientId: cid,
+    apiKey: key,
+    dateFrom,
+    dateTo,
+    typesMap,
+  });
+}
+
+/**
+ * Оставить FBS: POSTING со схемой FBS + связанные ITEM/NON_ITEM с тем же unit_number.
+ */
+export function filterOzonFbsAccrualOperations(ops) {
+  const list = Array.isArray(ops) ? ops : [];
+  const fbsUnits = new Set();
+  for (const op of list) {
+    const schema = String(op?.posting?.delivery_schema || op?.delivery_schema || '').toLowerCase();
+    const unit = String(op?.posting?.posting_number || op?.unit_number || '').trim();
+    if (unit && (schema === 'fbs' || schema === 'rfbs')) fbsUnits.add(unit);
   }
+  return list.filter((op) => {
+    const schema = String(op?.posting?.delivery_schema || '').toLowerCase();
+    if (schema === 'fbs' || schema === 'rfbs') return true;
+    const unit = String(op?.posting?.posting_number || op?.unit_number || '').trim();
+    return unit !== '' && fbsUnits.has(unit);
+  });
 }

@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "ЕРМ — конкуренты",
+  "version": "1.2.1",
+  "description": "Записывает цену открытой карточки Ozon, Wildberries и Яндекс Маркета в конкуренты товара ЕРМ",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "http://localhost:3001/*",
+    "http://127.0.0.1:3001/*",
+    "https://www.ozon.ru/*",
+    "https://ozon.ru/*",
+    "https://www.wildberries.ru/*",
+    "https://wildberries.ru/*",
+    "https://www.market.yandex.ru/*",
+    "https://market.yandex.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Конкуренты ЕРМ"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.ozon.ru/*",
+        "https://ozon.ru/*",
+        "https://www.wildberries.ru/*",
+        "https://wildberries.ru/*",
+        "https://www.market.yandex.ru/*",
+        "https://market.yandex.ru/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

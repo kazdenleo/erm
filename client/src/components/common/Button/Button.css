@@ -1,11 +1,12 @@
 .btn {
   padding: 12px 24px;
-  border-radius: 8px;
+  border-radius: 10px;
+  font-family: var(--font-sans, inherit);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  border: none;
-  transition: all 0.2s ease;
+  border: 1px solid transparent;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -19,12 +20,12 @@
 
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: #062015;
   box-shadow: var(--shadow);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #B91C1C;
+  background: #55dfa0;
   box-shadow: var(--shadow-lg);
   transform: translateY(-1px);
 }
@@ -35,42 +36,41 @@
 }
 
 .btn-secondary {
-  background: white;
+  background: var(--card, #fff);
   color: var(--text);
-  border: 1px solid var(--border);
+  border-color: var(--border);
   box-shadow: var(--shadow);
 }
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--primary-50);
-  border-color: var(--muted);
+  border-color: #b7cec2;
   color: var(--text);
   transform: translateY(-1px);
 }
 
 .btn-success {
   background: var(--success);
-  color: white;
+  color: #fff;
 }
 
 .btn-success:hover:not(:disabled) {
-  background: #059669;
+  background: var(--primary-600);
 }
 
 .btn-danger {
   background: var(--error);
-  color: white;
+  color: #fff;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #dc2626;
+  background: #be123c;
 }
 
-/* Button sizes */
-.btn-small {
-  padding: 6px 12px;
+.btn-small,
+.btn-sm {
+  padding: 6px 14px;
   font-size: 13px;
-  border-radius: 6px;
 }
 
 .btn-medium {
@@ -78,8 +78,8 @@
   font-size: 14px;
 }
 
-.btn-large {
-  padding: 16px 32px;
+.btn-large,
+.btn-lg {
+  padding: 14px 28px;
   font-size: 16px;
 }
-

@@ -14,7 +14,8 @@ import {
 /** Поставки WB в ERM, ещё не принятые на складе маркетплейса. */
 export const FBO_FORECAST_PENDING_SUPPLY_STATUSES = [
   'new',
-  'packed',
+  'collecting',
+  'packing',
   'ready_for_supply',
   'shipped',
 ];

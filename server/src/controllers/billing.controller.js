@@ -263,6 +263,18 @@ class BillingController {
       return next(error);
     }
   }
+
+  async adminOpsSummary(req, res, next) {
+    try {
+      const data = await subscriptionBilling.getAdminOpsSummary({
+        trialDays: req.query.trialDays,
+        activeDays: req.query.activeDays,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      return next(error);
+    }
+  }
 }
 
 export default new BillingController();

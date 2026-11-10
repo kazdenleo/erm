@@ -14,8 +14,10 @@ import { Button } from '../../components/common/Button/Button';
 import { ProductLabelPrintModal } from '../../components/products/ProductLabelPrintModal.jsx';
 import {
   canUsePrintHelper,
+  cachePrintHelperUrl,
   openProductLabelPrintTab,
   openProductLabelsBatchPrintTab,
+  readCachedPrintHelperUrl,
   useProductLabelPrint,
 } from '../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../services/api';
@@ -27,6 +29,7 @@ import {
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyCollect } from './FboSupplyCollect.jsx';
+import { FboSupplyExpress } from './FboSupplyExpress.jsx';
 import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
@@ -96,7 +99,7 @@ export function FboSupplyDetail() {
   const [err, setErr] = useState(null);
   const [stockMsg, setStockMsg] = useState(null);
   const [selectedItemIds, setSelectedItemIds] = useState(() => new Set());
-  const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const [printHelperUrl, setPrintHelperUrl] = useState(() => readCachedPrintHelperUrl());
   const [labelPrintItem, setLabelPrintItem] = useState(null);
   const [printMsg, setPrintMsg] = useState(null);
   const [activeTab, setActiveTab] = useState('info');
@@ -118,11 +121,17 @@ export function FboSupplyDetail() {
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
+  const [, setActivityTick] = useState(0);
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
   const statusSyncInFlightRef = useRef(false);
 
   const STATUS_SYNC_POLL_MS = 90000;
+
+  useEffect(() => {
+    const t = setInterval(() => setActivityTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   const deductionWarehouses = useMemo(
     () => filterDeductionWarehouses(allWarehouses, supply?.deductionWarehouseId),
@@ -194,7 +203,7 @@ export function FboSupplyDetail() {
   }, [id]);
 
   useEffect(() => {
-    if (activeTab !== 'packing' || !id || !supply) return undefined;
+    if ((activeTab !== 'packing' && activeTab !== 'express') || !id || !supply) return undefined;
     const mp = String(supply.marketplace || 'ozon').toLowerCase();
     const isOzon = mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
     if (!isOzon || packing?.ozonMeta !== undefined) return undefined;
@@ -243,7 +252,9 @@ export function FboSupplyDetail() {
     fetch(`${resolveApiBaseUrl().replace(/\/$/, '')}/config`)
       .then((r) => r.json())
       .then((body) => {
-        if (!cancelled) setPrintHelperUrl((body?.data?.printHelperUrl ?? '').trim());
+        if (!cancelled) {
+          setPrintHelperUrl(cachePrintHelperUrl(body?.data?.printHelperUrl ?? ''));
+        }
       })
       .catch(() => {});
     return () => {
@@ -439,6 +450,9 @@ export function FboSupplyDetail() {
       }
       if (meta.supplyStatus != null) {
         next.status = meta.supplyStatus;
+      }
+      if (meta.lastPackAt != null) {
+        next.lastPackAt = meta.lastPackAt;
       }
       if (meta.statusReverted) {
         next.statusRevertedByPacking = true;
@@ -696,9 +710,7 @@ export function FboSupplyDetail() {
     if (!supply || newStatus === supply.status) return;
     if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy)) {
       setErr(
-        newStatus === 'packed'
-          ? 'Нельзя перевести в «Упакован»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
-          : 'Нельзя перевести в «Готов к отгрузке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
+        'Нельзя перевести в «Готова к отгрузке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
       );
       return;
     }
@@ -875,7 +887,7 @@ export function FboSupplyDetail() {
   const ozonSubmitBlocked =
     isOzonSupply && ozonMeta && ozonMeta.canSubmitCompositionViaApi === false;
   const canSubmitPackingToMarketplace =
-    (supply.status === 'packed' || (mpKey === 'ozon' && supply.status === 'ready_for_supply')) &&
+    supply.status === 'ready_for_supply' &&
     !packingHasDiscrepancy &&
     (packing?.cargoUnits?.length ?? 0) > 0 &&
     !ozonSubmitBlocked;
@@ -897,6 +909,8 @@ export function FboSupplyDetail() {
           </span>
           <FboSupplyStatusSelect
             status={supply.status}
+            lastCollectAt={supply.lastCollectAt ?? supply.last_collect_at}
+            lastPackAt={supply.lastPackAt ?? supply.last_pack_at}
             disabled={saving}
             hasDiscrepancy={packingHasDiscrepancy}
             onChange={handleStatusChange}
@@ -953,17 +967,15 @@ export function FboSupplyDetail() {
             onClick={handleSubmitPackingToMarketplace}
             title={
               marketplaceRefBlockedTitle ||
-              (!canSubmitPackingToMarketplace &&
-              supply.status !== 'packed' &&
-              !(mpKey === 'ozon' && supply.status === 'ready_for_supply')
-                ? 'Доступно в статусе «Упакован» после полной сборки по плану'
+              (!canSubmitPackingToMarketplace && supply.status !== 'ready_for_supply'
+                ? 'Доступно в статусе «Готова к отгрузке» после полной упаковки по плану'
                 : packingHasDiscrepancy
                   ? 'Сначала устраните расхождения между планом и сборкой'
                   : !(packing?.cargoUnits?.length > 0)
                     ? 'Сначала создайте грузоместа на вкладке «Упаковка»'
                     : ozonSubmitBlocked
                   ? 'Состав уже заполнен в Ozon — используйте Excel, а не отправку из ERM'
-                  : mpKey === 'ozon' && supply.status === 'ready_for_supply'
+                  : supply.status === 'ready_for_supply'
                       ? `Обновить состав грузомест в ${mpLabel} (номера сохраняются)`
                       : `Отправить упакованный состав грузомест в ${mpLabel}`)
             }
@@ -998,7 +1010,7 @@ export function FboSupplyDetail() {
           Статус сброшен в «Новая»: сборка не совпадает с планом поставки.
         </div>
       ) : null}
-      {ozonMeta?.filledCargoWarning && activeTab !== 'packing' ? (
+      {ozonMeta?.filledCargoWarning && activeTab !== 'packing' && activeTab !== 'express' ? (
         <div className="alert alert-warning">
           {ozonMeta.filledCargoWarning}{' '}
           <button
@@ -1065,6 +1077,14 @@ export function FboSupplyDetail() {
         <button
           type="button"
           role="tab"
+          className={`fbo-detail-tab${activeTab === 'express' ? ' active' : ''}`}
+          onClick={() => setActiveTab('express')}
+        >
+          Экспресс
+        </button>
+        <button
+          type="button"
+          role="tab"
           className={`fbo-detail-tab${activeTab === 'packing' ? ' active' : ''}`}
           onClick={() => setActiveTab('packing')}
         >
@@ -1089,11 +1109,15 @@ export function FboSupplyDetail() {
             <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
               Найдено:{' '}
               <strong>
-                {activeTab === 'packing' ? filteredSupplyItems.length : filteredGeneralItems.length}
+                {activeTab === 'packing' || activeTab === 'express'
+                  ? filteredSupplyItems.length
+                  : filteredGeneralItems.length}
               </strong>{' '}
               из{' '}
               <strong>
-                {activeTab === 'packing' ? sortedSupplyItems.length : generalSupplyItems.length}
+                {activeTab === 'packing' || activeTab === 'express'
+                  ? sortedSupplyItems.length
+                  : generalSupplyItems.length}
               </strong>
             </span>
           ) : null}
@@ -1108,6 +1132,44 @@ export function FboSupplyDetail() {
           onItemSearchQueryChange={setItemSearchQuery}
           printHelperUrl={printHelperUrl}
           deductionWarehouseId={supply?.deductionWarehouseId}
+          onSupplyStatusChange={(status, meta = {}) => {
+            if (status == null && meta.lastCollectAt == null) return;
+            setSupply((s) =>
+              s
+                ? {
+                    ...s,
+                    ...(status != null ? { status } : {}),
+                    ...(meta.lastCollectAt != null ? { lastCollectAt: meta.lastCollectAt } : {}),
+                  }
+                : s
+            );
+          }}
+        />
+      ) : null}
+
+      {activeTab === 'express' ? (
+        <FboSupplyExpress
+          supplyId={id}
+          marketplace={supply?.marketplace}
+          supplyItems={supply.items || []}
+          packing={packing}
+          onPackingChange={handlePackingChange}
+          onBreakdownClick={setBreakdownItem}
+          onItemQuantitySaved={handleItemQuantitySaved}
+          itemSearchQuery={itemSearchQuery}
+          printHelperUrl={printHelperUrl}
+          onSupplyStatusChange={(status, meta = {}) => {
+            if (status == null && meta.lastCollectAt == null) return;
+            setSupply((s) =>
+              s
+                ? {
+                    ...s,
+                    ...(status != null ? { status } : {}),
+                    ...(meta.lastCollectAt != null ? { lastCollectAt: meta.lastCollectAt } : {}),
+                  }
+                : s
+            );
+          }}
         />
       ) : null}
 

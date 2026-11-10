@@ -25,9 +25,22 @@ function parseExpiresAt(payload) {
   return n > 1e12 ? n : n * 1000;
 }
 
+/** Authorization key из Studio (base64) или сырой Client ID:Client Secret */
+export function normalizeGigachatCredentials(raw) {
+  let key = String(raw || '')
+    .replace(/^Basic\s+/i, '')
+    .trim()
+    .replace(/\s+/g, '');
+  if (!key) return '';
+  // В Studio иногда копируют пару client_id:client_secret без Base64
+  if (key.includes(':')) {
+    return Buffer.from(key, 'utf8').toString('base64');
+  }
+  return key;
+}
+
 function authHeader(credentials) {
-  const key = String(credentials || '').replace(/^Basic\s+/i, '').trim();
-  return `Basic ${key}`;
+  return `Basic ${normalizeGigachatCredentials(credentials)}`;
 }
 
 async function readErrorText(res) {
@@ -61,9 +74,10 @@ export async function getGigachatAccessToken({ credentials, scope }) {
   if (!res.ok) {
     const detail = await readErrorText(res);
     logger.warn('[GigaChat] OAuth failed', { status: res.status, detail: String(detail).slice(0, 300) });
+    const detailPart = detail ? ` Ответ: ${String(detail).slice(0, 200)}` : '';
     const err = aiHttpError(
       res.status === 401 || res.status === 403
-        ? `GigaChat отклонил ключ авторизации (${res.status}). Проверьте ключ и scope (PERS / B2B / CORP).`
+        ? `GigaChat отклонил ключ авторизации (${res.status}). Проверьте Authorization key в Studio и scope (PERS для физлица, B2B/CORP для юрлица).${detailPart}`
         : `Не удалось получить токен GigaChat (${res.status}): ${detail || res.statusText}`,
       res.status === 401 || res.status === 403 ? 400 : 502
     );

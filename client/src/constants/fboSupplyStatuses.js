@@ -1,15 +1,25 @@
+/** Окно «сейчас собирают/упаковывают», мс. */
+export const FBO_SUPPLY_ACTIVE_MS = 5 * 60 * 1000;
+
 export const FBO_SUPPLY_STATUS_LABELS = {
   new: 'Новая',
-  packed: 'Упакован',
-  ready_for_supply: 'Готов к отгрузке',
+  collecting: 'Сборка',
+  packing: 'Упаковка',
+  ready_for_supply: 'Готова к отгрузке',
   shipped: 'Отгружен',
   closed: 'Закрыт',
   return: 'Возврат',
 };
 
+/** Подписи фильтров (= этап; совпадают с обычными лейблами). */
+export const FBO_SUPPLY_STATUS_FILTER_LABELS = {
+  ...FBO_SUPPLY_STATUS_LABELS,
+};
+
 export const FBO_SUPPLY_STATUS_ORDER = [
   'new',
-  'packed',
+  'collecting',
+  'packing',
   'ready_for_supply',
   'shipped',
   'closed',
@@ -22,24 +32,76 @@ export const MARKETPLACE_LABELS = {
   ym: 'Яндекс Маркет',
 };
 
-export function getFboSupplyStatusLabel(status) {
-  return FBO_SUPPLY_STATUS_LABELS[status] || status || '—';
+export function normalizeFboSupplyStatus(status) {
+  const s = String(status || '').trim();
+  if (s === 'packed') return 'ready_for_supply';
+  return s || 'new';
+}
+
+export function isFboSupplyActivityFresh(iso, now = Date.now()) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && now - t >= 0 && now - t <= FBO_SUPPLY_ACTIVE_MS;
+}
+
+/**
+ * Подпись статуса.
+ * «Собирается» / «Упаковывается» — только если активность ≤ 5 мин.
+ * @param {string} status
+ * @param {{ lastCollectAt?: string|null, lastPackAt?: string|null }|null} [activity]
+ */
+export function getFboSupplyStatusLabel(status, activity = null) {
+  const s = normalizeFboSupplyStatus(status);
+  if (activity) {
+    if (
+      s === 'collecting' &&
+      isFboSupplyActivityFresh(activity.lastCollectAt ?? activity.last_collect_at)
+    ) {
+      return 'Собирается';
+    }
+    if (
+      s === 'packing' &&
+      isFboSupplyActivityFresh(activity.lastPackAt ?? activity.last_pack_at)
+    ) {
+      return 'Упаковывается';
+    }
+  }
+  return FBO_SUPPLY_STATUS_LABELS[s] || s || '—';
+}
+
+export function getFboSupplyStatusFilterLabel(status) {
+  const s = normalizeFboSupplyStatus(status);
+  return FBO_SUPPLY_STATUS_FILTER_LABELS[s] || FBO_SUPPLY_STATUS_LABELS[s] || s || '—';
 }
 
 /** CSS-модификатор для бейджа / степпера по статусу. */
-export function getFboSupplyStatusClass(status) {
-  const key = String(status || '').toLowerCase();
+export function getFboSupplyStatusClass(status, activity = null) {
+  const key = normalizeFboSupplyStatus(status).toLowerCase();
+  if (activity) {
+    if (
+      key === 'collecting' &&
+      isFboSupplyActivityFresh(activity.lastCollectAt ?? activity.last_collect_at)
+    ) {
+      return 'collecting';
+    }
+    if (
+      key === 'packing' &&
+      isFboSupplyActivityFresh(activity.lastPackAt ?? activity.last_pack_at)
+    ) {
+      return 'packing';
+    }
+  }
   if (FBO_SUPPLY_STATUS_ORDER.includes(key)) return key;
   return 'unknown';
 }
 
 export function getFboSupplyStatusRank(status) {
-  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(status);
+  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(normalizeFboSupplyStatus(status));
   return idx >= 0 ? idx : -1;
 }
 
 export function getNextFboSupplyStatus(current) {
-  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(current);
+  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(normalizeFboSupplyStatus(current));
   if (idx < 0 || idx >= FBO_SUPPLY_STATUS_ORDER.length - 2) return null;
   return FBO_SUPPLY_STATUS_ORDER[idx + 1];
 }
@@ -47,15 +109,15 @@ export function getNextFboSupplyStatus(current) {
 /** Статусы в селекте (без «Возврат» — редкий кейс). */
 export const FBO_SUPPLY_STATUS_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
 
-/** Можно выбрать статус (запрет «Упакован» и «Готов к отгрузке» при расхождениях). */
+/** Можно выбрать статус (запрет «Готова к отгрузке» при расхождениях). */
 export function canSelectFboSupplyStatus(status, hasDiscrepancy) {
   if (!hasDiscrepancy) return true;
-  return status !== 'packed' && status !== 'ready_for_supply';
+  return normalizeFboSupplyStatus(status) !== 'ready_for_supply';
 }
 
 export function fboSupplyStatusBlockedTitle(status, hasDiscrepancy) {
   if (!hasDiscrepancy) return null;
-  if (status === 'packed' || status === 'ready_for_supply') {
+  if (normalizeFboSupplyStatus(status) === 'ready_for_supply') {
     return 'Упакуйте по каждой позиции ровно запланированное количество';
   }
   return null;

@@ -745,13 +745,9 @@ class FboSuppliesSubmitService {
     const mp = normalizeMp(supply.marketplace);
     const mpLabel = mpLabelRu(mp);
 
-    const canSubmitOzonPacking =
-      supply.status === 'packed' || supply.status === 'ready_for_supply';
-    if (mp === 'ozon' ? !canSubmitOzonPacking : supply.status !== 'packed') {
+    if (supply.status !== 'ready_for_supply') {
       const err = new Error(
-        mp === 'ozon'
-          ? 'Отправить или обновить состав грузомест на Ozon можно в статусе «Упакован» или «Готов к отгрузке»'
-          : 'Отправить состав грузомест на маркетплейс можно только в статусе «Упакован»'
+        `Отправить состав грузомест на ${mpLabel} можно в статусе «Готова к отгрузке»`
       );
       err.statusCode = 400;
       throw err;

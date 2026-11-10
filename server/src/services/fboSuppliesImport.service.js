@@ -1426,8 +1426,8 @@ function mapWbStateToStatus(status) {
   if (s.includes('complete') || s.includes('accept') || s.includes('done')) return 'closed';
   if (s.includes('transit') || s.includes('deliver') || s.includes('shipped')) return 'shipped';
   if (s.includes('ready') || s.includes('await')) return 'ready_for_supply';
-  if (s.includes('pack')) return 'packed';
-  if (s.includes('assembl')) return 'packed';
+  if (s.includes('pack')) return 'ready_for_supply';
+  if (s.includes('assembl')) return 'ready_for_supply';
   return 'new';
 }
 
@@ -1630,7 +1630,7 @@ function mapYmStateToStatus(status) {
   }
   // READY_TO_WITHDRAW — вывоз; для поставки явного READY_TO_SUPPLY в enum нет
   if (s.includes('READY_TO_WITHDRAW') || s.includes('READY_TO_SUPPLY')) return 'ready_for_supply';
-  if (s.includes('PACK')) return 'packed';
+  if (s.includes('PACK')) return 'ready_for_supply';
   // CREATED / ACCEPTED_BY_WAREHOUSE_SYSTEM / NEED_PREPARATION / VALIDATED / … —
   // заявка на Маркете есть, у нас ещё сборка и резерв → «Новая»
   return 'new';

@@ -70,7 +70,8 @@ class SupplierStocksController {
         rawMain != null && String(rawMain).trim() !== '' ? String(rawMain).trim() : null;
       const rows = await supplierStocksService.getBreakdownByProductIds(productIds, {
         mainWarehouseId,
-        profileId: tid
+        profileId: tid,
+        availabilityMode: 'purchasable',
       });
       return res.status(200).json({ ok: true, data: rows });
     } catch (error) {

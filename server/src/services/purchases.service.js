@@ -5817,6 +5817,144 @@ class PurchasesService {
     }
     return { costsUpdated };
   }
+
+  /**
+   * Экспресс FBO: принять 1 шт. с «в пути» по FIFO открытой закупке на указанный склад.
+   * Создаёт отдельную приёмку (не трогает чужой черновик scanning) и сразу завершает её.
+   * @returns {Promise<{ ok: boolean, purchaseId: number, receiptId: number, warehouseId: number|null }|null>}
+   */
+  async receiveOneUnitFromOpenPurchase({
+    productId,
+    warehouseId,
+    profileId,
+    userId = null,
+    meta = null,
+  } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const productIdNum = Number(productId);
+    const whId = Number(warehouseId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!Number.isFinite(productIdNum) || productIdNum < 1) {
+      const err = new Error('Некорректный товар');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Number.isFinite(whId) || whId < 1) {
+      const err = new Error('Не указан склад приёмки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const fifo = await query(
+      `SELECT p.id AS purchase_id,
+              pi.expected_quantity::int AS expected,
+              COALESCE(pi.received_quantity, 0)::int AS received
+       FROM purchase_items pi
+       JOIN purchases p ON p.id = pi.purchase_id
+       WHERE pi.product_id = $1
+         AND p.profile_id = $2
+         AND p.warehouse_id = $3
+         AND p.status = 'open'
+         AND pi.expected_quantity > COALESCE(pi.received_quantity, 0)
+       ORDER BY p.id ASC
+       LIMIT 1`,
+      [productIdNum, pid, whId]
+    );
+    const row = fifo.rows?.[0];
+    if (!row) return null;
+
+    const purchaseId = Number(row.purchase_id);
+    const uid = userId != null && userId !== '' ? Number(userId) : null;
+
+    const result = await transaction(async (client) => {
+      await assertPurchaseInProfile(client, purchaseId, pid);
+      await assertPurchaseNotArchivedInTx(client, purchaseId);
+
+      const locked = await client.query(
+        `SELECT expected_quantity::int AS expected, COALESCE(received_quantity, 0)::int AS received
+         FROM purchase_items
+         WHERE purchase_id = $1 AND product_id = $2
+         FOR UPDATE`,
+        [purchaseId, productIdNum]
+      );
+      const pi = locked.rows?.[0];
+      if (!pi || Number(pi.received) >= Number(pi.expected)) {
+        return null;
+      }
+
+      const ins = await client.query(
+        `INSERT INTO purchase_receipts (purchase_id, status, started_at, created_by_user_id)
+         VALUES ($1, 'scanning', CURRENT_TIMESTAMP, $2)
+         RETURNING id`,
+        [purchaseId, Number.isFinite(uid) && uid > 0 ? uid : null]
+      );
+      const receiptId = Number(ins.rows[0].id);
+
+      await client.query(
+        `INSERT INTO purchase_receipt_items (receipt_id, product_id, scanned_quantity, scan_meta)
+         VALUES ($1, $2, 1, $3::jsonb)`,
+        [
+          receiptId,
+          productIdNum,
+          JSON.stringify({
+            express_fbo: true,
+            ...(meta && typeof meta === 'object' ? meta : {}),
+          }),
+        ]
+      );
+
+      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whId, pid);
+      const byProduct = new Map([[productIdNum, 1]]);
+      const { deltas } = await applyPurchaseReceiptStockByProductInTx(client, {
+        purchaseReceiptId: receiptId,
+        purchaseId,
+        profileId: pid,
+        receiptWarehouseId,
+        byProduct,
+        reasonSuffix: ' (экспресс FBO)',
+      });
+
+      const purchaseStatus = await recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId);
+
+      await client.query(
+        `UPDATE purchase_receipts
+         SET status = 'completed',
+             completed_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP,
+             extras_resolved = true
+         WHERE id = $1`,
+        [receiptId]
+      );
+
+      return {
+        ok: true,
+        purchaseId,
+        receiptId,
+        warehouseId: receiptWarehouseId,
+        purchaseStatus,
+        applied: deltas,
+      };
+    });
+
+    if (!result) return null;
+
+    try {
+      const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+      await fboSupplyReserveService.onSupplyStockEvent(productIdNum, result.warehouseId ?? whId, {
+        profileId: pid,
+      });
+    } catch (err) {
+      logger.warn('[Purchases] FBO reserve after express receive', {
+        message: err?.message || String(err),
+      });
+    }
+
+    return result;
+  }
 }
 
 export default new PurchasesService();

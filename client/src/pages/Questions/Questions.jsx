@@ -21,6 +21,7 @@ import { applyQuestionTemplate } from './questionTemplateText';
 import { QuestionTemplatesModal } from './QuestionTemplatesModal';
 import { QuestionTextInsertToolbar } from './QuestionTextInsertToolbar';
 import { questionAnswerTemplatesApi } from '../../services/questionAnswerTemplates.api';
+import { getApiErrorMessage } from '../../utils/apiErrorMessage';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import './Questions.css';
@@ -177,13 +178,16 @@ export function Questions() {
     }
   }, [templatesModalOpen, loadAnswerTemplates]);
 
-  const syncFromMarketplaces = useCallback(async () => {
+  const syncFromMarketplaces = useCallback(async ({ showError = false } = {}) => {
     try {
       setSyncing(true);
       await questionsApi.sync({});
       await loadRef.current({ silent: true });
     } catch (e) {
-      setError(e?.response?.data?.message || e?.message || 'Ошибка синхронизации с маркетплейсами');
+      // Авто-синк не должен затирать список ошибкой таймаута nginx/axios.
+      if (showError) {
+        setError(getApiErrorMessage(e, 'Ошибка синхронизации с маркетплейсами'));
+      }
     } finally {
       setSyncing(false);
     }
@@ -193,10 +197,10 @@ export function Questions() {
     if (!contextOrganizationId) return undefined;
     let cancelled = false;
     const runSync = () => {
-      if (!cancelled) void syncFromMarketplaces();
+      if (!cancelled) void syncFromMarketplaces({ showError: false });
     };
     const delayId = setTimeout(runSync, 3000);
-    const id = setInterval(syncFromMarketplaces, AUTO_SYNC_MS);
+    const id = setInterval(() => syncFromMarketplaces({ showError: false }), AUTO_SYNC_MS);
     return () => {
       cancelled = true;
       clearTimeout(delayId);
@@ -274,8 +278,11 @@ export function Questions() {
         }
       } catch (e) {
         if (!cancelled) {
-          setThreadError(e?.response?.data?.message || e?.message || 'Не удалось загрузить ветку');
+          setThreadError(getApiErrorMessage(e, 'Не удалось загрузить ветку'));
         }
+      } finally {
+        // Не блокируем поле ответа, пока тянем свежие данные с МП.
+        if (!cancelled) setThreadRefreshing(false);
       }
       if (cancelled) return;
       try {
@@ -283,8 +290,6 @@ export function Questions() {
         if (!cancelled && fresh) setThreadDetail(fresh);
       } catch {
         /* свежие данные с МП — по возможности */
-      } finally {
-        if (!cancelled) setThreadRefreshing(false);
       }
     })();
     return () => {
@@ -306,7 +311,7 @@ export function Questions() {
       closeThread();
       await loadRef.current();
     } catch (e) {
-      setThreadError(e?.response?.data?.message || e?.message || 'Не удалось отправить ответ');
+      setThreadError(getApiErrorMessage(e, 'Не удалось отправить ответ'));
     } finally {
       setThreadSending(false);
     }

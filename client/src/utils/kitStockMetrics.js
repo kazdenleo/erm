@@ -410,13 +410,16 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
           ? Math.max(0, Number(display.marketplace_available))
           : Math.max(0, wholeAvailable + (Number(display.assemblable_from_components) || 0));
       const availableTotal = marketplaceAvailable;
-      const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
+      const suppliersQty = Math.max(0, Number(base.suppliers) || 0);
+      const suppliersDisplay = formatKitSupplierDisplay(product, suppliersQty);
       const incomingFromComponents = kitIncomingFromComponentsAmount(display, product, products);
+      // Как у обычных SKU: к «доступно» добавляем заказной остаток поставщиков.
+      const availableWithSuppliers = marketplaceAvailable + suppliersQty;
       const kitMetrics = {
         ...display,
         whole_available: wholeAvailable,
-        marketplace_available: marketplaceAvailable,
-        available_total: availableTotal
+        marketplace_available: availableWithSuppliers,
+        available_total: availableWithSuppliers
       };
       return {
         product,
@@ -424,10 +427,10 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         incoming: Math.max(0, Number(base.incoming) || 0),
         incomingFromComponents: Math.max(0, incomingFromComponents),
         reserved: Math.max(0, Number(base.reserved) || 0),
-        suppliers: suppliersDisplay ? 0 : base.suppliers,
+        suppliers: suppliersQty,
         supplierDetails: base.supplierDetails,
         suppliersDisplay,
-        available: marketplaceAvailable,
+        available: availableWithSuppliers,
         availableDisplay: formatKitAvailableDisplay(kitMetrics, product)
       };
     }

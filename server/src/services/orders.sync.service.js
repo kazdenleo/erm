@@ -180,8 +180,33 @@ const ordersSyncCache = {
   lastSyncResult: null,
   lastSyncError: null,
   syncInProgress: false,
-  syncStartedAt: null
+  syncStartedAt: null,
+  /** Инвалидирует finally предыдущего фона после reset / нового старта. */
+  syncGeneration: 0
 };
+
+/**
+ * Для UI/статуса не отдаём массивы заказов (могут быть десятки КБ и тормозить опрос).
+ * @param {object|null|undefined} result
+ */
+function summarizeSyncFbsResult(result) {
+  if (result == null || typeof result !== 'object') return result ?? null;
+  const summarizeMp = (mp) => {
+    if (mp == null || typeof mp !== 'object') return mp ?? null;
+    const orders = Array.isArray(mp.orders) ? mp.orders : null;
+    return {
+      success: Number(mp.success) || 0,
+      failed: Number(mp.failed) || 0,
+      ...(mp.reason != null && String(mp.reason).trim() !== '' ? { reason: String(mp.reason) } : {}),
+      ...(orders ? { ordersCount: orders.length } : {})
+    };
+  };
+  return {
+    ozon: summarizeMp(result.ozon),
+    wildberries: summarizeMp(result.wildberries),
+    yandex: summarizeMp(result.yandex)
+  };
+}
 
 /** Лёгкий опрос WB /orders/new (отдельный lock, не блокирует полный FBS sync). */
 const wbNewPollCache = {
@@ -404,15 +429,16 @@ function isYandexMarketplace(marketplace) {
 }
 
 /**
- * Ручное «Обновить статусы»: локально «Новый», на МП уже отгружен/доставлен/отменён — берём статус с маркетплейса.
- * «На сборке» и «Собран» для Ozon/Яндекс не подтягиваем с МП — только вручную в ERM (см. preventAutoInAssembly).
+ * Ручное «Обновить статусы»: локально «Новый», на МП уже дальше — берём статус с маркетплейса.
+ * В т.ч. Ozon awaiting_deliver / YM PACKAGING|READY_TO_SHIP → in_assembly (иначе preventAutoInAssembly
+ * оставлял сотни «Новый» при живых ключах). «Собран» с МП по-прежнему не форсим.
  */
 function shouldForceMpStatusOnRefresh(existing, incomingStatus, refreshStatuses) {
   if (!refreshStatuses || !existing || incomingStatus == null || incomingStatus === '') return false;
   const localS = String(existing.status ?? '').toLowerCase();
   const incomingS = String(incomingStatus).toLowerCase();
   const localStale = new Set(['new', 'unknown', WB_STATUS_UNKNOWN, WB_STATUS_PENDING]);
-  const mpProgress = new Set(['in_transit', 'shipped', 'delivered', 'cancelled']);
+  const mpProgress = new Set(['in_assembly', 'in_transit', 'shipped', 'delivered', 'cancelled']);
   if (localStale.has(localS) && mpProgress.has(incomingS)) return true;
   if (localS === 'in_procurement' && shouldAdvanceFromProcurement(incomingS)) return true;
   return false;
@@ -457,6 +483,7 @@ class OrdersSyncService {
     if (!ordersSyncCache.syncInProgress || !ordersSyncCache.syncStartedAt) return false;
     if (Date.now() - ordersSyncCache.syncStartedAt < SYNC_STALE_LOCK_MS) return false;
     logger.warn('[Orders Sync] сброс зависшей блокировки (таймаут ожидания)');
+    ordersSyncCache.syncGeneration = (Number(ordersSyncCache.syncGeneration) || 0) + 1;
     ordersSyncCache.syncInProgress = false;
     ordersSyncCache.syncStartedAt = null;
     if (!ordersSyncCache.lastSyncError) {
@@ -467,6 +494,8 @@ class OrdersSyncService {
   }
 
   clearSyncFbsLock() {
+    // Инвалидируем текущий фон: его finally больше не должен трогать новый прогон.
+    ordersSyncCache.syncGeneration = (Number(ordersSyncCache.syncGeneration) || 0) + 1;
     ordersSyncCache.syncInProgress = false;
     ordersSyncCache.syncStartedAt = null;
     return { cleared: true };
@@ -478,7 +507,7 @@ class OrdersSyncService {
       inProgress: Boolean(ordersSyncCache.syncInProgress),
       syncStartedAt: ordersSyncCache.syncStartedAt ?? null,
       lastSyncTime: ordersSyncCache.lastSyncTime ?? null,
-      lastSyncResult: ordersSyncCache.lastSyncResult ?? null,
+      lastSyncResult: summarizeSyncFbsResult(ordersSyncCache.lastSyncResult),
       lastSyncError: ordersSyncCache.lastSyncError ?? null,
     };
   }
@@ -501,6 +530,8 @@ class OrdersSyncService {
 
     // Сразу помечаем «в работе», чтобы GET /sync-fbs/status не отдавал inProgress=false
     // до входа в syncFbs (клиент иначе завершает опрос раньше импорта).
+    const myGen = (Number(ordersSyncCache.syncGeneration) || 0) + 1;
+    ordersSyncCache.syncGeneration = myGen;
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.syncStartedAt = Date.now();
 
@@ -523,12 +554,16 @@ class OrdersSyncService {
       });
       Promise.race([run, timeout])
         .catch((e) => {
-          ordersSyncCache.lastSyncError = e?.message || String(e);
-          logger.error(`[Orders Sync] background sync failed: ${ordersSyncCache.lastSyncError}`);
+          if (ordersSyncCache.syncGeneration === myGen) {
+            ordersSyncCache.lastSyncError = e?.message || String(e);
+          }
+          logger.error(`[Orders Sync] background sync failed: ${e?.message || e}`);
         })
         .finally(() => {
-          ordersSyncCache.syncInProgress = false;
-          ordersSyncCache.syncStartedAt = null;
+          if (ordersSyncCache.syncGeneration === myGen) {
+            ordersSyncCache.syncInProgress = false;
+            ordersSyncCache.syncStartedAt = null;
+          }
         });
     }, 0);
 
@@ -548,6 +583,8 @@ class OrdersSyncService {
       return { started: false, inProgress: true };
     }
 
+    const myGen = (Number(ordersSyncCache.syncGeneration) || 0) + 1;
+    ordersSyncCache.syncGeneration = myGen;
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.syncStartedAt = Date.now();
 
@@ -567,14 +604,18 @@ class OrdersSyncService {
       });
       Promise.race([run, timeout])
         .catch((e) => {
-          ordersSyncCache.lastSyncError = e?.message || String(e);
+          if (ordersSyncCache.syncGeneration === myGen) {
+            ordersSyncCache.lastSyncError = e?.message || String(e);
+          }
           logger.error(
-            `[Orders Sync] background all-profiles sync failed: ${ordersSyncCache.lastSyncError}`
+            `[Orders Sync] background all-profiles sync failed: ${e?.message || e}`
           );
         })
         .finally(() => {
-          ordersSyncCache.syncInProgress = false;
-          ordersSyncCache.syncStartedAt = null;
+          if (ordersSyncCache.syncGeneration === myGen) {
+            ordersSyncCache.syncInProgress = false;
+            ordersSyncCache.syncStartedAt = null;
+          }
         });
     }, 0);
 
@@ -979,6 +1020,7 @@ class OrdersSyncService {
     } catch (error) {
       console.error('[Orders Sync] Ozon error:', error);
       results.ozon.failed = 1;
+      results.ozon.reason = error?.message || String(error);
     }
 
     // Wildberries
@@ -1027,6 +1069,7 @@ class OrdersSyncService {
     } catch (error) {
       console.error('[Orders Sync] Wildberries error:', error);
       results.wildberries.failed = 1;
+      results.wildberries.reason = error?.message || String(error);
     }
 
     // Yandex Market
@@ -1102,6 +1145,8 @@ class OrdersSyncService {
         }
       } catch (e) {
         logger.warn('[Orders Sync] Ozon catch-up:', e.message);
+        results.ozon.failed = (Number(results.ozon.failed) || 0) + 1;
+        results.ozon.reason = e?.message || String(e);
       }
     }
 
@@ -1138,7 +1183,8 @@ class OrdersSyncService {
       const isWbIncoming = incomingMp === 'wildberries';
 
       let nextStatus = order.status;
-      if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
+      const forceMpStatus = shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses);
+      if (forceMpStatus) {
         nextStatus = String(order.status).toLowerCase();
       } else if (existing?.status === 'in_procurement') {
         nextStatus = mergeStatusWithProcurement(existing, order.status);
@@ -1186,6 +1232,7 @@ class OrdersSyncService {
       }
 
       if (
+        !forceMpStatus &&
         (incomingMp === 'ozon' || incomingMp === 'yandex') &&
         existing &&
         existing.status !== 'in_procurement' &&
@@ -1195,6 +1242,7 @@ class OrdersSyncService {
       }
 
       if (
+        !forceMpStatus &&
         existing &&
         existing.status !== 'in_procurement' &&
         !incomingMatchesProcurementAnchors(order, procurementAnchors)
@@ -1202,8 +1250,10 @@ class OrdersSyncService {
         nextStatus = preserveLocalInAssemblyAgainstMpAssembled(existing, nextStatus);
       }
 
-      // Не переводим автоматически в "На сборке" из данных маркетплейса.
-      nextStatus = preventAutoInAssembly(existing, nextStatus);
+      // Не переводим автоматически в «На сборке» из данных МП — кроме ручного «Обновить статусы».
+      if (!forceMpStatus) {
+        nextStatus = preventAutoInAssembly(existing, nextStatus);
+      }
       if (existing) {
         nextStatus = preserveLocalLogisticsStatus(existing, nextStatus);
       }
@@ -1316,6 +1366,8 @@ class OrdersSyncService {
         logger.info(`[Orders Sync] WB: обновлены статусы для ${statuses.length} заказов`);
       } catch (e) {
         logger.warn('[Orders Sync] WB status refresh failed:', e.message);
+        results.wildberries.failed = (Number(results.wildberries.failed) || 0) + 1;
+        results.wildberries.reason = e?.message || String(e);
       }
     }
 
@@ -1334,14 +1386,17 @@ class OrdersSyncService {
             const key = `${order.marketplace}:${order.orderId}`;
             const existing = ordersMap.get(key);
             let nextStatus = order.status;
-            if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
+            const forceMpStatus = shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses);
+            if (forceMpStatus) {
               nextStatus = String(order.status).toLowerCase();
             } else if (existing?.status === 'in_procurement') {
               nextStatus = mergeStatusWithProcurement(existing, order.status);
             } else if (existing) {
               nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
             }
-            nextStatus = preventAutoInAssembly(existing, nextStatus);
+            if (!forceMpStatus) {
+              nextStatus = preventAutoInAssembly(existing, nextStatus);
+            }
             ordersMap.set(key, {
               ...(existing || {}),
               ...order,
@@ -1352,6 +1407,8 @@ class OrdersSyncService {
         }
       } catch (e) {
         logger.warn('[Orders Sync] Yandex catch-up:', e.message);
+        results.yandex.failed = (Number(results.yandex.failed) || 0) + 1;
+        results.yandex.reason = e?.message || String(e);
       }
     }
 
@@ -1494,10 +1551,16 @@ class OrdersSyncService {
         `[Orders Sync] done (${ctx}): ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} ` +
           `(yandex api_key was ${ymApiKey ? 'set' : 'missing'})`
       );
-      if (ymApiKey && results.yandex.success === 0) {
-        const hint = ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.';
+
+      const mpAuthHints = [results.ozon?.reason, results.wildberries?.reason, results.yandex?.reason]
+        .filter((s) => s && /токен|ключ|401|403|истёк|deactivated|не настроен|Unauthorized|запрещён/i.test(String(s)))
+        .map((s) => String(s));
+      if (mpAuthHints.length) {
+        ordersSyncCache.lastSyncError = mpAuthHints.join(' ');
+      } else if (ymApiKey && results.yandex.success === 0 && ymReason) {
+        const hint = `[YM Orders] 0 orders: ${ymReason}`;
         logger.info(hint);
-        ordersSyncCache.lastSyncError = ymReason || 'Яндекс.Маркет: API не вернул заказов за период';
+        ordersSyncCache.lastSyncError = ymReason;
       }
 
       return {
@@ -1634,12 +1697,22 @@ class OrdersSyncService {
     let lastMerged = null;
 
     const mergeOzonRow = (existing, incoming) => {
-      let nextStatus = mergeStatusWithProcurement(existing, incoming.status);
-      if (existing && String(existing.status ?? '').toLowerCase() !== 'in_procurement') {
+      const forceMpStatus = shouldForceMpStatusOnRefresh(existing, incoming.status, true);
+      let nextStatus = forceMpStatus
+        ? String(incoming.status).toLowerCase()
+        : mergeStatusWithProcurement(existing, incoming.status);
+      if (
+        !forceMpStatus &&
+        existing &&
+        String(existing.status ?? '').toLowerCase() !== 'in_procurement'
+      ) {
         nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
         if (existing.returnedToNewAt) {
           nextStatus = applyReturnedToNewStatusGuard(nextStatus);
         }
+      }
+      if (!forceMpStatus) {
+        nextStatus = preventAutoInAssembly(existing, nextStatus);
       }
       const rowStatusChanged = existing ? existing.status !== nextStatus : false;
       return {
@@ -1752,14 +1825,23 @@ class OrdersSyncService {
     let lastMerged = null;
 
     const mergeYmRow = (existing, incoming) => {
-      let nextStatus = mergeStatusWithProcurement(existing, incoming.status);
-      if (existing && String(existing.status ?? '').toLowerCase() !== 'in_procurement') {
+      const forceMpStatus = shouldForceMpStatusOnRefresh(existing, incoming.status, true);
+      let nextStatus = forceMpStatus
+        ? String(incoming.status).toLowerCase()
+        : mergeStatusWithProcurement(existing, incoming.status);
+      if (
+        !forceMpStatus &&
+        existing &&
+        String(existing.status ?? '').toLowerCase() !== 'in_procurement'
+      ) {
         nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
         if (existing.returnedToNewAt) {
           nextStatus = applyReturnedToNewStatusGuard(nextStatus);
         }
       }
-      nextStatus = preventAutoInAssembly(existing, nextStatus);
+      if (!forceMpStatus) {
+        nextStatus = preventAutoInAssembly(existing, nextStatus);
+      }
       const rowStatusChanged = existing ? existing.status !== nextStatus : true;
       return {
         merged: {
@@ -2275,16 +2357,22 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
           if (pn) byPosting.set(String(pn), p);
         }
       } catch (e) {
+        const em = e?.message || String(e);
         logger.warn(
-          `[Ozon Orders] чанк ${chunkIdx} (${since.toISOString().slice(0, 10)}..${to.toISOString().slice(0, 10)}): ${e.message}`
+          `[Ozon Orders] чанк ${chunkIdx} (${since.toISOString().slice(0, 10)}..${to.toISOString().slice(0, 10)}): ${em}`
         );
         // Не долбить следующие чанки в том же прогоне — только усугубляет ban.
-        if (String(e?.code || e?.message || '').includes('RATE_LIMIT') || /429|ограничил частоту/i.test(String(e?.message || ''))) {
+        if (String(e?.code || em).includes('RATE_LIMIT') || /429|ограничил частоту/i.test(em)) {
           noteOzonClientRateLimited(ozonApiOpts || { ozonOverride: { client_id } }, OZON_FBS_BLACKOUT_MS);
           logger.warn(
             `[Ozon Orders] blackout ${Math.round(OZON_FBS_BLACKOUT_MS / 60000)} мин — следующие синки list пропускаем`
           );
           break;
+        }
+        if (/403|401|Api-key is deactivated|Invalid Api-Key|Unauthorized|deactivated/i.test(em)) {
+          throw new Error(
+            'Ozon: API-ключ недействителен или деактивирован. Обновите ключ в Интеграции → Ozon.'
+          );
         }
       }
       t = chunkEndMs + 1;
@@ -2330,7 +2418,16 @@ async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedO
       const raw = await fetchOzonOrderDetailRaw(ozonConfig, base);
       extra.push(...mapOzonPostingToSyncRows(raw));
     } catch (e) {
-      logger.debug(`[Ozon catch-up] posting ${base}: ${e.message}`);
+      const msg = e?.message || String(e);
+      logger.debug(`[Ozon catch-up] posting ${base}: ${msg}`);
+      // Мёртвый ключ / 403 — не долбить сотни get подряд (минуты «тишины» в UI).
+      if (/403|401|Api-key is deactivated|Invalid Api-Key|Unauthorized|deactivated/i.test(msg)) {
+        const err = new Error(
+          'Ozon: API-ключ недействителен или деактивирован. Обновите ключ в Интеграции → Ozon.'
+        );
+        err.code = 'OZON_AUTH';
+        throw err;
+      }
     }
     /* eslint-disable no-await-in-loop */
     await new Promise((r) => setTimeout(r, 40));
@@ -2375,7 +2472,15 @@ async function fetchYandexExtraOrdersFromExisting(existingOrders, alreadySyncedY
       const raw = await fetchYandexOrderDetailRaw(ymConfig, base);
       extra.push(...mapYandexBusinessOrderToInternal(raw));
     } catch (e) {
-      logger.debug(`[YM catch-up] order ${base}: ${e.message}`);
+      const msg = e?.message || String(e);
+      logger.debug(`[YM catch-up] order ${base}: ${msg}`);
+      if (/401|403|UNAUTHORIZED|Api-Key token is revoked|Unauthorized/i.test(msg)) {
+        const err = new Error(
+          'Яндекс: API-ключ отозван или недействителен. Обновите ключ в Интеграции → Яндекс.'
+        );
+        err.code = 'YM_AUTH';
+        throw err;
+      }
     }
     /* eslint-disable no-await-in-loop */
     await new Promise((r) => setTimeout(r, 50));
@@ -2542,6 +2647,17 @@ function extractWbStatusOrdersList(data) {
  * Получить текущие статусы заказов WB по списку ID (POST /api/v3/orders/status).
  * Нужно для обновления статусов уже загруженных заказов (которые больше не в /new).
  */
+function wildberriesAuthErrorMessage(status, errText = '') {
+  const t = String(errText || '');
+  if (status === 401 || /token is expired|invalid API access token|Unauthorized/i.test(t)) {
+    return 'WB: API-токен истёк или недействителен. Обновите ключ в Интеграции → Wildberries.';
+  }
+  if (status === 403) {
+    return 'WB: доступ запрещён (403). Проверьте права токена Marketplace в кабинете WB.';
+  }
+  return `WB: ошибка API ${status}`;
+}
+
 async function fetchWBOrdersStatuses(config, orderIds) {
   if (!orderIds || orderIds.length === 0) return [];
   const { api_key } = config;
@@ -2565,6 +2681,9 @@ async function fetchWBOrdersStatuses(config, orderIds) {
       if (!response.ok) {
         const errText = await response.text();
         logger.warn(`[WB Orders] status API error ${response.status}: ${errText.substring(0, 200)}`);
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(wildberriesAuthErrorMessage(response.status, errText));
+        }
         continue;
       }
       const data = await response.json();
@@ -2735,6 +2854,9 @@ async function fetchWildberriesFBSOrders(config, { skipTitles = false } = {}) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[WB Orders] API error:', response.status, errorText);
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(wildberriesAuthErrorMessage(response.status, errorText));
+      }
       return [];
     }
 
@@ -2845,6 +2967,9 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
       if (!response.ok) {
         const errorText = await response.text();
         logger.warn(`[WB Orders] /api/v3/orders error ${response.status}: ${errorText.substring(0, 200)}`);
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(wildberriesAuthErrorMessage(response.status, errorText));
+        }
         break;
       }
 
@@ -3115,7 +3240,8 @@ async function fetchYandexOrderDetailRaw(config, orderIdRaw) {
   }
 
   const agent = getYandexHttpsAgent();
-  const { campaignIds } = await getYandexBusinessAndCampaigns(config);
+  // getOrder по id: пробуем все кампании ключа (узкий campaign_id из настроек иначе даёт ложный 404).
+  const { campaignIds } = await getYandexBusinessAndCampaigns(config, { skipCampaignNarrowing: true });
   const fromConfig = config?.campaign_id ?? config?.campaignId;
   const idsToTry = [];
   if (fromConfig != null && String(fromConfig).trim() !== '') {

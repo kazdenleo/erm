@@ -17,6 +17,86 @@ export function canReachPrintHelper(printHelperUrl = '') {
 }
 
 /**
+ * HTTP-сайт (не secure context) не может fetch на 127.0.0.1 (Private Network Access).
+ * Top-level/iframe-навигация на Print Helper всё ещё доходит — helper сам качает этикетку.
+ * @returns {{ ok: boolean, mode: 'navigate' }}
+ */
+export function printViaPrintHelperNavigation(opts = {}) {
+  const base = normalizePrintHelperBase(opts.printHelperUrl) || 'http://127.0.0.1:9100';
+  if (typeof document === 'undefined') return { ok: false, mode: 'navigate', message: 'Нет document' };
+
+  const orderIdRaw = opts.orderId != null ? String(opts.orderId) : `label-${Date.now()}`;
+  const orderId =
+    orderIdRaw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/_+/g, '_').slice(0, 80) ||
+    `label-${Date.now()}`;
+  const printer =
+    opts.printer != null ? String(opts.printer).trim() : getLabelPrinter(opts.kind);
+  const labelSize =
+    opts.labelSize != null && String(opts.labelSize).trim() !== ''
+      ? String(opts.labelSize).trim()
+      : getStoredLabelSize();
+
+  if (!opts.labelUrl) return { ok: false, mode: 'navigate', message: 'Нет URL этикетки' };
+
+  const qs = new URLSearchParams();
+  qs.set('orderId', orderId);
+  qs.set('labelUrl', String(opts.labelUrl));
+  if (labelSize) qs.set('labelSize', labelSize);
+  if (printer) qs.set('printer', printer);
+
+  const href = `${base}/print?${qs.toString()}`;
+  // Top-level навигация на 127.0.0.1 обычно проходит при HTTP-сайте; iframe/fetch — нет (PNA).
+  try {
+    const w = window.open(href, 'erm-print-helper', 'noopener,noreferrer,width=320,height=200');
+    if (w) {
+      setTimeout(() => {
+        try {
+          w.close();
+        } catch {
+          /* ignore */
+        }
+      }, 8000);
+      return { ok: true, mode: 'navigate' };
+    }
+  } catch {
+    /* ignore — пробуем iframe */
+  }
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.title = 'ERM Print Helper';
+    iframe.style.cssText =
+      'position:fixed;width:0;height:0;border:0;left:0;top:0;clip:rect(0,0,0,0);visibility:hidden';
+    iframe.src = href;
+    document.body.appendChild(iframe);
+    setTimeout(() => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    }, 120000);
+    return { ok: true, mode: 'navigate' };
+  } catch (e) {
+    return { ok: false, mode: 'navigate', message: e?.message || 'Не удалось вызвать Print Helper' };
+  }
+}
+
+/** Токен в query — чтобы Print Helper скачал /orders/.../label без Bearer. */
+export function appendAccessTokenToUrl(url, token) {
+  const t = token != null ? String(token).trim() : '';
+  if (!t || !url) return String(url || '');
+  try {
+    const u = new URL(String(url), typeof window !== 'undefined' ? window.location.origin : undefined);
+    u.searchParams.set('access_token', t);
+    return u.toString();
+  } catch {
+    const sep = String(url).includes('?') ? '&' : '?';
+    return `${url}${sep}access_token=${encodeURIComponent(t)}`;
+  }
+}
+
+/**
  * @returns {Promise<{ printers: string[], message?: string }>}
  */
 export async function fetchPrintHelperPrinters(printHelperUrl = '') {

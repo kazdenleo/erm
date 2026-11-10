@@ -29,15 +29,41 @@ patch_file() {
   tmp="$(mktemp)"
 
   if grep -q "$MARKER" "$f" 2>/dev/null; then
-    # Уже помечено — обновить значения timeout до текущего TIMEOUT
-    sed -E \
-      -e "s/(proxy_read_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
-      -e "s/(proxy_connect_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
-      -e "s/(proxy_send_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
-      "$f" > "$tmp"
+    # Уже помечено — оставить один набор timeout после маркера, убрать дубли.
+    awk -v marker="$MARKER" -v t="$TIMEOUT" '
+      BEGIN { in_api=0; after_marker=0; seen_read=0; seen_connect=0; seen_send=0 }
+      /location[[:space:]]+\/api/ { in_api=1; after_marker=0; seen_read=0; seen_connect=0; seen_send=0 }
+      in_api && index($0, marker) {
+        print
+        after_marker=1
+        next
+      }
+      in_api && after_marker && $0 ~ /proxy_read_timeout/ {
+        if (!seen_read) { print "        proxy_read_timeout " t ";"; seen_read=1 }
+        next
+      }
+      in_api && after_marker && $0 ~ /proxy_connect_timeout/ {
+        if (!seen_connect) { print "        proxy_connect_timeout " t ";"; seen_connect=1 }
+        next
+      }
+      in_api && after_marker && $0 ~ /proxy_send_timeout/ {
+        if (!seen_send) { print "        proxy_send_timeout " t ";"; seen_send=1 }
+        next
+      }
+      in_api && !after_marker && $0 ~ /proxy_(read|connect|send)_timeout/ { next }
+      in_api && /^[[:space:]]*}[[:space:]]*$/ {
+        if (after_marker) {
+          if (!seen_read) print "        proxy_read_timeout " t ";"
+          if (!seen_connect) print "        proxy_connect_timeout " t ";"
+          if (!seen_send) print "        proxy_send_timeout " t ";"
+        }
+        in_api=0; after_marker=0
+      }
+      { print }
+    ' "$f" > "$tmp"
     if ! cmp -s "$f" "$tmp"; then
       cp "$tmp" "$f"
-      echo "updated timeouts to ${TIMEOUT}: $f"
+      echo "normalized timeouts to ${TIMEOUT}: $f"
     else
       echo "already at ${TIMEOUT}: $f"
     fi

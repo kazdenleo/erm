@@ -4,12 +4,15 @@
 
 import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { FBO_SUPPLY_STATUSES, getNextFboSupplyStatus } from '../constants/fboSupplyStatuses.js';
+import {
+  FBO_SUPPLY_STATUSES,
+  getNextFboSupplyStatus,
+  normalizeFboSupplyStatus,
+} from '../constants/fboSupplyStatuses.js';
 import stockMovementsService from './stockMovements.service.js';
 import fboSupplyReserveService from './fboSupplyReserve.service.js';
 import { resolveDefaultFboDeductionWarehouseId } from '../utils/fboProfileDefaults.js';
 import {
-  assertCanSetPackedStatus,
   assertCanSetReadyForSupply,
   evaluateSupplyPacking,
   syncSupplyStatusForPacking,
@@ -104,8 +107,10 @@ function mapSupplyRow(row) {
     organizationId: row.organization_id,
     organizationName: row.organization_name ?? null,
     createdByUserId: row.created_by_user_id,
-    status: row.status,
+    status: normalizeFboSupplyStatus(row.status),
     marketplace: row.marketplace,
+    lastCollectAt: row.last_collect_at ?? null,
+    lastPackAt: row.last_pack_at ?? null,
     name: row.name,
     readyAt: row.ready_at,
     marketplaceWarehouseName: row.marketplace_warehouse_name,
@@ -182,6 +187,10 @@ function mapItemRow(row) {
     productName: row.product_name ?? null,
     productImage: row.product_image ?? null,
     productCategoryId: row.product_category_id ?? null,
+    productCategoryName:
+      row.product_category_name != null && String(row.product_category_name).trim() !== ''
+        ? String(row.product_category_name).trim()
+        : null,
     placementZone: row.placement_zone != null ? String(row.placement_zone).trim() : null,
     ozonTags: parseOzonTagsJson(row.ozon_tags),
   };
@@ -550,6 +559,7 @@ class FboSuppliesService {
     }
     const itemsR = await query(
       `SELECT i.*, p.name AS product_name, p.user_category_id AS product_category_id,
+              (SELECT uc.name FROM user_categories uc WHERE uc.id = p.user_category_id) AS product_category_name,
               (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
        FROM fbo_supply_items i
        LEFT JOIN products p ON p.id = i.product_id
@@ -790,17 +800,24 @@ class FboSuppliesService {
     if (payload.organizationId !== undefined) setField('organization_id', payload.organizationId);
     if (payload.deductStock !== undefined) setField('deduct_stock', !!payload.deductStock);
     if (payload.note !== undefined) setField('note', payload.note);
-    if (payload.status !== undefined && FBO_SUPPLY_STATUSES.includes(payload.status)) {
-      if (payload.status === 'packed' || payload.status === 'ready_for_supply') {
-        const packingEval = await evaluateSupplyPacking(id);
-        if (payload.status === 'packed') assertCanSetPackedStatus(packingEval);
-        else assertCanSetReadyForSupply(packingEval);
+    if (payload.status !== undefined) {
+      const nextStatus = normalizeFboSupplyStatus(payload.status);
+      if (!FBO_SUPPLY_STATUSES.includes(nextStatus)) {
+        /* ignore unknown */
+      } else {
+        if (nextStatus === 'ready_for_supply') {
+          const packingEval = await evaluateSupplyPacking(id);
+          assertCanSetReadyForSupply(packingEval);
+        }
+        setField('status', nextStatus);
       }
-      setField('status', payload.status);
     }
     if (!fields.length) return existing;
 
-    const newStatus = payload.status !== undefined ? payload.status : existing.status;
+    const newStatus =
+      payload.status !== undefined
+        ? normalizeFboSupplyStatus(payload.status)
+        : normalizeFboSupplyStatus(existing.status);
     const willDeduct =
       prevStatus !== 'shipped' &&
       newStatus === 'shipped' &&
@@ -951,10 +968,9 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
-    if (next === 'packed' || next === 'ready_for_supply') {
+    if (next === 'ready_for_supply') {
       const packingEval = await evaluateSupplyPacking(id);
-      if (next === 'packed') assertCanSetPackedStatus(packingEval);
-      else assertCanSetReadyForSupply(packingEval);
+      assertCanSetReadyForSupply(packingEval);
     }
     return this.update(id, { status: next }, {
       profileId,

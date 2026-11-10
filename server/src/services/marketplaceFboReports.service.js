@@ -1768,8 +1768,18 @@ class MarketplaceFboReportsService {
             END,
             s_same.canonical_key,
             pts.canonical_key,
-            bts.canonical_key,
-            sts.canonical_key
+            sts.canonical_key,
+            /* Свой order_id/posting: не перекидывать логистику на чужую продажу по barcode. */
+            CASE
+              WHEN f.marketplace IN ('wb', 'wildberries') AND f.order_key IS NOT NULL
+              THEN f.order_key
+            END,
+            /* Barcode — только если у строки вообще нет своего заказа/отправления. */
+            CASE
+              WHEN NULLIF(TRIM(f.order_id), '') IS NULL
+               AND NULLIF(TRIM(f.posting_number), '') IS NULL
+              THEN bts.canonical_key
+            END
           ) AS canonical_key
         FROM filtered f
         LEFT JOIN sales s_same
@@ -1779,16 +1789,18 @@ class MarketplaceFboReportsService {
           ON pts.marketplace = f.marketplace
          AND NULLIF(TRIM(f.posting_number), '') IS NOT NULL
          AND pts.posting_number = TRIM(f.posting_number)
-        LEFT JOIN barcode_to_sale bts
-          ON bts.marketplace = f.marketplace
-         AND f.marketplace IN ('wb', 'wildberries')
-         AND NULLIF(TRIM(f.barcode), '') IS NOT NULL
-         AND bts.barcode = f.barcode
         LEFT JOIN shk_to_sale sts
           ON sts.marketplace = f.marketplace
          AND f.marketplace IN ('wb', 'wildberries')
          AND NULLIF(TRIM(COALESCE(f.raw_json->>'shk_id', '')), '') IS NOT NULL
          AND sts.shk_id = TRIM(COALESCE(f.raw_json->>'shk_id', ''))
+        LEFT JOIN barcode_to_sale bts
+          ON bts.marketplace = f.marketplace
+         AND f.marketplace IN ('wb', 'wildberries')
+         AND NULLIF(TRIM(f.barcode), '') IS NOT NULL
+         AND NULLIF(TRIM(f.order_id), '') IS NULL
+         AND NULLIF(TRIM(f.posting_number), '') IS NULL
+         AND bts.barcode = f.barcode
       ),
       identity AS (
         SELECT DISTINCT ON (marketplace, canonical_key)
@@ -1919,6 +1931,8 @@ class MarketplaceFboReportsService {
               SELECT 1 FROM sales s
               WHERE s.marketplace = m.marketplace AND s.canonical_key = m.canonical_key
             )
+            /* Логистика/удержания без продажи в периоде — своей строкой заказа, не на чужой sale. */
+            OR m.order_key = m.canonical_key
           )
         GROUP BY m.marketplace, m.canonical_key
       )

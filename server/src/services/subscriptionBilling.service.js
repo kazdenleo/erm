@@ -542,4 +542,103 @@ export async function handleYookassaNotification(body) {
   return { ok: true, ignored: true, event };
 }
 
+function profileOpsRow(p) {
+  const sub = resolveSubscription(p);
+  return {
+    id: p.id,
+    name: p.name || `Аккаунт #${p.id}`,
+    contactEmail: p.contact_email || p.contactEmail || null,
+    contactPhone: p.contact_phone || p.contactPhone || null,
+    subscriptionStatus: sub.status,
+    planCode: sub.effectivePlanCode || sub.planCode,
+    planName: sub.plan?.name || null,
+    trialEndsAt: sub.trialEndsAt,
+    subscriptionEndsAt: sub.subscriptionEndsAt,
+    writeAllowed: sub.writeAllowed,
+  };
+}
+
+/**
+ * Сводка для админки: истекающие trial, past_due, SMTP / LEGAL / ЮKassa.
+ */
+export async function getAdminOpsSummary({ trialDays = 3, activeDays = 7 } = {}) {
+  const profilesRepo = repositoryFactory.getProfilesRepository();
+  const profiles = (await profilesRepo.findAll()) || [];
+  const now = Date.now();
+  const trialUntil = now + Math.max(1, Number(trialDays) || 3) * 86400000;
+  const activeUntil = now + Math.max(1, Number(activeDays) || 7) * 86400000;
+
+  const trialEnding = [];
+  const activeEnding = [];
+  const pastDue = [];
+  const suspended = [];
+  let trialCount = 0;
+  let activeCount = 0;
+
+  for (const p of profiles) {
+    const sub = resolveSubscription(p);
+    const row = profileOpsRow(p);
+    if (sub.status === 'trial') {
+      trialCount += 1;
+      const t = sub.trialEndsAt ? new Date(sub.trialEndsAt).getTime() : NaN;
+      if (Number.isFinite(t) && t >= now && t <= trialUntil) trialEnding.push(row);
+    } else if (sub.status === 'active') {
+      activeCount += 1;
+      const t = sub.subscriptionEndsAt ? new Date(sub.subscriptionEndsAt).getTime() : NaN;
+      if (Number.isFinite(t) && t >= now && t <= activeUntil) activeEnding.push(row);
+    } else if (sub.status === 'past_due') {
+      pastDue.push(row);
+    } else if (sub.status === 'suspended') {
+      suspended.push(row);
+    }
+  }
+
+  const sortByEnd = (a, b) => {
+    const ta = new Date(a.trialEndsAt || a.subscriptionEndsAt || 0).getTime();
+    const tb = new Date(b.trialEndsAt || b.subscriptionEndsAt || 0).getTime();
+    return ta - tb;
+  };
+  trialEnding.sort(sortByEnd);
+  activeEnding.sort(sortByEnd);
+
+  const party = getLegalParty();
+  const legalPlaceholder =
+    !process.env.LEGAL_COMPANY ||
+    String(process.env.LEGAL_COMPANY).includes('Название') ||
+    !process.env.LEGAL_INN ||
+    String(process.env.LEGAL_INN).includes('______') ||
+    !process.env.LEGAL_EMAIL ||
+    String(process.env.LEGAL_EMAIL).includes('example.com');
+
+  const pendingRequests = await requestsRepo.listAll({ status: 'pending', limit: 50 });
+
+  return {
+    counts: {
+      profiles: profiles.length,
+      trial: trialCount,
+      active: activeCount,
+      pastDue: pastDue.length,
+      suspended: suspended.length,
+      pendingRequests: pendingRequests.length,
+    },
+    trialEnding,
+    activeEnding,
+    pastDue: pastDue.slice(0, 50),
+    suspended: suspended.slice(0, 30),
+    checks: {
+      smtpEnabled: !!config.mail?.enabled,
+      smtpHost: config.mail?.host || null,
+      mailFrom: config.mail?.from || null,
+      yookassaConfigured: isYookassaConfigured(),
+      legalConfigured: !legalPlaceholder,
+      legalEmail: party.email,
+      legalCompany: party.company,
+      secretsEncryptionKey: !!(
+        process.env.SECRETS_ENCRYPTION_KEY &&
+        String(process.env.SECRETS_ENCRYPTION_KEY).trim().length >= 16
+      ),
+    },
+  };
+}
+
 export { isYookassaConfigured };

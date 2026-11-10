@@ -17,7 +17,11 @@ import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
-import { printViaPrintHelper } from '../../utils/printHelperClient.js';
+import {
+  appendAccessTokenToUrl,
+  printViaPrintHelper,
+  printViaPrintHelperNavigation,
+} from '../../utils/printHelperClient.js';
 import {
   isAssemblyLikeStatus,
   orderHasAssemblySticker,
@@ -775,11 +779,12 @@ export function Assembly() {
       }
     })();
 
-    // В HTTP-контексте браузер запрещает запросы к loopback (127.0.0.1) из-за Private Network Access.
-    // Тогда не пытаемся дергать Print Helper — используем страницу /label/print.
-    const canUseLocalHelper = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
-    const base = canUseLocalHelper ? (printHelperUrl || '').trim().replace(/\/$/, '') : '';
-    const willUseHelper = Boolean(base);
+    const secureContext = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
+    const base = (printHelperUrl || PRINT_HELPER_URL_DEFAULT || '').trim().replace(/\/$/, '');
+    // HTTPS: fetch на 127.0.0.1. HTTP (IP): fetch режет Private Network Access — зовём helper навигацией.
+    const willUseHelperFetch = Boolean(base) && secureContext;
+    const willUseHelperNavigate = Boolean(base) && !secureContext;
+    const willUseHelper = willUseHelperFetch || willUseHelperNavigate;
     if (!willUseHelper) {
       try {
         printWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
@@ -788,8 +793,11 @@ export function Assembly() {
       }
     }
 
-    // Print Helper сам качает PDF с сервера — в браузер blob не тянем (skipBrowserWarm / labelAlreadyCached).
-    const canSkipBrowserWarm = labelAlreadyCached || (skipBrowserWarm && willUseHelper);
+    let warmedBlob = null;
+    // Print Helper сам качает PDF с сервера — в браузер blob не тянем (skipBrowserWarm / labelAlreadyCached),
+    // кроме HTTPS: тогда POST blob надёжнее, чем GET labelUrl без Authorization.
+    const canSkipBrowserWarm =
+      labelAlreadyCached || (skipBrowserWarm && willUseHelperNavigate);
     if (!canSkipBrowserWarm) {
       try {
         let status = 0;
@@ -799,13 +807,14 @@ export function Assembly() {
         const warmT = setTimeout(() => warmAc.abort(), PRINT_HELPER_FETCH_MS);
         try {
           try {
-            await api.get(labelFilePath, {
+            const warmRes = await api.get(labelFilePath, {
               responseType: 'blob',
               timeout: PRINT_HELPER_FETCH_MS,
               headers: { Accept: '*/*' },
               signal: warmAc.signal
             });
             status = 200;
+            warmedBlob = warmRes?.data instanceof Blob ? warmRes.data : null;
           } catch (e) {
             status = e?.response?.status || 0;
             const data = e?.response?.data;
@@ -827,7 +836,7 @@ export function Assembly() {
           }
 
           if (status !== 200) {
-            const base =
+            const baseMsg =
               status === 409
                 ? 'Этикетка ещё не готова или недоступна для этого заказа.'
                 : status === 429
@@ -838,7 +847,7 @@ export function Assembly() {
                       ? `Не удалось получить этикетку (HTTP ${status}).`
                       : 'Не удалось получить этикетку (сеть/таймаут).';
             const detail = msg ? ` ${String(msg).trim()}` : '';
-            setLabelPrintError(`${base}${detail}`);
+            setLabelPrintError(`${baseMsg}${detail}`);
             setTimeout(() => setLabelPrintError(null), 12000);
             try {
               if (printWindow && !printWindow.closed) printWindow.close();
@@ -865,8 +874,6 @@ export function Assembly() {
     }
 
     if (!willUseHelper) {
-      // Если вкладка открылась — навигируем её на страницу печати.
-      // Иначе используем скрытый iframe fallback.
       try {
         if (printWindow && !printWindow.closed) {
           printWindow.location.href = labelPrintPageUrl;
@@ -893,14 +900,52 @@ export function Assembly() {
 
     setLabelPrintError(null);
     const labelSize = getStoredLabelSize();
-    const printed = await printViaPrintHelper({
-      printHelperUrl: base,
-      kind: 'order',
-      labelUrl: labelFileUrlAbs,
-      orderId: id,
-      labelSize,
-      timeoutMs: PRINT_HELPER_FETCH_MS,
-    });
+    let accessToken = '';
+    try {
+      accessToken = localStorage.getItem('token') || '';
+    } catch {
+      accessToken = '';
+    }
+    const labelUrlForHelper = appendAccessTokenToUrl(labelFileUrlAbs, accessToken);
+
+    if (willUseHelperNavigate) {
+      const nav = printViaPrintHelperNavigation({
+        printHelperUrl: base,
+        kind: 'order',
+        labelUrl: labelUrlForHelper,
+        orderId: id,
+        labelSize,
+      });
+      if (nav.ok) return;
+      setLabelPrintError(
+        `${nav.message || 'Print Helper недоступен'}. Сайт открыт по HTTP — для тихой печати нужен запущенный erm-print-helper. Открыт диалог браузера.`
+      );
+      setTimeout(() => setLabelPrintError(null), 12000);
+      openLabelPrintFallbackPage(labelPrintPageUrl);
+      return;
+    }
+
+    let printed = { ok: false, message: '' };
+    if (warmedBlob && warmedBlob.size > 0) {
+      printed = await printViaPrintHelper({
+        printHelperUrl: base,
+        kind: 'order',
+        pdfBuffer: warmedBlob,
+        orderId: id,
+        labelSize,
+        timeoutMs: PRINT_HELPER_FETCH_MS,
+      });
+    }
+    if (!printed.ok) {
+      printed = await printViaPrintHelper({
+        printHelperUrl: base,
+        kind: 'order',
+        labelUrl: labelUrlForHelper,
+        orderId: id,
+        labelSize,
+        timeoutMs: PRINT_HELPER_FETCH_MS,
+      });
+    }
     if (printed.ok) return;
     const msg = printed.message || 'Принтер не ответил';
     if (String(msg).includes('Этикетка') || String(msg).includes('загружена')) {
@@ -910,6 +955,9 @@ export function Assembly() {
       setLabelPrintError(
         'Таймаут печати: этикетка с маркетплейса долго формируется. Запущена печать со страницы этикетки.'
       );
+      setTimeout(() => setLabelPrintError(null), 10000);
+    } else {
+      setLabelPrintError(`${msg}. Запущена печать со страницы этикетки.`);
       setTimeout(() => setLabelPrintError(null), 10000);
     }
     openLabelPrintFallbackPage(labelPrintPageUrl);

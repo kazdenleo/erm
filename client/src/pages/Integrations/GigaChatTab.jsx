@@ -120,7 +120,9 @@ export function GigaChatTab({ onConfigChange }) {
           <a href="https://developers.sber.ru/studio/" target="_blank" rel="noopener noreferrer">
             GigaChat Developers Studio
           </a>
-          , скопируйте Authorization key. Для пробы подойдёт Freemium (физлицо, scope PERS) и модель Max.
+          → Настройки API → «Получить ключ», вставьте именно Authorization key (не отдельно Client
+          Secret). Scope должен совпадать с типом проекта: PERS — физлицо/Freemium, B2B/CORP —
+          ИП и юрлица. При ошибке 401 перевыпустите ключ и нажмите «Проверить подключение».
           Ключ хранится на сервере и в браузер больше не отдаётся.
         </p>
 

@@ -172,11 +172,20 @@ api.interceptors.response.use(
       }
     }
 
-    // Обработка ошибок
+    // 401 от прокси МП (битый/просроченный ключ WB/Ozon/YM) ≠ конец сессии ERM.
+    // Иначе при привязке складов пользователя выкидывает на /login.
     if (status === 401) {
-      localStorage.removeItem('token');
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login';
+      const url = String(error.config?.url || '');
+      const isMarketplaceProxy =
+        url.includes('/integrations/marketplaces/') ||
+        url.includes('/integrations/wb/') ||
+        url.includes('/integrations/ozon/') ||
+        url.includes('/integrations/yandex/');
+      if (!isMarketplaceProxy) {
+        localStorage.removeItem('token');
+        if (!window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
+        }
       }
     }
     // Не логировать в консоль ожидаемые 404 от поиска по штрихкоду (товар/заказ не найден)

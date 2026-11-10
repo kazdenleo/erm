@@ -1,0 +1,24 @@
+stock [{"product_id":"1270","warehouse_id":"4","qty":0},{"product_id":"1270","warehouse_id":"1","qty":0},{"product_id":"525","warehouse_id":"4","qty":0},{"product_id":"525","warehouse_id":"1","qty":0},{"product_id":"1270","warehouse_id":"5","qty":6},{"product_id":"525","warehouse_id":"5","qty":0},{"product_id":"1270","warehouse_id":"6","qty":6},{"product_id":"525","warehouse_id":"6","qty":28}]
+any pending lines []
+open pending []
+avail empty exclude {"525":{"onHand":13,"incoming":0},"1270":{"onHand":2,"incoming":0}}
+open sessions 8
+--- session {"id":"16","updated":"2026-09-21T16:00:55.981Z","supplies":[178,179,180,181,182,183]}
+avail {"525":{"onHand":25,"incoming":0},"1270":{"onHand":2,"incoming":0}}
+rows [{"sku":"SN-2170","need":13,"onHand":25,"incoming":0,"incomingTotal":0,"toPurchase":0}]
+--- session {"id":"15","updated":"2026-09-16T14:26:02.251Z","supplies":[174,175,176,177]}
+avail {"525":{"onHand":16,"incoming":0},"1270":{"onHand":6,"incoming":0}}
+rows [{"sku":"SM-5005","need":4,"onHand":6,"incoming":0,"incomingTotal":0,"toPurchase":0},{"sku":"SN-2170","need":3,"onHand":16,"incoming":0,"incomingTotal":0,"toPurchase":0}]
+--- session {"id":"14","updated":"2026-09-11T10:05:45.294Z","supplies":[156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173]}
+avail {"525":{"onHand":13,"incoming":0},"1270":{"onHand":2,"incoming":0}}
+rows [{"sku":"SM-5005","need":2,"onHand":2,"incoming":0,"incomingTotal":0,"toPurchase":0},{"sku":"SN-2170","need":15,"onHand":13,"incoming":0,"incomingTotal":0,"toPurchase":2}]
+--- session {"id":"12","updated":"2026-09-01T15:44:29.567Z","supplies":[144,145,146,147,148,149,150,151,152,153,154,155]}
+avail {"525":{"onHand":13,"incoming":0},"1270":{"onHand":2,"incoming":0}}
+rows [{"sku":"SM-5005","need":2,"onHand":2,"incoming":0,"incomingTotal":0,"toPurchase":0},{"sku":"SN-2170","need":12,"onHand":13,"incoming":0,"incomingTotal":0,"toPurchase":0}]
+--- session {"id":"11","updated":"2026-08-14T15:05:38.479Z","supplies":[128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143]}
+avail {"525":{"onHand":13,"incoming":0},"1270":{"onHand":2,"incoming":0}}
+rows [{"sku":"SN-2170","need":2,"onHand":13,"incoming":0,"incomingTotal":0,"toPurchase":0}]
+ERROR Error: Часть поставок не найдена или недоступна
+    at FboSuppliesPurchaseCalcService.calculate (file:///C:/Users/kazde/erm/server/src/services/fboSuppliesPurchaseCalc.service.js:556:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file:///C:/Users/kazde/erm/server/scripts/admin/_tmp_probe_session_incoming.mjs:70:18

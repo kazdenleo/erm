@@ -2023,7 +2023,11 @@ class ProductsRepositoryPG {
           if (p.quantity == null) p.quantity = 0;
           if (p.user_category_id) p.categoryId = p.user_category_id;
           if (p.brand_name) p.brand = p.brand_name;
-          p.supplierStockTotal = 0;
+          // supplierStockTotal выставляет products.controller из breakdown (склад+поставщики).
+          // Не обнуляем здесь — иначе при гонке/повторной нормализации теряется Mikado.
+          if (p.supplierStockTotal == null && p.supplier_stock_total == null) {
+            p.supplierStockTotal = 0;
+          }
         }
       }
 

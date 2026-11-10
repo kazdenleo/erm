@@ -1,11 +1,13 @@
 import express from 'express';
 import { requireAuth, requireProfileAdmin } from '../middleware/auth.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
+import { requirePlanFeature } from '../middleware/planFeatureAccess.js';
 import * as controller from '../controllers/ai.controller.js';
 
 const router = express.Router();
 
 router.use(requireAuth); // JWT; ключ GigaChat только на сервере
+router.use(requirePlanFeature('ai', { label: 'AI-помощник' }));
 
 router.get('/config', wrapAsync(controller.getConfig));
 router.put('/config', requireProfileAdmin, wrapAsync(controller.saveConfig));

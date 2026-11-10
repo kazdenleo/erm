@@ -10,6 +10,7 @@ import fboSuppliesImportService from '../services/fboSuppliesImport.service.js';
 import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
 import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
 import fboSuppliesCollectService from '../services/fboSuppliesCollect.service.js';
+import fboSuppliesExpressService from '../services/fboSuppliesExpress.service.js';
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
@@ -61,9 +62,17 @@ function setAttachmentXlsx(res, filename) {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
 }
 
-/** Статусы списка FBO: ?statuses=new,packed или повтор status=. */
+/** Статусы списка FBO: ?statuses=new,collecting,packing или повтор status=. */
 function parseFboListStatuses(query = {}) {
-  const allowed = new Set(FBO_SUPPLY_STATUSES);
+  // packed — устаревший алиас ready_for_supply; всегда принимаем актуальный набор,
+  // даже если константы на диске отстали от миграции статусов.
+  const allowed = new Set([
+    ...FBO_SUPPLY_STATUSES,
+    'collecting',
+    'packing',
+    'ready_for_supply',
+    'packed',
+  ]);
   const raw = [];
   const multi = query.statuses;
   if (Array.isArray(multi)) {
@@ -79,7 +88,8 @@ function parseFboListStatuses(query = {}) {
   }
   const out = [];
   for (const part of raw) {
-    const key = String(part || '').trim().toLowerCase();
+    let key = String(part || '').trim().toLowerCase();
+    if (key === 'packed') key = 'ready_for_supply';
     if (!key || !allowed.has(key) || out.includes(key)) continue;
     out.push(key);
   }
@@ -796,6 +806,49 @@ class FboSuppliesController {
     }
   }
 
+  /** Экспресс: ГМ → товар = приёмка(с «в пути») + сборка + упаковка. */
+  async expressScan(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const userId = req.user?.id ?? req.user?.userId ?? null;
+      const userName =
+        req.user?.fullName ||
+        req.user?.name ||
+        [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ').trim() ||
+        req.user?.email ||
+        null;
+      const { barcode, activeCargoUnitId, scanMode, allowOverage, allowReceive } = req.body || {};
+      const data = await fboSuppliesExpressService.scan(
+        id,
+        {
+          barcode,
+          activeCargoUnitId,
+          scanMode,
+          allowOverage: allowOverage === true,
+          allowReceive: allowReceive !== false,
+        },
+        { profileId, userId, userName }
+      );
+      logPackingScan(req, id, {
+        quantity: data?.action === 'express_packed' ? 1 : 0,
+        action: data?.action || 'express',
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        logPackingScan(req, req.params.id, { action: e.code || 'express_error', error: e.message });
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+          ...(e.details && typeof e.details === 'object' ? e.details : {}),
+        });
+      }
+      next(e);
+    }
+  }
+
   async getPacking(req, res, next) {
     try {
       const { id } = req.params;
@@ -1146,10 +1199,10 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const { barcode, activeCargoUnitId } = req.body || {};
+      const { barcode, activeCargoUnitId, revertCollect } = req.body || {};
       const data = await fboSuppliesPackingService.scanRemove(
         id,
-        { barcode, activeCargoUnitId },
+        { barcode, activeCargoUnitId, revertCollect: revertCollect === true },
         { profileId }
       );
       logPackingScan(req, id, { quantity: -1, action: 'remove' });

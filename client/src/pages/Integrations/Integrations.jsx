@@ -25,6 +25,86 @@ import './Integrations.css';
 const TOKEN_EXPIRES_HINT =
   'Если дату не указать — ключ считается бессрочным (уведомлений о сроке не будет). При указанной дате за 10 дней до окончания придёт уведомление. Для Wildberries срок можно подставить из JWT-токена автоматически.';
 
+/** Совпадает с server secretsCrypto MASK_PREFIX — после сохранения API отдаёт маску, не полный ключ. */
+const SECRET_MASK_PREFIX = '••••••••';
+
+function isMaskedSecret(value) {
+  const s = String(value ?? '');
+  return s.startsWith(SECRET_MASK_PREFIX) || s.startsWith('***MASKED***');
+}
+
+function maskedSecretTail(value) {
+  if (!isMaskedSecret(value)) return '';
+  const s = String(value);
+  if (s.startsWith(SECRET_MASK_PREFIX)) return s.slice(SECRET_MASK_PREFIX.length).slice(-8);
+  if (s.startsWith('***MASKED***')) return s.slice('***MASKED***'.length).slice(-8);
+  return '';
+}
+
+/**
+ * Поле секрета: после сохранения сервер возвращает маску (•••• + хвост) — это не обрезка ключа.
+ * По фокусу маска очищается, чтобы вставить новый токен; пустое при сохранении = оставить прежний.
+ */
+function SecretKeyInput({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder = 'Вставьте ключ целиком',
+  required = false,
+  hint = null,
+}) {
+  const masked = isMaskedSecret(value);
+  const [replacing, setReplacing] = useState(false);
+  const [hadStored, setHadStored] = useState(() => isMaskedSecret(value));
+  const showMask = masked && !replacing;
+  const tail = maskedSecretTail(value);
+
+  useEffect(() => {
+    setReplacing(false);
+    if (isMaskedSecret(value)) setHadStored(true);
+  }, [value]);
+
+  return (
+    <div className="field">
+      <label className="label" htmlFor={id}>
+        {label}
+      </label>
+      <input
+        id={id}
+        type={showMask ? 'text' : 'password'}
+        className="input"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => {
+          if (masked && !replacing) {
+            setReplacing(true);
+            onChange('');
+          }
+        }}
+        placeholder={
+          showMask
+            ? undefined
+            : hadStored && replacing
+              ? 'Вставьте новый ключ целиком или оставьте пустым, чтобы не менять'
+              : placeholder
+        }
+        required={required && !hadStored}
+        autoComplete="off"
+        spellCheck={false}
+        readOnly={showMask}
+        style={showMask ? { letterSpacing: '0.04em', cursor: 'text' } : undefined}
+      />
+      <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+        {showMask
+          ? `Ключ сохранён${tail ? ` (…${tail})` : ''}. В поле — маска, полный токен лежит в базе. Нажмите на поле и вставьте новый целиком, чтобы заменить.`
+          : hint ||
+            'После сохранения в поле останется короткая маска (••••) — так и должно быть. Полный ключ в интерфейс больше не возвращается.'}
+      </div>
+    </div>
+  );
+}
+
 /** Дата окончания из JWT payload.exp → YYYY-MM-DD (для токенов WB). */
 function extractJwtExpiryYmd(token) {
   try {
@@ -44,9 +124,13 @@ function extractJwtExpiryYmd(token) {
 }
 
 export function Integrations() {
-  const { selectedOrganizationId, setSelectedOrganizationId, profile } = useAuth();
+  const { selectedOrganizationId, setSelectedOrganizationId, profile, isAdmin } = useAuth();
   const [searchParams] = useSearchParams();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
+  const planAi =
+    isAdmin ||
+    (profile?.subscription?.writeAllowed !== false &&
+      profile?.subscription?.features?.ai === true);
   const [activeTab, setActiveTab] = useState('marketplaces');
   const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -64,7 +148,9 @@ export function Integrations() {
   const visibleTabs = INTEGRATION_TABS.filter(
     (tab) => !tab.requiresSupplierSync || supplierSyncEnabled
   );
-  const catalogItems = INTEGRATION_CATALOG[activeTab] || [];
+  const catalogItems = (INTEGRATION_CATALOG[activeTab] || []).filter(
+    (item) => item.id !== 'gigachat' || planAi
+  );
   const selectedIntegration = selectedIntegrationId
     ? findIntegration(activeTab, selectedIntegrationId)
     : null;
@@ -414,6 +500,13 @@ function MarketplacesTab({
         const { field_limits: _fieldLimits, ...credentialConfig } = formData || {};
         if (onSaveForm) await onSaveForm(type, credentialConfig);
         else await onSave(type, credentialConfig);
+        // Полный ключ в ответ API не возвращается — только маска. Иначе кажется, что токен «обрезался».
+        if (!credentialConfig?.api_key || !isMaskedSecret(credentialConfig.api_key)) {
+          // eslint-disable-next-line no-alert
+          alert(
+            'Сохранено. В поле ключа теперь короткая маска (••••…) — так и должно быть: полный токен хранится в базе и в интерфейс не показывается. Проверьте кнопкой «Проверить токен».'
+          );
+        }
 
         const blockAutoPromotions =
           type === 'ozon' &&
@@ -610,17 +703,14 @@ function MarketplacesTab({
               required
             />
           </div>
-          <div className="field">
-            <label className="label">API Key</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.api_key || ''}
-              onChange={(e) => handleChange('api_key', e.target.value)}
-              placeholder="Ваш API ключ"
-              required
-            />
-          </div>
+          <SecretKeyInput
+            id="ozon-api-key"
+            label="API Key"
+            value={formData.api_key || ''}
+            onChange={(v) => handleChange('api_key', v)}
+            placeholder="Ваш API ключ"
+            required
+          />
           <div className="field">
             <label className="label">Performance Client ID (реклама)</label>
             <input
@@ -634,16 +724,13 @@ function MarketplacesTab({
               Для автозагрузки ДРР в расчёт мин. цены. Отдельные ключи Performance API (не Seller API).
             </div>
           </div>
-          <div className="field">
-            <label className="label">Performance Client Secret (реклама)</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.performance_client_secret || ''}
-              onChange={(e) => handleChange('performance_client_secret', e.target.value)}
-              placeholder="Client Secret из рекламного кабинета"
-            />
-          </div>
+          <SecretKeyInput
+            id="ozon-performance-secret"
+            label="Performance Client Secret (реклама)"
+            value={formData.performance_client_secret || ''}
+            onChange={(v) => handleChange('performance_client_secret', v)}
+            placeholder="Client Secret из рекламного кабинета"
+          />
           <div className="field">
             <label className="label">ДРР по умолчанию, % (если нет статистики)</label>
             <input
@@ -879,30 +966,22 @@ function MarketplacesTab({
     if (type === 'wildberries') {
       return (
         <form onSubmit={handleSubmit} className="integration-form">
-          <div className="field">
-            <label className="label">API Key</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.api_key || ''}
-              onChange={(e) => handleChange('api_key', e.target.value)}
-              placeholder="Ваш API ключ"
-              required
-            />
-          </div>
-          <div className="field">
-            <label className="label">Advert API Key (реклама, опционально)</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.advert_api_key || ''}
-              onChange={(e) => handleChange('advert_api_key', e.target.value)}
-              placeholder="Токен с правом «Продвижение»"
-            />
-            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Если пусто — для рекламы используется основной API Key (нужна категория «Продвижение»).
-            </div>
-          </div>
+          <SecretKeyInput
+            id="wb-api-key"
+            label="API Key"
+            value={formData.api_key || ''}
+            onChange={(v) => handleChange('api_key', v)}
+            placeholder="Вставьте полный JWT-токен WB целиком"
+            required
+          />
+          <SecretKeyInput
+            id="wb-advert-api-key"
+            label="Advert API Key (реклама, опционально)"
+            value={formData.advert_api_key || ''}
+            onChange={(v) => handleChange('advert_api_key', v)}
+            placeholder="Токен с правом «Продвижение»"
+            hint="Если пусто — для рекламы используется основной API Key (нужна категория «Продвижение»). После сохранения тоже маскируется."
+          />
           <div className="field">
             <label className="label">ДРР по умолчанию, % (если нет статистики)</label>
             <input
@@ -1408,17 +1487,14 @@ function MarketplacesTab({
     if (type === 'yandex') {
       return (
         <form onSubmit={handleSubmit} className="integration-form">
-          <div className="field">
-            <label className="label">Yandex API Key</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.api_key || ''}
-              onChange={(e) => handleChange('api_key', e.target.value)}
-              placeholder="Ключ API от Яндекс.Маркета"
-              required
-            />
-          </div>
+          <SecretKeyInput
+            id="ym-api-key"
+            label="Yandex API Key"
+            value={formData.api_key || ''}
+            onChange={(v) => handleChange('api_key', v)}
+            placeholder="Ключ API от Яндекс.Маркета"
+            required
+          />
           <div className="field">
             <label className="label">Дата окончания токена (опционально)</label>
             <input
@@ -1474,19 +1550,14 @@ function MarketplacesTab({
               placeholder="Нужен для заказов. Настройки → API в ЛК Маркета"
             />
           </div>
-          <div className="field">
-            <label className="label">Ads Token (реклама, опционально)</label>
-            <input
-              type="password"
-              className="input"
-              value={formData.ads_token || ''}
-              onChange={(e) => handleChange('ads_token', e.target.value)}
-              placeholder="Отдельный токен рекламного кабинета"
-            />
-            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Если пусто — для попытки синка рекламы используется основной API Key.
-            </div>
-          </div>
+          <SecretKeyInput
+            id="ym-ads-token"
+            label="Ads Token (реклама, опционально)"
+            value={formData.ads_token || ''}
+            onChange={(v) => handleChange('ads_token', v)}
+            placeholder="Отдельный токен рекламного кабинета"
+            hint="Если пусто — для попытки синка рекламы используется основной API Key. После сохранения в поле останется короткая маска."
+          />
           <div className="field">
             <label className="label">Ads Campaign IDs (через запятую)</label>
             <input

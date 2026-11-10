@@ -21,6 +21,8 @@ export const questionsApi = {
   getOne: async (id, { refresh = true } = {}) => {
     const response = await api.get(`/questions/${encodeURIComponent(id)}`, {
       params: refresh ? {} : { refresh: '0' },
+      // refresh тянет МП; без лимита axios рвёт на 90s, nginx — раньше.
+      timeout: refresh ? 60000 : 30000,
     });
     const payload = response.data;
     return payload?.data ?? payload ?? null;
@@ -59,7 +61,8 @@ export const questionsApi = {
    * @returns {Promise<{ results: Array<{ marketplace, ok, imported, error }> }>}
    */
   sync: async (params = {}) => {
-    const response = await api.post('/questions/sync', {}, { params });
+    // Три МП подряд; nginx/axios иначе рвут на 60–90 с.
+    const response = await api.post('/questions/sync', {}, { params, timeout: 180000 });
     const payload = response.data;
     return payload?.data ?? payload;
   },
@@ -70,7 +73,8 @@ export const questionsApi = {
    * @param {string} text
    */
   answer: async (id, text) => {
-    const response = await api.post(`/questions/${encodeURIComponent(id)}/answer`, { text });
+    // Ozon ответ раньше мог ждать очередь Seller API >90s; на сервере теперь priority:high.
+    const response = await api.post(`/questions/${encodeURIComponent(id)}/answer`, { text }, { timeout: 90000 });
     const payload = response.data;
     return payload?.data ?? payload;
   },

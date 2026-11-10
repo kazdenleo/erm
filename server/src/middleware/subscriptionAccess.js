@@ -8,6 +8,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import {
   isSubscriptionBypassPath,
   resolveSubscription,
+  syncExpiredSubscriptionState,
 } from '../utils/profileSubscription.js';
 
 const cache = new Map();
@@ -52,7 +53,10 @@ export async function enforceSubscriptionAccess(req, res, next) {
     if (!profile) {
       const repo = repositoryFactory.getProfilesRepository();
       profile = repo ? await repo.findById(pid) : null;
-      if (profile) cacheSet(pid, profile);
+      if (profile) {
+        profile = await syncExpiredSubscriptionState(profile);
+        cacheSet(pid, profile);
+      }
     }
 
     const sub = resolveSubscription(profile);
@@ -83,7 +87,7 @@ export async function enforceSubscriptionAccess(req, res, next) {
       ok: false,
       code: 'SUBSCRIPTION_REQUIRED',
       message:
-        'Пробный период закончился. Выберите тариф — оплата пока вручную через поддержку; активацию сделает администратор.',
+        'Пробный период или подписка закончились. Выберите тариф на странице «Тарифы» (онлайн или заявка).',
       subscription: {
         status: sub.status,
         planCode: sub.planCode,

@@ -403,7 +403,25 @@ class ProductsController {
           supplierBreakdown = await supplierStocksService.getBreakdownByProductIds(productIds, {
             mainWarehouseId: options.warehouseId ?? null,
             profileId: tid != null && tid !== TENANT_LIST_EMPTY ? tid : null,
+            // Таблица остатков: показываем к закупке, не обнуляем после вечерней отсечки.
+            availabilityMode: 'purchasable',
           });
+          // Дублируем на каждый товар — иначе UI мог не подхватить meta.supplierBreakdown
+          // и «Доступно» считалось только по складу ERP.
+          const byPid = new Map();
+          for (const row of supplierBreakdown || []) {
+            const pid = String(row.product_id ?? row.productId ?? '');
+            if (!pid) continue;
+            if (!byPid.has(pid)) byPid.set(pid, []);
+            byPid.get(pid).push(row);
+          }
+          for (const p of data) {
+            const rows = byPid.get(String(p.id)) || [];
+            const total = rows.reduce((s, r) => s + (Number(r.stock) || 0), 0);
+            p.supplierStockTotal = total;
+            p.supplier_stock_total = total;
+            p.supplierBreakdown = rows;
+          }
         }
       }
       res.setHeader('X-Products-List-View', isStockList ? 'stock' : 'full');

@@ -105,14 +105,47 @@ export function Admin() {
 
   const [billingRequests, setBillingRequests] = useState([]);
   const [billingBusyId, setBillingBusyId] = useState(null);
+  const [billingStatusFilter, setBillingStatusFilter] = useState('pending');
+  const [opsSummary, setOpsSummary] = useState(null);
+  const [catalogPlans, setCatalogPlans] = useState([]);
+  const [catalogMeta, setCatalogMeta] = useState(null);
 
   const loadBillingRequests = useCallback(async () => {
     if (!isAdmin) return;
     try {
-      const res = await api.get('/billing/admin/requests', { params: { status: 'pending' } });
+      const res = await api.get('/billing/admin/requests', {
+        params: { status: billingStatusFilter || 'pending' },
+      });
       setBillingRequests(res.data?.data || []);
     } catch {
       setBillingRequests([]);
+    }
+  }, [isAdmin, billingStatusFilter]);
+
+  const loadOpsSummary = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await api.get('/billing/admin/ops-summary');
+      setOpsSummary(res.data?.data || null);
+    } catch {
+      setOpsSummary(null);
+    }
+  }, [isAdmin]);
+
+  const loadPlansCatalog = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await api.get('/billing/plans');
+      const data = res.data?.data || {};
+      setCatalogPlans(Array.isArray(data.plans) ? data.plans : []);
+      setCatalogMeta({
+        trialDays: data.trialDays,
+        onlinePaymentsEnabled: data.onlinePaymentsEnabled === true,
+        paymentNote: data.paymentNote || '',
+      });
+    } catch {
+      setCatalogPlans([]);
+      setCatalogMeta(null);
     }
   }, [isAdmin]);
 
@@ -123,13 +156,13 @@ export function Admin() {
     try {
       const pRes = await profilesApi.getAll();
       setProfiles(pRes?.data ?? []);
-      await loadBillingRequests();
+      await Promise.all([loadBillingRequests(), loadOpsSummary(), loadPlansCatalog()]);
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка загрузки');
     } finally {
       setLoading(false);
     }
-  }, [isAdmin, loadBillingRequests]);
+  }, [isAdmin, loadBillingRequests, loadOpsSummary, loadPlansCatalog]);
 
   const approveBillingRequest = async (id) => {
     if (!window.confirm('Активировать тариф по заявке? Срок подписки продлится на месяц или год.')) {
@@ -162,6 +195,10 @@ export function Admin() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    loadBillingRequests();
+  }, [loadBillingRequests]);
 
   useEffect(() => {
     if (!cabinetId) {
@@ -371,19 +408,232 @@ export function Admin() {
     return <div className="admin-error">Ошибка: {error}</div>;
   }
 
+  const checks = opsSummary?.checks;
+  const counts = opsSummary?.counts;
+
   return (
     <div className="admin-page card">
       <h1 className="title">Аккаунты</h1>
       <p className="subtitle">Все зарегистрированные аккаунты (профили клиентов)</p>
 
-      {billingRequests.length > 0 ? (
+      {opsSummary || catalogPlans.length > 0 ? (
         <div className="admin-section mb-4">
           <div className="admin-section-header">
-            <h2 className="h5 mb-0">Заявки на тариф ({billingRequests.length})</h2>
+            <h2 className="h5 mb-0">Подписки и инфраструктура</h2>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                loadOpsSummary();
+                loadPlansCatalog();
+              }}
+            >
+              Обновить
+            </Button>
+          </div>
+          {counts ? (
+            <p className="text-muted small mb-2">
+              Всего {counts.profiles}: trial {counts.trial}, active {counts.active}, past_due{' '}
+              {counts.pastDue}, suspended {counts.suspended}, заявок {counts.pendingRequests}
+            </p>
+          ) : null}
+          {checks ? (
+            <ul className="small mb-3" style={{ listStyle: 'none', paddingLeft: 0 }}>
+              <li>
+                SMTP:{' '}
+                {checks.smtpEnabled ? (
+                  <span className="text-success">ок ({checks.smtpHost || '—'} → {checks.mailFrom || '—'})</span>
+                ) : (
+                  <span className="text-danger">не настроен (SMTP_HOST / MAIL_FROM)</span>
+                )}
+              </li>
+              <li>
+                LEGAL_*:{' '}
+                {checks.legalConfigured ? (
+                  <span className="text-success">заполнено ({checks.legalCompany})</span>
+                ) : (
+                  <span className="text-warning">плейсхолдеры — проверьте LEGAL_COMPANY / INN / EMAIL</span>
+                )}
+              </li>
+              <li>
+                ЮKassa:{' '}
+                {checks.yookassaConfigured ? (
+                  <span className="text-success">включена</span>
+                ) : (
+                  <span className="text-muted">выкл. (ручные заявки)</span>
+                )}
+              </li>
+              <li>
+                SECRETS_ENCRYPTION_KEY:{' '}
+                {checks.secretsEncryptionKey ? (
+                  <span className="text-success">задан</span>
+                ) : (
+                  <span className="text-danger">нет</span>
+                )}
+              </li>
+            </ul>
+          ) : null}
+          {catalogPlans.length > 0 ? (
+            <div className="mb-3">
+              <h3 className="h6 mb-1">Каталог тарифов</h3>
+              <p className="text-muted small mb-2">
+                Клиенты видят и выбирают тариф на{' '}
+                <a href="/pricing" target="_blank" rel="noreferrer">
+                  /pricing
+                </a>
+                . Сменить план аккаунту вручную — «Открыть» или «Быстро» в списке ниже
+                {catalogMeta?.trialDays != null ? ` · trial ${catalogMeta.trialDays} дн.` : ''}.
+              </p>
+              <div className="table-responsive">
+                <table className="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Код</th>
+                      <th>Название</th>
+                      <th>Мес.</th>
+                      <th>Год</th>
+                      <th>Лимиты</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {catalogPlans.map((p) => (
+                      <tr key={p.code}>
+                        <td className="small">
+                          <code>{p.code}</code>
+                          {p.highlighted ? (
+                            <span className="badge bg-primary ms-1">хит</span>
+                          ) : null}
+                        </td>
+                        <td>
+                          <strong>{p.name}</strong>
+                          {p.blurb ? <div className="text-muted small">{p.blurb}</div> : null}
+                        </td>
+                        <td className="small text-nowrap">
+                          {p.priceMonthRub != null
+                            ? `${Number(p.priceMonthRub).toLocaleString('ru-RU')} ₽`
+                            : '—'}
+                        </td>
+                        <td className="small text-nowrap">
+                          {p.priceYearRub != null
+                            ? `${Number(p.priceYearRub).toLocaleString('ru-RU')} ₽`
+                            : '—'}
+                        </td>
+                        <td className="small text-muted">
+                          {[
+                            p.maxUsers != null ? `${p.maxUsers} польз.` : null,
+                            p.maxOrganizations != null ? `${p.maxOrganizations} орг.` : null,
+                            p.maxMpCabinets != null ? `${p.maxMpCabinets} каб.` : null,
+                            p.maxProducts != null ? `${p.maxProducts} тов.` : 'тов. без лимита',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+          {(opsSummary.trialEnding?.length > 0 ||
+            opsSummary.activeEnding?.length > 0 ||
+            opsSummary.pastDue?.length > 0) && (
+            <div className="table-responsive">
+              <table className="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th>Тип</th>
+                    <th>Аккаунт</th>
+                    <th>Тариф</th>
+                    <th>До</th>
+                    <th>Контакт</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(opsSummary.trialEnding || []).map((r) => (
+                    <tr key={`t-${r.id}`}>
+                      <td className="small text-nowrap">Trial →</td>
+                      <td>
+                        <strong>{r.name}</strong>
+                        <div className="text-muted small">#{r.id}</div>
+                      </td>
+                      <td className="small">{planCodeRu(r.planCode)}</td>
+                      <td className="small text-nowrap">{formatDt(r.trialEndsAt)}</td>
+                      <td className="small">
+                        {[r.contactEmail, r.contactPhone].filter(Boolean).join(' · ') || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                  {(opsSummary.activeEnding || []).map((r) => (
+                    <tr key={`a-${r.id}`}>
+                      <td className="small text-nowrap">Подписка →</td>
+                      <td>
+                        <strong>{r.name}</strong>
+                        <div className="text-muted small">#{r.id}</div>
+                      </td>
+                      <td className="small">{planCodeRu(r.planCode)}</td>
+                      <td className="small text-nowrap">{formatDt(r.subscriptionEndsAt)}</td>
+                      <td className="small">
+                        {[r.contactEmail, r.contactPhone].filter(Boolean).join(' · ') || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                  {(opsSummary.pastDue || []).map((r) => (
+                    <tr key={`p-${r.id}`}>
+                      <td className="small text-nowrap text-danger">past_due</td>
+                      <td>
+                        <strong>{r.name}</strong>
+                        <div className="text-muted small">#{r.id}</div>
+                      </td>
+                      <td className="small">{planCodeRu(r.planCode)}</td>
+                      <td className="small text-nowrap">
+                        {formatDt(r.trialEndsAt || r.subscriptionEndsAt)}
+                      </td>
+                      <td className="small">
+                        {[r.contactEmail, r.contactPhone].filter(Boolean).join(' · ') || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <div className="admin-section mb-4">
+        <div className="admin-section-header">
+          <h2 className="h5 mb-0">Заявки на тариф ({billingRequests.length})</h2>
+          <div className="d-flex align-items-center gap-2">
+            <select
+              className="form-select form-select-sm"
+              style={{ width: 'auto' }}
+              value={billingStatusFilter}
+              onChange={(e) => setBillingStatusFilter(e.target.value)}
+              aria-label="Фильтр заявок"
+            >
+              <option value="pending">Ожидают</option>
+              <option value="approved">Одобренные</option>
+              <option value="rejected">Отклонённые</option>
+              <option value="cancelled">Отменённые</option>
+              <option value="all">Все</option>
+            </select>
             <Button type="button" variant="secondary" onClick={loadBillingRequests}>
               Обновить
             </Button>
           </div>
+        </div>
+        <p className="text-muted small mb-2">
+          Заявки появляются, когда клиент на{' '}
+          <a href="/pricing" target="_blank" rel="noreferrer">
+            /pricing
+          </a>{' '}
+          оставляет заявку или инициирует оплату. Сейчас ожидающих:{' '}
+          {opsSummary?.counts?.pendingRequests ?? '—'}.
+        </p>
+        {billingRequests.length === 0 ? (
+          <p className="text-muted mb-0">Нет заявок в выбранном фильтре.</p>
+        ) : (
           <div className="table-responsive">
             <table className="table table-sm align-middle">
               <thead>
@@ -425,30 +675,36 @@ export function Admin() {
                       {planCodeRu(r.profilePlanCode)}
                     </td>
                     <td className="text-nowrap">
-                      <Button
-                        type="button"
-                        variant="primary"
-                        disabled={billingBusyId === r.id}
-                        onClick={() => approveBillingRequest(r.id)}
-                      >
-                        Активировать
-                      </Button>{' '}
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={billingBusyId === r.id}
-                        onClick={() => rejectBillingRequest(r.id)}
-                      >
-                        Отклонить
-                      </Button>
+                      {r.status === 'pending' ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            disabled={billingBusyId === r.id}
+                            onClick={() => approveBillingRequest(r.id)}
+                          >
+                            Активировать
+                          </Button>{' '}
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={billingBusyId === r.id}
+                            onClick={() => rejectBillingRequest(r.id)}
+                          >
+                            Отклонить
+                          </Button>
+                        </>
+                      ) : (
+                        <span className="text-muted small">{billingRequestStatusRu(r.status)}</span>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      ) : null}
+        )}
+      </div>
 
       <div className="admin-section">
         <div className="admin-section-header">

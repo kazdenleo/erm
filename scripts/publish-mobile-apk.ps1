@@ -9,7 +9,7 @@ param(
   [string]$Version = "1.0.0",
   [int]$VersionCode = 0,
   [switch]$Remote,
-  [string]$RemoteHost = "root@45.80.68.230",
+  [string]$RemoteHost = "root@137.22.146.136",
   [string]$RemoteDataDir = "/opt/erm/data/mobile-app"
 )
 

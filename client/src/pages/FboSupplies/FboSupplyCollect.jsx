@@ -13,6 +13,7 @@ import {
   canUsePrintHelper,
   openProductLabelPrintTab,
   buildProductLabelPrintPageUrl,
+  resolvePrintHelperUrl,
 } from '../../hooks/useProductLabelPrint.js';
 import { packedCellClass } from './fboPackedCell.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
@@ -77,6 +78,7 @@ export function FboSupplyCollect({
   marketplace = 'ozon',
   itemSearchQuery = '',
   onItemSearchQueryChange,
+  onSupplyStatusChange,
   printHelperUrl = '',
   deductionWarehouseId = null,
 }) {
@@ -242,8 +244,9 @@ export function FboSupplyCollect({
       const copies = Math.max(1, Math.min(99, Number(printInfo.copies) || 1));
       const mp = printInfo.marketplace || marketplace || undefined;
       const pageUrl = buildProductLabelPrintPageUrl(printInfo.productId, copies, mp);
+      const helperUrl = resolvePrintHelperUrl(printHelperUrl);
 
-      // Вкладка, открытая синхронно по жесту скана — обходим блокировку popup после await.
+      // Вкладка, открытая синхронно по жесту скана — только если Print Helper нет.
       if (printSlot && !printSlot.closed) {
         try {
           printSlot.location.href = pageUrl;
@@ -254,9 +257,18 @@ export function FboSupplyCollect({
         }
       }
 
-      if (canUsePrintHelper(printHelperUrl) && copies === 1) {
-        const ok = await printProductLabel(printInfo.productId, { copies, marketplace: mp });
+      if (canUsePrintHelper(helperUrl) && copies === 1) {
+        // Без fallback во вкладку: иначе после await браузер показывает «разрешите всплывающие окна».
+        const ok = await printProductLabel(printInfo.productId, {
+          copies,
+          marketplace: mp,
+          allowBrowserFallback: false,
+        });
         if (ok) return true;
+        setErr(
+          'Print Helper не ответил. Проверьте помощник печати или нажмите 🖨️ у строки.'
+        );
+        return false;
       }
 
       const opened = openProductLabelPrintTab(printInfo.productId, copies, mp);
@@ -323,8 +335,9 @@ export function FboSupplyCollect({
       setErr(null);
       setPrintHookError?.(null);
 
-      // Синхронно по событию скана (Enter) — иначе браузер режет window.open после await.
-      const useHelper = canUsePrintHelper(printHelperUrl);
+      // Синхронно по жесту скана открываем вкладку только без Print Helper.
+      // Если helper есть — не трогаем window.open (иначе то диалог печати, то баннер про popup).
+      const useHelper = canUsePrintHelper(resolvePrintHelperUrl(printHelperUrl));
       const printSlot = useHelper ? null : window.open('about:blank', '_blank');
 
       try {
@@ -332,6 +345,11 @@ export function FboSupplyCollect({
           barcode: code,
           allowOverage,
         });
+        if (data?.supplyStatus != null || data?.lastCollectAt != null) {
+          onSupplyStatusChange?.(data.supplyStatus, {
+            lastCollectAt: data.lastCollectAt ?? null,
+          });
+        }
         await applyScanResult(data, printSlot);
       } catch (e) {
         closePrintSlot(printSlot);
@@ -355,7 +373,7 @@ export function FboSupplyCollect({
         scanLockRef.current = false;
       }
     },
-    [supplyId, applyScanResult, printHelperUrl, setPrintHookError]
+    [supplyId, applyScanResult, printHelperUrl, setPrintHookError, onSupplyStatusChange]
   );
 
   const confirmOverage = async () => {

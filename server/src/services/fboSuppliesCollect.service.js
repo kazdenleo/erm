@@ -16,6 +16,10 @@ import {
   loadPackingDisplayAttributeId,
   loadProductAttributeDisplayMap,
 } from '../utils/productAttributeDisplay.js';
+import {
+  ensureFboSupplyStatusAtLeast,
+  touchFboSupplyCollectActivity,
+} from '../utils/fboSupplyPackingCheck.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -504,7 +508,8 @@ async function pickPreferredKitComponentMatch(matches) {
  * Sticky — на пользователя: пока у вас незакрытый комплект, нельзя перепрыгивать на другой товар.
  * Чужой sticky не блокирует.
  */
-async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
+/** Резолв скана → строка поставки (экспорт для экспресс-режима). */
+export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
   const sticky = await loadUserStickyItem(supplyId, { userId, userName });
 
   const codes = productLookupCodesFromScan(barcode);
@@ -1168,6 +1173,18 @@ class FboSuppliesCollectService {
 
     touchCollectPresence(supplyId, { userId, userName });
 
+    // Первый успешный скан → этап «Сборка» + метка активности «Собирается» (5 мин).
+    let supplyStatus = supply.status || 'new';
+    let lastCollectAt = null;
+    try {
+      await touchFboSupplyCollectActivity(supplyId);
+      lastCollectAt = new Date().toISOString();
+      const promoted = await ensureFboSupplyStatusAtLeast(supplyId, 'collecting');
+      if (promoted?.status) supplyStatus = promoted.status;
+    } catch {
+      /* ignore status promote errors */
+    }
+
     const state = await this.getCollectState(supplyId, { profileId, userId, userName });
     const item =
       state.items.find((it) => it.id === itemId) ||
@@ -1205,6 +1222,8 @@ class FboSuppliesCollectService {
             ? `Позиция собрана полностью (${item.collected} из ${item.planned})`
             : message,
       message,
+      supplyStatus,
+      lastCollectAt,
       print: shouldPrint
         ? {
             productId: printProductId,

@@ -9,10 +9,11 @@ import { Button } from '../../components/common/Button/Button';
 import { FboSupplyImportModal } from './FboSupplyImportModal';
 import {
   FBO_SUPPLY_STATUS_ORDER,
-  getFboSupplyStatusLabel,
+  getFboSupplyStatusFilterLabel,
   getMarketplaceLabel,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect';
+import { formatFboReserveHoverTitle } from './fboSupplyItemReserve.js';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboSupplyProgress } from './FboSupplyProgress.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
@@ -22,7 +23,12 @@ import '../../styles/erp-filter-bar.css';
 import './FboSupplies.css';
 
 const FBO_LIST_STATUS_FILTER_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
-const FBO_LIST_DEFAULT_STATUSES = ['new', 'packed'];
+const FBO_LIST_DEFAULT_STATUSES = [
+  'new',
+  'collecting',
+  'packing',
+  'ready_for_supply',
+];
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -55,6 +61,12 @@ export function FboSupplies() {
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState(() => new Set(FBO_LIST_DEFAULT_STATUSES));
   const [progressNorms, setProgressNorms] = useState(null);
+  /** Тик, чтобы «Собирается»/«Упаковывается» сходили через 5 мин без перезагрузки. */
+  const [, setActivityTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setActivityTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   const statusFilterList = useMemo(
     () => FBO_LIST_STATUS_FILTER_OPTIONS.filter((s) => statusFilter.has(s)),
@@ -263,7 +275,7 @@ export function FboSupplies() {
               onClick={() => toggleStatusFilter(status)}
               title={active && statusFilter.size <= 1 ? 'Должен быть выбран хотя бы один статус' : undefined}
             >
-              <span className="erp-filter-btn__label">{getFboSupplyStatusLabel(status)}</span>
+              <span className="erp-filter-btn__label">{getFboSupplyStatusFilterLabel(status)}</span>
             </button>
           );
         })}
@@ -362,8 +374,16 @@ export function FboSupplies() {
                           row.reservedFromIncomingTotal ?? row.reserved_from_incoming_total
                         ) || 0;
                       const reserveOn = row.deductStock !== false;
+                      const unreserved = reserveOn ? Math.max(0, qty - stock - path) : qty;
                       const covered =
                         reserveOn && !reserveLoading && qty > 0 && stock + path >= qty;
+                      const qtyHoverTitle = formatFboReserveHoverTitle({
+                        stock: reserveOn ? stock : 0,
+                        incoming: reserveOn ? path : 0,
+                        unreserved,
+                        planned: qty,
+                        reserveDisabled: !reserveOn,
+                      });
                       return (
                         <div className="fbo-supply-qty-with-reserve">
                           <span
@@ -374,9 +394,11 @@ export function FboSupplies() {
                               .filter(Boolean)
                               .join(' ')}
                             title={
-                              covered
-                                ? 'Все позиции покрыты наличием или закупками в пути'
-                                : undefined
+                              reserveLoading && reserveOn
+                                ? 'Считаем резерв…'
+                                : covered
+                                  ? `${qtyHoverTitle}\n\nВсе позиции покрыты наличием или закупками в пути`
+                                  : qtyHoverTitle
                             }
                           >
                             {row.itemCount ?? '—'}
@@ -388,9 +410,12 @@ export function FboSupplies() {
                           ) : (
                             <FboSupplyReserveBreakdown
                               inline
+                              showEmpty={qty > 0}
                               reserveDisabled={!reserveOn}
                               reservedFromStock={stock}
                               reservedFromIncoming={path}
+                              unreserved={unreserved}
+                              planned={qty}
                             />
                           )}
                         </div>
@@ -407,6 +432,8 @@ export function FboSupplies() {
                   <td onClick={(e) => e.stopPropagation()}>
                     <FboSupplyStatusSelect
                       status={row.status}
+                      lastCollectAt={row.lastCollectAt ?? row.last_collect_at}
+                      lastPackAt={row.lastPackAt ?? row.last_pack_at}
                       disabled={statusUpdatingId === row.id}
                       onChange={(next) => handleStatusChange(row, next)}
                     />

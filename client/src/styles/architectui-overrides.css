@@ -7,25 +7,43 @@
   --erm-header-height: 60px;
 }
 
-/* Text brand (Header + Sidebar) */
+/* Text brand (Header + Sidebar) — как на лендинге */
 .app-brand-text {
   display: inline-block;
+  font-family: var(--font-display, inherit);
   font-weight: 800;
   font-size: 18px;
-  letter-spacing: 0.5px;
-  color: #d92550; /* ArchitectUI "danger" red */
+  letter-spacing: -0.03em;
+  color: var(--brand, #1faa6e);
   white-space: nowrap;
   user-select: none;
+}
+
+/* Светлый фон приложения / хрома ArchitectUI */
+.app-container,
+.app-main,
+.app-main .app-main__outer,
+.app-main .app-main__inner {
+  background: var(--bg, #f3f7f5) !important;
+}
+
+.app-header {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-bottom: 1px solid var(--border, #d7e3dc) !important;
+  backdrop-filter: blur(12px);
+}
+
+.app-sidebar {
+  background: #fff !important;
+  border-right: 1px solid var(--border, #d7e3dc) !important;
+  /* Колонка: логотип сверху, меню — растягивается и скроллится */
+  flex-direction: column;
 }
 
 /*
   ArchitectUI рассчитывал на Perfect Scrollbar (.ps), у нас JS не подключён.
   Без overflow длинное развёрнутое меню обрезается родителем (overflow: hidden).
 */
-.app-sidebar {
-  flex-direction: column;
-}
-
 .app-sidebar .scrollbar-sidebar {
   flex: 1 1 auto;
   min-height: 0;
@@ -42,6 +60,12 @@
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+}
+
+.app-sidebar .app-sidebar__heading {
+  font-family: var(--font-display, inherit);
+  letter-spacing: -0.02em;
+  color: var(--muted, #5a6f64) !important;
 }
 
 /* Prevent modals from covering the fixed left sidebar */
@@ -529,8 +553,8 @@
   font-weight: 700;
   text-align: center;
   border-radius: 999px;
-  background: #d92550;
-  color: #fff;
+  background: var(--accent, #3dcf8e);
+  color: #062015;
   box-shadow: 0 2px 6px rgba(217, 37, 80, 0.25);
 }
 

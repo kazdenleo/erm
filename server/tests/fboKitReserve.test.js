@@ -43,8 +43,8 @@ test('resolveComplementaryKitReserveUnits for FBO line without double count', ()
   assert.equal(resolveComplementaryKitReserveUnits(2, 3, 10), 5);
 });
 
-test('fboReserveStatusRank: packed before new in reserve queue', () => {
-  assert.ok(fboReserveStatusRank('packed') < fboReserveStatusRank('new'));
+test('fboReserveStatusRank: ready before collecting/new in reserve queue', () => {
   assert.ok(fboReserveStatusRank('ready_for_supply') < fboReserveStatusRank('new'));
-  assert.ok(fboReserveStatusRank('packed') < fboReserveStatusRank('ready_for_supply'));
+  assert.ok(fboReserveStatusRank('packing') < fboReserveStatusRank('collecting'));
+  assert.ok(fboReserveStatusRank('collecting') < fboReserveStatusRank('new'));
 });

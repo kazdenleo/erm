@@ -1,10 +1,11 @@
 /**
- * GigaChat: показывать ИИ-чат / опции только если ключ сохранён и включён.
- * Карточка в «Интеграциях» всегда видна — там подключение.
+ * GigaChat: показывать ИИ-чат / опции только если тариф включает AI,
+ * ключ сохранён и включён.
  */
 
 import { useEffect, useState } from 'react';
 import { aiApi } from '../services/ai.api';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const CHANGED_EVENT = 'ai-gigachat-config-changed';
 
@@ -14,7 +15,18 @@ export function invalidateAiEnabled() {
   }
 }
 
+function planAllowsAi(user, profile) {
+  if (user?.role === 'admin') return true;
+  const sub = profile?.subscription;
+  if (sub && sub.writeAllowed === false) return false;
+  const f = sub?.features;
+  if (f == null || typeof f !== 'object') return true;
+  return f.ai === true;
+}
+
 export function useAiEnabled() {
+  const { user, profile } = useAuth();
+  const planOk = planAllowsAi(user, profile);
   const [enabled, setEnabled] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -27,6 +39,12 @@ export function useAiEnabled() {
   }, []);
 
   useEffect(() => {
+    if (!planOk) {
+      setConfigured(false);
+      setEnabled(false);
+      setLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     setLoading(true);
     aiApi
@@ -49,7 +67,7 @@ export function useAiEnabled() {
     return () => {
       cancelled = true;
     };
-  }, [refreshNonce]);
+  }, [refreshNonce, planOk]);
 
-  return { enabled, configured, loading };
+  return { enabled: planOk && enabled, configured: planOk && configured, loading };
 }

@@ -29,7 +29,8 @@ export function PrintLabel() {
   const [blobUrl, setBlobUrl] = useState('');
   const [contentType, setContentType] = useState('');
   const [error, setError] = useState('');
-  const [printTipDismissed, setPrintTipDismissed] = useState(false);
+  /** Подсказку не показываем до afterprint — иначе она попадает в превью поверх стикера. */
+  const [printTipVisible, setPrintTipVisible] = useState(false);
 
   useEffect(() => {
     // Минимизируем "заголовок" в дефолтных колонтитулах (если пользователь оставит их включёнными).
@@ -80,6 +81,13 @@ export function PrintLabel() {
 
   useEffect(() => {
     if (!blobUrl || error) return;
+    // Подсказку про колонтитулы — только после закрытия диалога печати.
+    const onAfterPrint = () => setPrintTipVisible(true);
+    try {
+      window.addEventListener('afterprint', onAfterPrint);
+    } catch {
+      /* ignore */
+    }
     // Чуть ждём, чтобы браузер успел отрисовать iframe/img перед печатью.
     const t = setTimeout(() => {
       try {
@@ -93,13 +101,21 @@ export function PrintLabel() {
         /* ignore */
       }
     }, 350);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      try {
+        window.removeEventListener('afterprint', onAfterPrint);
+      } catch {
+        /* ignore */
+      }
+    };
   }, [blobUrl, error]);
 
   if (!id) return <Navigate to="/assembly" replace />;
 
   const isPdf = contentType.includes('pdf');
   const isPng = contentType.includes('png');
+  const showPrintTip = Boolean(blobUrl && !error && printTipVisible);
 
   return (
     <div style={{ margin: 0, padding: 0, width: '100vw', height: '100vh', background: '#fff' }}>
@@ -108,10 +124,14 @@ export function PrintLabel() {
         @media print {
           html, body { margin: 0 !important; padding: 0 !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .print-label-tip,
+          .print-label-meta,
+          .print-label-screen-only { display: none !important; }
         }
       `}</style>
-      {blobUrl && !error && !printTipDismissed && (
+      {showPrintTip ? (
         <div
+          className="print-label-tip"
           style={{
             position: 'fixed',
             left: 12,
@@ -136,7 +156,7 @@ export function PrintLabel() {
           <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button
               type="button"
-              onClick={() => setPrintTipDismissed(true)}
+              onClick={() => setPrintTipVisible(false)}
               style={{
                 border: 0,
                 borderRadius: 6,
@@ -170,14 +190,14 @@ export function PrintLabel() {
             </button>
           </div>
         </div>
-      )}
+      ) : null}
       {error ? (
-        <div style={{ padding: 16, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <div className="print-label-screen-only" style={{ padding: 16, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Не удалось открыть этикетку для печати</div>
           <div style={{ color: '#b42318' }}>{error}</div>
         </div>
       ) : !blobUrl ? (
-        <div style={{ padding: 16, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <div className="print-label-screen-only" style={{ padding: 16, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
           Загрузка этикетки…
         </div>
       ) : isPdf ? (
@@ -202,7 +222,10 @@ export function PrintLabel() {
             }}
           />
           {!isPng && !isPdf && (
-            <div style={{ position: 'fixed', left: 16, bottom: 16, fontFamily: 'system-ui', fontSize: 12, color: '#667085' }}>
+            <div
+              className="print-label-meta"
+              style={{ position: 'fixed', left: 16, bottom: 16, fontFamily: 'system-ui', fontSize: 12, color: '#667085' }}
+            >
               Формат: {contentType || 'unknown'}
             </div>
           )}

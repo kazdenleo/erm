@@ -79,15 +79,16 @@ function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false, daysBack 
   const oz = r.ozon?.success ?? 0;
   const wb = r.wildberries?.success ?? 0;
   const ym = r.yandex?.success ?? 0;
-  const ymTail = r.yandex?.reason ? ` (${r.yandex.reason})` : '';
+  const reasonBits = [r.ozon?.reason, r.wildberries?.reason, r.yandex?.reason].filter(Boolean);
+  const reasonTail = reasonBits.length ? ` — ${reasonBits.join('; ')}` : '';
   if (forceImport) {
     const period = daysBack != null ? ` за ${daysBack} дн.` : '';
     return (
-      `Импорт${period} завершён: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}. ` +
+      `Импорт${period} завершён: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${reasonTail}. ` +
       'Если заказ не виден во «Новых», откройте фильтр «Все» или другой статус.'
     );
   }
-  return `Синхронизация завершена: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}.`;
+  return `Синхронизация завершена: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${reasonTail}.`;
 }
 
 function orderKey(o) {
@@ -1160,19 +1161,27 @@ export function Orders() {
           setSyncLoading(true);
           setSyncKind(forceImport ? 'import' : 'refresh');
           setSyncError(null);
-          setSyncInfo(null);
+          const periodHint = daysBack != null ? ` (${daysBack} дн.)` : '';
+          setSyncInfo({
+            message: forceImport
+              ? `Импорт заказов с маркетплейсов${periodHint}…`
+              : `Обновление статусов заказов${periodHint}…`
+          });
         }
-        await ordersApi.syncFbs({
+        const syncStart = await ordersApi.syncFbs({
           force: forceImport,
           refreshStatuses,
           daysBack: daysBack ?? undefined
         });
         if (!silent) {
           const periodHint = daysBack != null ? ` (${daysBack} дн.)` : '';
+          const alreadyRunning = syncStart?.started === false && syncStart?.inProgress === true;
           setSyncInfo({
-            message: forceImport
-              ? `Импорт заказов с маркетплейсов${periodHint}…`
-              : `Синхронизация${periodHint}…`
+            message: alreadyRunning
+              ? 'На сервере уже идёт синхронизация — ждём завершения…'
+              : forceImport
+                ? `Импорт заказов с маркетплейсов${periodHint}…`
+                : `Обновление статусов заказов${periodHint}…`
           });
         }
 
@@ -2607,16 +2616,14 @@ export function Orders() {
           >
             {syncLoading && syncKind === 'import' ? 'Импорт...' : '📥 Импортировать заказы'}
           </Button>
-          {syncLoading && (
-            <Button
-              variant="outline-secondary"
-              size="small"
-              onClick={() => void handleResetSync()}
-              title="Если импорт завис больше 2–3 минут"
-            >
-              Сбросить импорт
-            </Button>
-          )}
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => void handleResetSync()}
+            title="Снять блокировку, если импорт или обновление статусов зависли"
+          >
+            Сбросить импорт
+          </Button>
           <Button
             variant="secondary"
             size="small"
@@ -2712,6 +2719,19 @@ export function Orders() {
           )}
         </div>
       </div>
+
+      {syncError && (
+        <div className="error" style={{ marginBottom: 16 }} role="alert">
+          {syncError}
+        </div>
+      )}
+      {syncInfo && (
+        <div className="info" style={{ marginBottom: 16 }} role="status">
+          {syncInfo.rateLimited
+            ? `Слишком частые запросы. Подождите ${syncInfo.retryAfterSeconds} секунд.`
+            : syncInfo.message || 'Синхронизация завершена. Список обновлён.'}
+        </div>
+      )}
 
       <Modal
         isOpen={addOrderOpen && allowPrivateOrders}
@@ -3438,20 +3458,6 @@ export function Orders() {
           reloadOrders({ silent: true });
         }}
       />
-
-      {syncError && (
-        <div className="error" style={{marginBottom: '16px'}}>
-          {syncError}
-        </div>
-      )}
-
-      {syncInfo && (
-        <div className="info" style={{marginBottom: '16px'}}>
-          {syncInfo.rateLimited
-            ? `Слишком частые запросы. Подождите ${syncInfo.retryAfterSeconds} секунд.`
-            : syncInfo.message || 'Синхронизация завершена. Список обновлён.'}
-        </div>
-      )}
 
       {refreshError && (
         <div className="error" style={{marginBottom: '16px'}}>

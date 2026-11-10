@@ -2551,12 +2551,6 @@ export function WarehouseStocks() {
   ]);
 
   useEffect(() => {
-    const rows = meta?.supplierBreakdown;
-    if (!Array.isArray(rows)) return;
-    setSupplierBreakdownByProductId(buildSupplierBreakdownMap(rows));
-  }, [meta?.supplierBreakdown]);
-
-  useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
@@ -3015,7 +3009,10 @@ export function WarehouseStocks() {
       if (!products.length) setSupplierBreakdownByProductId({});
       return undefined;
     }
+    // Ответ stockList уже содержит breakdown — применяем сразу (раньше второй эффект
+    // мог «зависнуть» на пустой карте, если meta пришла с пустым/устаревшим массивом).
     if (Array.isArray(meta?.supplierBreakdown)) {
+      setSupplierBreakdownByProductId(buildSupplierBreakdownMap(meta.supplierBreakdown));
       return undefined;
     }
     let cancelled = false;
@@ -3425,21 +3422,39 @@ export function WarehouseStocks() {
         product.reservedQuantity ??
         0;
       const reserved = Math.max(0, Number(reservedRaw) || 0);
-      const allDetails = supplierSyncEnabled
-        ? supplierBreakdownByProductId[String(product.id)] || []
+      const fromMap = supplierBreakdownByProductId[String(product.id)] || [];
+      // stockList кладёт breakdown/total на товар — берём всегда, не только через meta-карту.
+      const embeddedRaw = product.supplierBreakdown || product.supplier_breakdown || null;
+      const fromProduct = Array.isArray(embeddedRaw)
+        ? embeddedRaw
+            .map((row) => ({
+              supplierId: String(row.supplier_id ?? row.supplierId ?? ''),
+              supplier: row.supplier_name || row.supplier_code || row.supplier || 'Поставщик',
+              name: row.stock_name || row.supplier_name || row.supplier_code || '—',
+              stock: Number(row.stock) || 0,
+              price: row.price != null && row.price !== '' ? Number(row.price) : null,
+              deliveryDays: Number(row.delivery_days ?? row.deliveryDays ?? 0) || 0,
+            }))
+            .filter((d) => d.stock > 0)
         : [];
-      const supplierDetails = supplierSyncEnabled
-        ? enrichSupplierDetailsLabels(allDetails, warehouses, stockWarehouseId || null)
-        : [];
-      const suppliers = supplierSyncEnabled
-        ? supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0)
-        : 0;
+      const allDetails = fromMap.length > 0 ? fromMap : fromProduct;
+      const supplierDetails = enrichSupplierDetailsLabels(
+        allDetails,
+        warehouses,
+        stockWarehouseId || null
+      );
+      const fromDetails = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
+      const fromTotal = Math.max(
+        0,
+        Number(product.supplierStockTotal ?? product.supplier_stock_total) || 0
+      );
+      const suppliers = Math.max(fromDetails, fromTotal);
       const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
       return { onHand, incoming, reserved, suppliers, supplierDetails, available };
     });
     // Все фильтры (категория, поиск, тип, «только в наличии») — на сервере по всему каталогу, не по строкам страницы.
     return built;
-  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, supplierSyncEnabled]);
+  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]);
 
   const historyRowMetrics = useMemo(() => {
     if (!historyProduct?.id) return null;
@@ -3812,9 +3827,10 @@ export function WarehouseStocks() {
                   <th>Артикул</th>
                   <th>Товар</th>
                   <th>В пути</th>
-                  <th>Наличие</th>
+                  <th title="Остаток на выбранном складе ERP (не у поставщика)">Наличие</th>
                   <th>Резерв</th>
-                  <th>Доступно</th>
+                  <th title="Остаток у поставщиков, доступный к закупке (после отсечки — в следующее окно)">Поставщики</th>
+                  <th title="Наличие + в пути + поставщики − резерв">Доступно</th>
                   <th className="stock-mp-block-col" title="Передача остатков на маркетплейсы">
                     Остатки МП
                   </th>
@@ -3882,13 +3898,16 @@ export function WarehouseStocks() {
                         row.reserved
                       )}
                     </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                    </td>
                     <td
                       title={
                         isKitProduct(row.product)
                           ? row.availableDisplay
                             ? `Доступно ${row.availableDisplay}: слева — целые комплекты к продаже; в скобках — целые + собираемость из комплектующих (на МП).`
                             : 'Слева — доступно с резервом; в скобках — целые комплекты + собираемость (на маркетплейсы).'
-                          : undefined
+                          : `Наличие ${row.onHand} + в пути ${row.incoming} + поставщики ${row.suppliers} − резерв ${row.reserved}`
                       }
                     >
                       {row.availableDisplay ?? row.available}

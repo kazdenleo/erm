@@ -7,7 +7,11 @@ import {
   TRIAL_PLAN_CODE,
   getSubscriptionPlan,
   planFeatureFlagsForProfile,
+  restrictedFeatureFlags,
 } from '../constants/subscriptionPlans.js';
+import repositoryFactory from '../config/repository-factory.js';
+import { clearProfileFeatureFlagsCache } from './profileFeatureFlags.js';
+import logger from './logger.js';
 
 export function computeTrialEndsAt(fromDate = new Date(), days = TRIAL_DAYS) {
   const d = new Date(fromDate);
@@ -181,6 +185,62 @@ export function buildSubscriptionUpdatePayload({
     Object.assign(out, planFeatureFlagsForProfile(codeForFlags));
   }
   return out;
+}
+
+/**
+ * Если trial/подписка истекли по дате, а в БД ещё trial/active —
+ * пишем past_due и урезаем модули (один раз на профиль, идемпотентно).
+ */
+export async function syncExpiredSubscriptionState(profile) {
+  if (!profile?.id) return profile;
+  const sub = resolveSubscription(profile);
+  const dbStatus = normalizeSubscriptionStatus(
+    profile.subscription_status ?? profile.subscriptionStatus
+  );
+  const needsStatus =
+    (sub.status === 'past_due' || sub.status === 'suspended') &&
+    dbStatus !== sub.status &&
+    (dbStatus === 'trial' || dbStatus === 'active');
+  const flagsOn =
+    profile.kits_enabled !== false ||
+    profile.production_enabled === true ||
+    profile.fbo_enabled === true ||
+    profile.pricing_strategies_enabled !== false;
+  const needsRestrict =
+    (sub.status === 'past_due' || sub.status === 'suspended') && flagsOn;
+
+  if (!needsStatus && !needsRestrict) return profile;
+
+  try {
+    const repo = repositoryFactory.getProfilesRepository();
+    if (!repo) return profile;
+    const patch = {
+      ...restrictedFeatureFlags(),
+    };
+    if (needsStatus) {
+      patch.subscription_status = sub.status;
+    }
+    const updated = await repo.update(profile.id, patch);
+    clearProfileFeatureFlagsCache(profile.id);
+    logger.info('[subscription] synced expired state', {
+      profileId: profile.id,
+      from: dbStatus,
+      to: sub.status,
+      restricted: true,
+    });
+    return updated || { ...profile, ...patch };
+  } catch (e) {
+    logger.warn('[subscription] sync expired failed', e?.message || e);
+    return profile;
+  }
+}
+
+/** Есть ли у эффективного тарифа feature-ключ (ads, ai, fbo, …). */
+export function planHasFeature(subscription, featureKey) {
+  if (!subscription?.writeAllowed) return false;
+  const f = subscription.plan?.features;
+  if (!f || !featureKey) return false;
+  return f[featureKey] === true;
 }
 
 /** Пути API, доступные при past_due / suspended (чтение сессии, поддержка, биллинг). */

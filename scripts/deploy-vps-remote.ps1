@@ -1,11 +1,11 @@
-﻿# Локальный запуск: деплой на VPS по SSH (нужен доступ root@45.80.68.230).
+﻿# Локальный запуск: деплой на VPS по SSH (нужен доступ root@137.22.146.136).
 # Использование: .\scripts\deploy-vps-remote.ps1
 # Деплой запускается на сервере через nohup (лог в /tmp) — обрыв SSH его не прерывает.
 # Скрипт читает лог короткими SSH-запросами до строки ERM_DEPLOY_EXIT=<код>.
 # Опрос без пароля работает только с SSH-ключом.
 
 $ErrorActionPreference = "Continue"
-$HostName = if ($env:ERM_VPS_HOST) { $env:ERM_VPS_HOST } else { "45.80.68.230" }
+$HostName = if ($env:ERM_VPS_HOST) { $env:ERM_VPS_HOST } else { "137.22.146.136" }
 $User = if ($env:ERM_VPS_USER) { $env:ERM_VPS_USER } else { "root" }
 $Remote = "${User}@${HostName}"
 $TimeoutMin = if ($env:ERM_DEPLOY_TIMEOUT_MIN) { [int]$env:ERM_DEPLOY_TIMEOUT_MIN } else { 30 }

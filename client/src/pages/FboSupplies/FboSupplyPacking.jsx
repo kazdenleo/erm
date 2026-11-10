@@ -29,9 +29,15 @@ import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../uti
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
 import { fboBoxPrintKind } from '../../utils/labelPrinterSettings.js';
+import {
+  useProductLabelPrint,
+  canUsePrintHelper,
+  resolvePrintHelperUrl,
+} from '../../hooks/useProductLabelPrint.js';
 
 /** Лимит сервера на одно создание грузомест в Ozon. */
 const OZON_CARGO_CREATE_MAX = 30;
+const NO_CATEGORY_VALUE = '__none__';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -98,7 +104,11 @@ export function FboSupplyPacking({
   onItemQuantitySaved,
   itemSearchQuery = '',
   printHelperUrl = '',
+  /** packing — обычная упаковка; express — приёмка+сборка+упаковка+этикетка за один скан */
+  mode = 'packing',
+  onSupplyStatusChange,
 }) {
+  const isExpress = mode === 'express';
   const [scanLoading, setScanLoading] = useState(false);
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const [scanError, setScanError] = useState(null);
@@ -116,7 +126,12 @@ export function FboSupplyPacking({
   const [placementWarning, setPlacementWarning] = useState(null);
   const [overageConfirm, setOverageConfirm] = useState(null);
   const [overageConfirmBusy, setOverageConfirmBusy] = useState(false);
+  /** Экспресс: список номеров ГМ скрыт по умолчанию. */
+  const [expressCargoListOpen, setExpressCargoListOpen] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('');
   const scanLoadingRef = useRef(false);
+  const { printProductLabel, printing: labelPrinting, setError: setPrintHookError } =
+    useProductLabelPrint(printHelperUrl);
 
   scanLoadingRef.current = scanLoading;
 
@@ -130,12 +145,51 @@ export function FboSupplyPacking({
     [supplyItems, statsByItemId]
   );
 
-  const filteredSupplyItems = useMemo(
-    () => filterSupplyItemsByQuery(sortedSupplyItems, itemSearchQuery),
-    [sortedSupplyItems, itemSearchQuery]
+  const categoryOptions = useMemo(() => {
+    if (!isExpress) return [];
+    const map = new Map();
+    let hasNone = false;
+    for (const it of sortedSupplyItems) {
+      const id = it.productCategoryId;
+      if (id == null) {
+        hasNone = true;
+        continue;
+      }
+      if (!map.has(id)) {
+        map.set(id, it.productCategoryName || `Категория #${id}`);
+      }
+    }
+    const opts = [...map.entries()]
+      .map(([id, name]) => ({ value: String(id), label: name }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    if (hasNone) {
+      opts.push({ value: NO_CATEGORY_VALUE, label: 'Без категории' });
+    }
+    return opts;
+  }, [isExpress, sortedSupplyItems]);
+
+  const filteredSupplyItems = useMemo(() => {
+    let list = sortedSupplyItems;
+    if (isExpress && categoryFilter) {
+      list = list.filter((it) => {
+        if (categoryFilter === NO_CATEGORY_VALUE) return it.productCategoryId == null;
+        return String(it.productCategoryId) === categoryFilter;
+      });
+    }
+    return filterSupplyItemsByQuery(list, itemSearchQuery);
+  }, [sortedSupplyItems, itemSearchQuery, isExpress, categoryFilter]);
+
+  /** Экспресс: только то, что ещё нужно отсканировать (план ≠ упаковано). */
+  const expressPendingItems = useMemo(
+    () =>
+      filteredSupplyItems.filter(
+        (it) => !isSupplyItemPackingComplete(statsByItemId.get(String(it.id)), it)
+      ),
+    [filteredSupplyItems, statsByItemId]
   );
 
   const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
+  const expressFilterActive = Boolean(categoryFilter) || itemSearchActive;
 
   const cargoUnits = packing?.cargoUnits || [];
   const ozonMeta = packing?.ozonMeta;
@@ -164,8 +218,34 @@ export function FboSupplyPacking({
     }
   }, [cargoUnits, activeCargoUnitId]);
 
+  const sendExpressPrint = useCallback(
+    async (printInfo) => {
+      if (!printInfo?.productId) return;
+      const copies = Math.max(1, Math.min(99, Number(printInfo.copies) || 1));
+      const helperUrl = resolvePrintHelperUrl(printHelperUrl);
+      if (canUsePrintHelper(helperUrl) && copies === 1) {
+        const ok = await printProductLabel(printInfo.productId, {
+          copies,
+          marketplace: printInfo.marketplace || marketplace || undefined,
+          allowBrowserFallback: false,
+        });
+        if (!ok) {
+          setScanError(
+            'Print Helper не ответил. Проверьте помощник печати или напечатайте этикетку на вкладке «Сборка».'
+          );
+        }
+        return;
+      }
+      await printProductLabel(printInfo.productId, {
+        copies,
+        marketplace: printInfo.marketplace || marketplace || undefined,
+      });
+    },
+    [marketplace, printHelperUrl, printProductLabel]
+  );
+
   const applyScanResult = useCallback(
-    (data, { scannedAsNewCargo = false } = {}) => {
+    async (data, { scannedAsNewCargo = false } = {}) => {
       if (data?.action === 'ignored_duplicate') {
         setScanMsg(data.message || 'Этот КИ уже в поставке');
         playEventSound(SOUND_EVENTS.scan_error);
@@ -174,6 +254,7 @@ export function FboSupplyPacking({
             supplyStatus: data.supplyStatus,
             packingAllMatch: data.packingAllMatch,
             statusReverted: data.statusReverted,
+            lastPackAt: data.lastPackAt ?? null,
           });
         }
         return;
@@ -189,6 +270,7 @@ export function FboSupplyPacking({
           supplyStatus: data.supplyStatus,
           packingAllMatch: data.packingAllMatch,
           statusReverted: data.statusReverted,
+          lastPackAt: data.lastPackAt ?? null,
         });
         if (data.statusReverted) {
           setScanMsg('Статус сброшен в «Новая»: сборка не совпадает с планом');
@@ -201,12 +283,24 @@ export function FboSupplyPacking({
       } else {
         setWeightWarning(data?.weightWarning || null);
       }
+      if (data?.supplyStatus != null || data?.lastCollectAt != null) {
+        onSupplyStatusChange?.(data.supplyStatus, {
+          lastCollectAt: data.lastCollectAt ?? null,
+        });
+      }
       if (!data?.statusReverted) {
         setScanMsg(data?.message || 'Готово');
       }
       playEventSound(SOUND_EVENTS.scan_ok);
+      if (isExpress && data?.action === 'kit_progress') {
+        // Комплектующая принята — этикетка и упаковка после полного набора комплекта.
+        return;
+      }
+      if (isExpress && data?.action === 'express_packed' && data?.print?.productId) {
+        await sendExpressPrint(data.print);
+      }
     },
-    [activeCargoUnitId, onPackingChange]
+    [activeCargoUnitId, onPackingChange, onSupplyStatusChange, isExpress, sendExpressPrint]
   );
 
   const handleScan = useCallback(
@@ -217,26 +311,36 @@ export function FboSupplyPacking({
       setScanMsg(null);
       setWeightWarning(null);
       setPlacementWarning(null);
+      setPrintHookError?.(null);
       setScanLoading(true);
       try {
-        const data = await fboSuppliesApi.packingScan(supplyId, {
+        const scanPayload = {
           barcode: trimmed,
           activeCargoUnitId,
           scanMode: newCargoMode ? 'cargo' : 'product',
           ...(allowOverage ? { allowOverage: true } : {}),
-        });
-        applyScanResult(data, { scannedAsNewCargo: newCargoMode });
+        };
+        const data = isExpress
+          ? await fboSuppliesApi.expressScan(supplyId, scanPayload)
+          : await fboSuppliesApi.packingScan(supplyId, scanPayload);
+        await applyScanResult(data, { scannedAsNewCargo: newCargoMode });
       } catch (e) {
         playEventSound(SOUND_EVENTS.scan_error);
         const payload = e.response?.data || {};
         const msg = payload.message || e.message || 'Ошибка сканирования';
-        if (e.response?.status === 409 && payload.code === 'PACKING_OVERAGE') {
+        if (payload.code === 'CARGO_BARCODE_IS_PRODUCT' && newCargoMode) {
+          setNewCargoMode(false);
+        }
+        if (
+          e.response?.status === 409 &&
+          (payload.code === 'PACKING_OVERAGE' || payload.code === 'COLLECT_OVERAGE')
+        ) {
           setOverageConfirm({
             barcode: trimmed,
             message: msg,
-            productName: payload.productName || null,
+            productName: payload.productName || payload.name || null,
             planned: payload.planned,
-            packed: payload.packed,
+            packed: payload.packed ?? payload.collected,
             sku: payload.sku || null,
           });
           setScanError(null);
@@ -252,7 +356,7 @@ export function FboSupplyPacking({
         setScanLoading(false);
       }
     },
-    [supplyId, activeCargoUnitId, newCargoMode, applyScanResult]
+    [supplyId, activeCargoUnitId, newCargoMode, applyScanResult, isExpress, setPrintHookError]
   );
 
   const handleConfirmOverage = async () => {
@@ -260,14 +364,17 @@ export function FboSupplyPacking({
     setOverageConfirmBusy(true);
     setScanError(null);
     try {
-      const data = await fboSuppliesApi.packingScan(supplyId, {
+      const scanPayload = {
         barcode: overageConfirm.barcode,
         activeCargoUnitId,
         scanMode: 'product',
         allowOverage: true,
-      });
+      };
+      const data = isExpress
+        ? await fboSuppliesApi.expressScan(supplyId, scanPayload)
+        : await fboSuppliesApi.packingScan(supplyId, scanPayload);
       setOverageConfirm(null);
-      applyScanResult(data);
+      await applyScanResult(data);
     } catch (e) {
       playEventSound(SOUND_EVENTS.scan_error);
       setScanError(e.response?.data?.message || e.message || 'Не удалось добавить товар');
@@ -487,6 +594,7 @@ export function FboSupplyPacking({
           supplyStatus: data.supplyStatus,
           packingAllMatch: data.packingAllMatch,
           statusReverted: data.statusReverted,
+          lastPackAt: data.lastPackAt ?? null,
         });
         const nextActive = (data.packing.cargoUnits || []).find(
           (c) => String(c.id) === String(activeCargoUnitId) && String(c.id) !== String(cargoUnitId)
@@ -519,26 +627,60 @@ export function FboSupplyPacking({
   };
 
   return (
-    <div className="fbo-packing">
+    <div className={`fbo-packing${isExpress ? ' fbo-packing--express' : ''}`}>
+      {isExpress ? (
+        <p className="fbo-packing-hint" style={{ marginBottom: 12 }}>
+          Экспресс: скан грузоместа, затем товара — за один скан приёмка с «в пути» (если нужно), сборка,
+          упаковка в активное ГМ и печать этикетки. Комплекты можно собирать по комплектующим.
+        </p>
+      ) : null}
+      {isExpress ? (
+        <div className="fbo-express-filters">
+          <label className="fbo-collect-category-filter">
+            <span className="muted-hint">Категория</span>
+            <select
+              className="form-select form-select-sm"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              aria-label="Фильтр по категории в экспрессе"
+            >
+              <option value="">Все категории</option>
+              {categoryOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
       <div className="fbo-packing-scan">
         <BarcodeScanField
-          id="fbo-packing-barcode"
+          id={isExpress ? 'fbo-express-barcode' : 'fbo-packing-barcode'}
           label="Штрихкод"
           className="form-control"
           formClassName="fbo-packing-scan-row warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
           placeholder={
             newCargoMode
               ? 'Штрихкод коробки / паллеты'
-              : isOzon
-                ? 'Штрихкод товара из поставки'
-                : 'Коробка / паллета, затем товары поставки'
+              : isExpress
+                ? 'Грузоместо или товар (приёмка + сборка + упаковка)'
+                : isOzon
+                  ? 'Штрихкод товара из поставки'
+                  : 'Коробка / паллета, затем товары поставки'
           }
-          loading={scanLoading}
-          disabled={scanLoading}
+          loading={scanLoading || labelPrinting}
+          disabled={scanLoading || labelPrinting}
           enableGlobalCapture
           onScan={handleScan}
           hint={
-            isOzon ? (
+            isExpress ? (
+              <>
+                Сначала отсканируйте <strong>грузоместо</strong> (или «Новое грузоместо» / короб на Ozon).
+                Затем сканируйте <strong>товар</strong> или <strong>комплектующую</strong>: приёмка с
+                «в пути» + сборка + упаковка + этикетка (этикетка — после полного набора комплекта).
+              </>
+            ) : isOzon ? (
               <>
                 Создайте грузоместа кнопкой <strong>«Короб на Ozon»</strong> или{' '}
                 <strong>«Паллета на Ozon»</strong> (сразу несколько — поле <strong>«Кол-во»</strong>), либо
@@ -704,6 +846,7 @@ export function FboSupplyPacking({
           {isOzon
             ? 'Нет активного грузоместа — нажмите «Новое грузоместо» и отсканируйте коробку.'
             : 'Нет активного грузоместа — отсканируйте коробку или нажмите «Новое грузоместо».'}
+          {isExpress ? ' Затем сканируйте товар для экспресс-упаковки.' : ''}
         </div>
       )}
 
@@ -731,7 +874,22 @@ export function FboSupplyPacking({
       <div className="fbo-items-toolbar">
         <h4 className="fbo-packing-section-title" style={{ margin: 0, flex: 1 }}>
           Грузоместа ({cargoUnits.length})
+          {isExpress && activeCargo?.barcode ? (
+            <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+              активное: {activeCargo.barcode}
+            </span>
+          ) : null}
         </h4>
+        {isExpress && cargoUnits.length > 0 ? (
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => setExpressCargoListOpen((v) => !v)}
+            title={expressCargoListOpen ? 'Скрыть номера коробок' : 'Показать все грузоместа'}
+          >
+            {expressCargoListOpen ? 'Скрыть номера' : `Номера ГМ (${cargoUnits.length})`}
+          </Button>
+        ) : null}
         <Button
           variant="secondary"
           size="small"
@@ -741,291 +899,540 @@ export function FboSupplyPacking({
           {exporting ? 'Выгрузка…' : 'Excel по грузоместам'}
         </Button>
       </div>
-      <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
-        {marketplace === 'wb'
-          ? 'Формат WB: баркод, кол-во, ШК короба, срок годности.'
-          : 'Формат Ozon: ШК товара, артикул, кол-во, зона, срок годности, ШК ГМ, тип ГМ.'}
-      </p>
-      {cargoUnits.length === 0 ? (
-        <p className="text-muted">
-          {isOzon
-            ? 'Пока нет грузомест — нажмите «Новое грузоместо» и отсканируйте коробку.'
-            : 'Пока нет грузомест — отсканируйте штрихкод коробки или нажмите «Новое грузоместо».'}
-        </p>
-      ) : (
-        <div className="fbo-cargo-list">
-          {sortedCargoUnits.map((cargo) => {
-            const isActive = String(cargo.id) === String(activeCargoUnitId);
-            return (
-              <div
-                key={cargo.id}
-                className={[
-                  'fbo-cargo-card',
-                  isActive ? 'fbo-cargo-card--active' : 'fbo-cargo-card--collapsed',
-                  cargo.weightExceeded ? 'fbo-cargo-card--overweight' : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <div
-                  className="fbo-cargo-card__head"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectCargo(cargo.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleSelectCargo(cargo.id);
-                    }
-                  }}
-                >
-                  <div className="fbo-cargo-card__title">
-                    <strong>{cargo.barcode}</strong>
-                    {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
-                    {cargo.transportCargoBarcode ? (
-                      <span className="badge bg-secondary ms-2" title="Привязан к транспортному грузоместу">
-                        ТГМ {cargo.transportCargoBarcode}
-                      </span>
-                    ) : null}
-                  </div>
-                  <span className="fbo-cargo-card__summary text-muted small">
-                    {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
-                    {' · '}
-                    {cargo.totalQuantity ?? 0} шт.
-                    {(cargo.totalVolumeL > 0 || cargo.totalWeightG > 0) && (
-                      <>
-                        {' '}
-                        · {fmtVolumeL(cargo.totalVolumeL)} · {cargoWeightSummary(cargo)}
-                      </>
-                    )}
-                    {cargo.weightExceeded ? (
-                      <span className="fbo-cargo-card__overweight"> · превышен вес</span>
-                    ) : null}
-                  </span>
-                  <span className="text-muted small">{fmtDt(cargo.createdAt)}</span>
-                  {isOzon && cargo.barcode ? (
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      disabled={printingLabels}
-                      onClick={(e) => handlePrintCargoLabels([cargo.barcode], e)}
-                      title="Печать этикетки грузоместа"
-                    >
-                      Этикетка
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="secondary"
-                    size="small"
-                    onClick={(e) => handleDeleteCargo(cargo.id, e)}
+
+      {isExpress ? (
+        <>
+          {cargoUnits.length === 0 ? (
+            <p className="text-muted">
+              {isOzon
+                ? 'Пока нет грузомест — нажмите «Новое грузоместо» и отсканируйте коробку.'
+                : 'Пока нет грузомест — отсканируйте штрихкод коробки или нажмите «Новое грузоместо».'}
+            </p>
+          ) : expressCargoListOpen ? (
+            <div className="fbo-express-cargo-switch" role="list">
+              {sortedCargoUnits.map((cargo) => {
+                const isActive = String(cargo.id) === String(activeCargoUnitId);
+                return (
+                  <button
+                    key={cargo.id}
+                    type="button"
+                    role="listitem"
+                    className={[
+                      'fbo-express-cargo-chip',
+                      isActive ? 'fbo-express-cargo-chip--active' : '',
+                      cargo.weightExceeded ? 'fbo-express-cargo-chip--overweight' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={() => handleSelectCargo(cargo.id)}
+                    title={cargo.barcode}
                   >
-                    Удалить
-                  </Button>
-                </div>
-                {isActive ? (
-                  <div className="fbo-cargo-card__body">
+                    <strong>{cargo.barcode}</strong>
+                    <span className="text-muted">
+                      {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'} · {cargo.totalQuantity ?? 0} шт.
+                    </span>
+                    {isActive ? <span className="badge bg-primary">активно</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div className="fbo-express-columns">
+            <section className="fbo-express-col fbo-express-col--pending">
+              <h4 className="fbo-packing-section-title">
+                К скану
+                <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+                  осталось {expressPendingItems.length}
+                  {expressFilterActive
+                    ? ` · найдено ${expressPendingItems.length} из ${sortedSupplyItems.length}`
+                    : null}
+                </span>
+              </h4>
+              <div className="table-responsive fbo-express-col__scroll">
+                <table className="table table-sm table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Название</th>
+                      <th>Артикул</th>
+                      <th>Штрихкод</th>
+                      <th title="Упаковано / план">Осталось</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expressPendingItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="text-muted text-center py-3">
+                          {expressFilterActive
+                            ? 'Ничего не найдено'
+                            : filteredSupplyItems.length === 0
+                              ? 'Нет строк'
+                              : 'Всё упаковано'}
+                        </td>
+                      </tr>
+                    ) : null}
+                    {expressPendingItems.map((it) => {
+                      const stat = statsByItemId.get(String(it.id));
+                      const planned = stat?.planned ?? it.quantity ?? 0;
+                      const packed = stat?.packed ?? 0;
+                      const left = Math.max(0, planned - packed);
+                      return (
+                        <tr key={it.id}>
+                          <td>{it.productName || it.name || '—'}</td>
+                          <td>{it.sku || '—'}</td>
+                          <td>{it.barcode || '—'}</td>
+                          <td>
+                            <FboSupplyItemPackingCell
+                              supplyId={supplyId}
+                              itemId={it.id}
+                              packed={packed}
+                              planned={planned}
+                              byCargo={stat?.byCargo || []}
+                              onSaved={onItemQuantitySaved}
+                              onBreakdownClick={() =>
+                                onBreakdownClick?.({
+                                  ...it,
+                                  packed,
+                                  planned,
+                                  stat,
+                                  byCargo: stat?.byCargo || [],
+                                })
+                              }
+                            />
+                            <span className="fbo-express-left-qty text-muted">ещё {left}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="fbo-express-col fbo-express-col--cargo">
+              <h4 className="fbo-packing-section-title">
+                Состав ГМ
+                {activeCargo ? (
+                  <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+                    {activeCargo.barcode} · {activeCargo.totalQuantity ?? 0} шт.
+                  </span>
+                ) : null}
+              </h4>
+              {!activeCargo ? (
+                <p className="text-muted">Нет активного грузоместа.</p>
+              ) : (
+                <div className="fbo-express-col__scroll">
+                  <div className="fbo-express-cargo-meta">
                     <FboCargoUnitKind
                       supplyId={supplyId}
-                      cargo={cargo}
+                      cargo={activeCargo}
                       onPackingChange={handlePackingChange}
-                      onClick={(e) => e.stopPropagation()}
                     />
                     <FboCargoBarcodeEdit
                       supplyId={supplyId}
-                      cargo={cargo}
+                      cargo={activeCargo}
                       onPackingChange={handlePackingChange}
-                      onClick={(e) => e.stopPropagation()}
                     />
-                    {cargo.weightExceeded ? (
-                      <div className="alert alert-warning py-2 px-3 small mb-2">
-                        {cargoWeightExceededMessage(cargo)}
-                      </div>
+                    {isOzon && activeCargo.barcode ? (
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        disabled={printingLabels}
+                        onClick={(e) => handlePrintCargoLabels([activeCargo.barcode], e)}
+                        title="Печать этикетки грузоместа"
+                      >
+                        Этикетка
+                      </Button>
                     ) : null}
-                    {(cargo.contents || []).length === 0 ? (
-                      <p className="text-muted small mb-0">Пусто — отсканируйте товары.</p>
-                    ) : (
-                      <div className="table-responsive">
-                        <table className="table table-sm fbo-cargo-items-table mb-0">
-                          <thead>
-                            <tr>
-                              <th>Товар</th>
-                              <th>Артикул</th>
-                              <th className="text-end">Кол-во</th>
-                              {isOzon ? <th>Размещение</th> : null}
-                              <th>Срок годности</th>
-                              <th className="text-end">Объём</th>
-                              <th className="text-end">Масса</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(cargo.contents || []).map((line) => (
-                              <tr key={line.id}>
-                                <td>{line.productName || line.sku || '—'}</td>
-                                <td>{line.sku || '—'}</td>
-                                <td className="text-end">
-                                  <strong>{line.quantity}</strong>
-                                </td>
-                                {isOzon ? (
-                                  <td className="fbo-cargo-items-table__meta">
-                                    <div className="fbo-placement-kind">
-                                      <span
-                                        className={`badge ${
-                                          placementKindLabel(line) === 'Сортируемый'
-                                            ? 'bg-info text-dark'
-                                            : placementKindLabel(line) === 'Несортируемый'
-                                              ? 'bg-secondary'
-                                              : 'bg-light text-dark border'
-                                        }`}
-                                      >
-                                        {placementKindLabel(line)}
-                                      </span>
-                                    </div>
-                                    <FboCargoContentMeta
-                                      supplyId={supplyId}
-                                      line={line}
-                                      marketplace={marketplace}
-                                      onPackingChange={handlePackingChange}
-                                      variant="inline"
-                                      showZone
-                                      showExpiry={false}
-                                    />
-                                  </td>
-                                ) : null}
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={(e) => handleDeleteCargo(activeCargo.id, e)}
+                    >
+                      Удалить ГМ
+                    </Button>
+                  </div>
+                  {(activeCargo.contents || []).length === 0 ? (
+                    <p className="text-muted small mb-0">Пусто — отсканируйте товары.</p>
+                  ) : (
+                    <div className="table-responsive">
+                      <table className="table table-sm fbo-cargo-items-table mb-0">
+                        <thead>
+                          <tr>
+                            <th>Товар</th>
+                            <th>Артикул</th>
+                            <th className="text-end">Кол-во</th>
+                            {isOzon ? <th>Размещение</th> : null}
+                            <th>Срок годности</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(activeCargo.contents || []).map((line) => (
+                            <tr key={line.id}>
+                              <td>{line.productName || line.sku || '—'}</td>
+                              <td>{line.sku || '—'}</td>
+                              <td className="text-end">
+                                <strong>{line.quantity}</strong>
+                              </td>
+                              {isOzon ? (
                                 <td className="fbo-cargo-items-table__meta">
+                                  <span
+                                    className={`badge ${
+                                      placementKindLabel(line) === 'Сортируемый'
+                                        ? 'bg-info text-dark'
+                                        : placementKindLabel(line) === 'Несортируемый'
+                                          ? 'bg-secondary'
+                                          : 'bg-light text-dark border'
+                                    }`}
+                                  >
+                                    {placementKindLabel(line)}
+                                  </span>
                                   <FboCargoContentMeta
                                     supplyId={supplyId}
                                     line={line}
                                     marketplace={marketplace}
                                     onPackingChange={handlePackingChange}
                                     variant="inline"
-                                    showZone={false}
-                                    showExpiry
+                                    showZone
+                                    showExpiry={false}
                                   />
                                 </td>
-                                <td className="text-end text-muted">
-                                  {fmtVolumeL(line.lineVolumeL)}
-                                </td>
-                                <td className="text-end text-muted">
-                                  {fmtWeightG(line.lineWeightG)}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                          {(cargo.contents || []).length > 0 ? (
-                            <tfoot>
-                              <tr className="fbo-cargo-items-table__totals">
-                                <td colSpan={isOzon ? 5 : 4} className="text-end">
-                                  <strong>Итого по грузоместу</strong>
-                                </td>
-                                <td className="text-end">
-                                  <strong>{fmtVolumeL(cargo.totalVolumeL)}</strong>
-                                </td>
-                                <td className="text-end">
-                                  <strong>{cargoWeightSummary(cargo)}</strong>
-                                </td>
-                              </tr>
-                            </tfoot>
-                          ) : null}
-                        </table>
+                              ) : null}
+                              <td className="fbo-cargo-items-table__meta">
+                                <FboCargoContentMeta
+                                  supplyId={supplyId}
+                                  line={line}
+                                  marketplace={marketplace}
+                                  onPackingChange={handlePackingChange}
+                                  variant="inline"
+                                  showZone={false}
+                                  showExpiry
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="fbo-cargo-items-table__totals">
+                            <td colSpan={isOzon ? 3 : 2} className="text-end">
+                              <strong>Итого</strong>
+                            </td>
+                            <td className="text-end">
+                              <strong>{activeCargo.totalQuantity ?? 0}</strong>
+                            </td>
+                            <td colSpan={isOzon ? 2 : 1} className="text-muted">
+                              {fmtVolumeL(activeCargo.totalVolumeL)} · {cargoWeightSummary(activeCargo)}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+
+          {isOzon ? (
+            <FboTransportCargoes
+              printHelperUrl={printHelperUrl}
+              supplyId={supplyId}
+              packing={packing}
+              onPackingChange={onPackingChange}
+              disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
+            />
+          ) : null}
+        </>
+      ) : (
+        <>
+          <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
+            {marketplace === 'wb'
+              ? 'Формат WB: баркод, кол-во, ШК короба, срок годности.'
+              : 'Формат Ozon: ШК товара, артикул, кол-во, зона, срок годности, ШК ГМ, тип ГМ.'}
+          </p>
+          {cargoUnits.length === 0 ? (
+            <p className="text-muted">
+              {isOzon
+                ? 'Пока нет грузомест — нажмите «Новое грузоместо» и отсканируйте коробку.'
+                : 'Пока нет грузомест — отсканируйте штрихкод коробки или нажмите «Новое грузоместо».'}
+            </p>
+          ) : (
+            <div className="fbo-cargo-list">
+              {sortedCargoUnits.map((cargo) => {
+                const isActive = String(cargo.id) === String(activeCargoUnitId);
+                return (
+                  <div
+                    key={cargo.id}
+                    className={[
+                      'fbo-cargo-card',
+                      isActive ? 'fbo-cargo-card--active' : 'fbo-cargo-card--collapsed',
+                      cargo.weightExceeded ? 'fbo-cargo-card--overweight' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <div
+                      className="fbo-cargo-card__head"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleSelectCargo(cargo.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleSelectCargo(cargo.id);
+                        }
+                      }}
+                    >
+                      <div className="fbo-cargo-card__title">
+                        <strong>{cargo.barcode}</strong>
+                        {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
+                        {cargo.transportCargoBarcode ? (
+                          <span className="badge bg-secondary ms-2" title="Привязан к транспортному грузоместу">
+                            ТГМ {cargo.transportCargoBarcode}
+                          </span>
+                        ) : null}
                       </div>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {isOzon ? (
-        <FboTransportCargoes
-          printHelperUrl={printHelperUrl}
-          supplyId={supplyId}
-          packing={packing}
-          onPackingChange={onPackingChange}
-          disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
-        />
-      ) : null}
-
-      <h4 className="fbo-packing-section-title" style={{ marginTop: 20 }}>
-        Товары поставки
-        <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
-          не собранные сверху
-        </span>
-        {itemSearchActive ? (
-          <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
-            · найдено {filteredSupplyItems.length} из {sortedSupplyItems.length}
-          </span>
-        ) : null}
-      </h4>
-      <div className="table-responsive">
-        <table className="table table-sm table-hover">
-          <thead>
-            <tr>
-              <th>Название</th>
-              <th>Артикул</th>
-              <th>Штрихкод</th>
-              {isOzon ? <th>Размещение</th> : null}
-              <th title="План / упаковано; нажмите на план (слева), чтобы изменить количество в поставке">Расхождения</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredSupplyItems.length === 0 ? (
-              <tr>
-                <td colSpan={isOzon ? 5 : 4} className="text-muted text-center py-3">
-                  {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
-                </td>
-              </tr>
-            ) : null}
-            {filteredSupplyItems.map((it) => {
-              const stat = statsByItemId.get(String(it.id));
-              const planned = stat?.planned ?? it.quantity ?? 0;
-              const packed = stat?.packed ?? 0;
-              const complete = isSupplyItemPackingComplete(stat, it);
-              return (
-                <tr key={it.id} className={complete ? 'fbo-item-row--complete' : ''}>
-                  <td>{it.productName || it.name || '—'}</td>
-                  <td>{it.sku || '—'}</td>
-                  <td>{it.barcode || '—'}</td>
-                  {isOzon ? (
-                    <td>
-                      <span
-                        className={`badge ${
-                          placementKindLabel(it) === 'Сортируемый'
-                            ? 'bg-info text-dark'
-                            : placementKindLabel(it) === 'Несортируемый'
-                              ? 'bg-secondary'
-                              : 'bg-light text-dark border'
-                        }`}
-                      >
-                        {placementKindLabel(it)}
+                      <span className="fbo-cargo-card__summary text-muted small">
+                        {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
+                        {' · '}
+                        {cargo.totalQuantity ?? 0} шт.
+                        {(cargo.totalVolumeL > 0 || cargo.totalWeightG > 0) && (
+                          <>
+                            {' '}
+                            · {fmtVolumeL(cargo.totalVolumeL)} · {cargoWeightSummary(cargo)}
+                          </>
+                        )}
+                        {cargo.weightExceeded ? (
+                          <span className="fbo-cargo-card__overweight"> · превышен вес</span>
+                        ) : null}
                       </span>
-                    </td>
-                  ) : null}
-                  <td>
-                    <FboSupplyItemPackingCell
-                      supplyId={supplyId}
-                      itemId={it.id}
-                      packed={packed}
-                      planned={planned}
-                      onSaved={onItemQuantitySaved}
-                      onBreakdownClick={() =>
-                        onBreakdownClick?.({
-                          ...it,
-                          packed,
-                          planned,
-                          stat,
-                          byCargo: stat?.byCargo || [],
-                        })
-                      }
-                    />
-                  </td>
+                      <span className="text-muted small">{fmtDt(cargo.createdAt)}</span>
+                      {isOzon && cargo.barcode ? (
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          disabled={printingLabels}
+                          onClick={(e) => handlePrintCargoLabels([cargo.barcode], e)}
+                          title="Печать этикетки грузоместа"
+                        >
+                          Этикетка
+                        </Button>
+                      ) : null}
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={(e) => handleDeleteCargo(cargo.id, e)}
+                      >
+                        Удалить
+                      </Button>
+                    </div>
+                    {isActive ? (
+                      <div className="fbo-cargo-card__body">
+                        <FboCargoUnitKind
+                          supplyId={supplyId}
+                          cargo={cargo}
+                          onPackingChange={handlePackingChange}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <FboCargoBarcodeEdit
+                          supplyId={supplyId}
+                          cargo={cargo}
+                          onPackingChange={handlePackingChange}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        {cargo.weightExceeded ? (
+                          <div className="alert alert-warning py-2 px-3 small mb-2">
+                            {cargoWeightExceededMessage(cargo)}
+                          </div>
+                        ) : null}
+                        {(cargo.contents || []).length === 0 ? (
+                          <p className="text-muted small mb-0">Пусто — отсканируйте товары.</p>
+                        ) : (
+                          <div className="table-responsive">
+                            <table className="table table-sm fbo-cargo-items-table mb-0">
+                              <thead>
+                                <tr>
+                                  <th>Товар</th>
+                                  <th>Артикул</th>
+                                  <th className="text-end">Кол-во</th>
+                                  {isOzon ? <th>Размещение</th> : null}
+                                  <th>Срок годности</th>
+                                  <th className="text-end">Объём</th>
+                                  <th className="text-end">Масса</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(cargo.contents || []).map((line) => (
+                                  <tr key={line.id}>
+                                    <td>{line.productName || line.sku || '—'}</td>
+                                    <td>{line.sku || '—'}</td>
+                                    <td className="text-end">
+                                      <strong>{line.quantity}</strong>
+                                    </td>
+                                    {isOzon ? (
+                                      <td className="fbo-cargo-items-table__meta">
+                                        <div className="fbo-placement-kind">
+                                          <span
+                                            className={`badge ${
+                                              placementKindLabel(line) === 'Сортируемый'
+                                                ? 'bg-info text-dark'
+                                                : placementKindLabel(line) === 'Несортируемый'
+                                                  ? 'bg-secondary'
+                                                  : 'bg-light text-dark border'
+                                            }`}
+                                          >
+                                            {placementKindLabel(line)}
+                                          </span>
+                                        </div>
+                                        <FboCargoContentMeta
+                                          supplyId={supplyId}
+                                          line={line}
+                                          marketplace={marketplace}
+                                          onPackingChange={handlePackingChange}
+                                          variant="inline"
+                                          showZone
+                                          showExpiry={false}
+                                        />
+                                      </td>
+                                    ) : null}
+                                    <td className="fbo-cargo-items-table__meta">
+                                      <FboCargoContentMeta
+                                        supplyId={supplyId}
+                                        line={line}
+                                        marketplace={marketplace}
+                                        onPackingChange={handlePackingChange}
+                                        variant="inline"
+                                        showZone={false}
+                                        showExpiry
+                                      />
+                                    </td>
+                                    <td className="text-end text-muted">
+                                      {fmtVolumeL(line.lineVolumeL)}
+                                    </td>
+                                    <td className="text-end text-muted">
+                                      {fmtWeightG(line.lineWeightG)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              {(cargo.contents || []).length > 0 ? (
+                                <tfoot>
+                                  <tr className="fbo-cargo-items-table__totals">
+                                    <td colSpan={isOzon ? 5 : 4} className="text-end">
+                                      <strong>Итого по грузоместу</strong>
+                                    </td>
+                                    <td className="text-end">
+                                      <strong>{fmtVolumeL(cargo.totalVolumeL)}</strong>
+                                    </td>
+                                    <td className="text-end">
+                                      <strong>{cargoWeightSummary(cargo)}</strong>
+                                    </td>
+                                  </tr>
+                                </tfoot>
+                              ) : null}
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {isOzon ? (
+            <FboTransportCargoes
+              printHelperUrl={printHelperUrl}
+              supplyId={supplyId}
+              packing={packing}
+              onPackingChange={onPackingChange}
+              disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
+            />
+          ) : null}
+
+          <h4 className="fbo-packing-section-title" style={{ marginTop: 20 }}>
+            Товары поставки
+            <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+              не собранные сверху
+            </span>
+            {itemSearchActive ? (
+              <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+                · найдено {filteredSupplyItems.length} из {sortedSupplyItems.length}
+              </span>
+            ) : null}
+          </h4>
+          <div className="table-responsive">
+            <table className="table table-sm table-hover">
+              <thead>
+                <tr>
+                  <th>Название</th>
+                  <th>Артикул</th>
+                  <th>Штрихкод</th>
+                  {isOzon ? <th>Размещение</th> : null}
+                  <th title="Упаковано / план; нажмите на план (справа), чтобы изменить количество в поставке">Расхождения</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {filteredSupplyItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={isOzon ? 5 : 4} className="text-muted text-center py-3">
+                      {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
+                    </td>
+                  </tr>
+                ) : null}
+                {filteredSupplyItems.map((it) => {
+                  const stat = statsByItemId.get(String(it.id));
+                  const planned = stat?.planned ?? it.quantity ?? 0;
+                  const packed = stat?.packed ?? 0;
+                  const complete = isSupplyItemPackingComplete(stat, it);
+                  return (
+                    <tr key={it.id} className={complete ? 'fbo-item-row--complete' : ''}>
+                      <td>{it.productName || it.name || '—'}</td>
+                      <td>{it.sku || '—'}</td>
+                      <td>{it.barcode || '—'}</td>
+                      {isOzon ? (
+                        <td>
+                          <span
+                            className={`badge ${
+                              placementKindLabel(it) === 'Сортируемый'
+                                ? 'bg-info text-dark'
+                                : placementKindLabel(it) === 'Несортируемый'
+                                  ? 'bg-secondary'
+                                  : 'bg-light text-dark border'
+                            }`}
+                          >
+                            {placementKindLabel(it)}
+                          </span>
+                        </td>
+                      ) : null}
+                      <td>
+                        <FboSupplyItemPackingCell
+                          supplyId={supplyId}
+                          itemId={it.id}
+                          packed={packed}
+                          planned={planned}
+                          byCargo={stat?.byCargo || []}
+                          onSaved={onItemQuantitySaved}
+                          onBreakdownClick={() =>
+                            onBreakdownClick?.({
+                              ...it,
+                              packed,
+                              planned,
+                              stat,
+                              byCargo: stat?.byCargo || [],
+                            })
+                          }
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <FboSupplyPackingRemoveModal
         isOpen={removeModalOpen}
@@ -1034,6 +1441,7 @@ export function FboSupplyPacking({
         activeCargoUnitId={activeCargoUnitId}
         activeCargoBarcode={activeCargo?.barcode}
         onPackingChange={handlePackingChange}
+        revertCollect={isExpress}
       />
 
       <Modal

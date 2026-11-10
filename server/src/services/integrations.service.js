@@ -1921,7 +1921,8 @@ class IntegrationsService {
     if (!response.ok) {
       const t = await response.text().catch(() => '');
       const err = new Error(`Ошибка API Ozon warehouses: ${response.status} ${t.substring(0, 300)}`);
-      err.statusCode = response.status;
+      // 401 от Ozon не должен разлогинивать пользователя ERM (axios interceptor).
+      err.statusCode = response.status === 401 || response.status === 403 ? 400 : response.status;
       throw err;
     }
     const data = await response.json();
@@ -2000,8 +2001,13 @@ class IntegrationsService {
     });
     if (!response.ok) {
       const t = await response.text().catch(() => '');
-      const err = new Error(`Ошибка API WB seller warehouses: ${response.status} ${t.substring(0, 300)}`);
-      err.statusCode = response.status;
+      const err = new Error(
+        response.status === 401 || response.status === 403
+          ? `Wildberries: не удалось загрузить склады продавца (токен API отклонён). Проверьте ключ WB в «Интеграциях». ${t.substring(0, 200)}`
+          : `Ошибка API WB seller warehouses: ${response.status} ${t.substring(0, 300)}`
+      );
+      // 401 от WB не должен разлогинивать пользователя ERM (axios interceptor).
+      err.statusCode = response.status === 401 || response.status === 403 ? 400 : response.status;
       throw err;
     }
     const data = await response.json();
@@ -2044,7 +2050,7 @@ class IntegrationsService {
     if (!response.ok) {
       const t = await response.text().catch(() => '');
       const err = new Error(`Ошибка API Yandex campaigns: ${response.status} ${t.substring(0, 300)}`);
-      err.statusCode = response.status;
+      err.statusCode = response.status === 401 || response.status === 403 ? 400 : response.status;
       throw err;
     }
     const data = await response.json();
@@ -2118,7 +2124,7 @@ class IntegrationsService {
       if (!response.ok) {
         const t = await response.text().catch(() => '');
         const err = new Error(`Ошибка API Yandex warehouses: ${response.status} ${t.substring(0, 300)}`);
-        err.statusCode = response.status;
+        err.statusCode = response.status === 401 || response.status === 403 ? 400 : response.status;
         throw err;
       }
       const data = await response.json().catch(() => ({}));
@@ -3816,12 +3822,16 @@ class IntegrationsService {
       organizationId = null,
       ozonOverride = null,
       __ozonRaw = false,
+      priority = 'normal',
+      maxAttempts = 4,
     } = opts || {};
     // Прямые вызовы (reviews/questions/FBO import) тоже через очередь — иначе съедают лимит FBS.
+    // priority:'high' — ответы пользователю (не ждут окна синка заказов / хвоста normal-очереди).
     if (!__ozonRaw) {
       const { ozonApiPostWithRetry } = await import('../utils/ozonSellerApi.js');
       return ozonApiPostWithRetry(path, body, { profileId, organizationId, ozonOverride }, {
-        maxAttempts: 4,
+        maxAttempts,
+        priority,
       });
     }
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });

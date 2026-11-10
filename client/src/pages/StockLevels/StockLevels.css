@@ -132,8 +132,9 @@
 }
 
 .stock-levels-table-wrapper {
+  /* overflow-y: clip ломает position:sticky у thead при скролле страницы */
   overflow-x: auto !important;
-  overflow-y: clip !important;
+  overflow-y: visible !important;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -141,10 +142,22 @@
   overflow: visible !important;
   width: 100%;
   min-width: 720px;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
-.stock-levels-table th {
+.stock-levels-table thead th {
   text-align: center;
+  position: sticky;
+  top: var(--erm-header-height, 60px);
+  z-index: 3;
+  background: var(--bs-body-bg, #fff);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.stock-levels-table thead th.stock-mp-block-col {
+  z-index: 4;
+  top: var(--erm-header-height, 60px);
 }
 
 .stock-levels-table td {

@@ -365,6 +365,21 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Экспресс: ГМ / товар → приёмка + сборка + упаковка. */
+  expressScan: async (
+    id,
+    { barcode, activeCargoUnitId, scanMode, allowOverage, allowReceive } = {}
+  ) => {
+    const response = await api.post(`/fbo-supplies/${id}/express/scan`, {
+      barcode,
+      activeCargoUnitId: activeCargoUnitId ?? null,
+      ...(scanMode ? { scanMode } : {}),
+      ...(allowOverage === true ? { allowOverage: true } : {}),
+      ...(allowReceive === false ? { allowReceive: false } : {}),
+    });
+    return response.data?.data ?? response.data;
+  },
+
   syncOzonPlacementZones: async (id) => {
     const response = await api.post(`/fbo-supplies/${id}/sync-ozon-placement-zones`);
     return response.data?.data ?? response.data;
@@ -534,10 +549,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  packingScanRemove: async (id, { barcode, activeCargoUnitId }) => {
+  packingScanRemove: async (id, { barcode, activeCargoUnitId, revertCollect } = {}) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan-remove`, {
       barcode,
       activeCargoUnitId: activeCargoUnitId ?? null,
+      ...(revertCollect === true ? { revertCollect: true } : {}),
     });
     return response.data?.data ?? response.data;
   },

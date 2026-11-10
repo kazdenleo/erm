@@ -171,7 +171,7 @@ async function resolveWarehouseOrganizationId(warehouseId, fallbackOrganizationI
   return Number.isFinite(orgId) && orgId > 0 ? orgId : fallbackOrganizationId;
 }
 
-async function mapSupplierRows(rows, { priorityFrom = 'index' } = {}) {
+function mapSupplierRows(rows, { priorityFrom = 'index' } = {}) {
   return (rows || []).map((row, idx) => {
     const apiConfig = parseApiConfig(row.api_config);
     const warehousePriority =

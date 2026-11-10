@@ -6,6 +6,7 @@ import { query } from '../config/database.js';
 import {
   packingEvalFromItemStats,
   syncSupplyStatusForPacking,
+  touchFboSupplyPackActivity,
 } from '../utils/fboSupplyPackingCheck.js';
 import {
   buildWeightExceededMessage,
@@ -163,6 +164,45 @@ async function assertCargoPlacementZoneCompatible(cargoUnitId, supplyItem, suppl
   }
 }
 
+/** Совпадение штрихкода/артикула со строкой поставки (в т.ч. комплектующая комплекта). */
+const SUPPLY_ITEM_BARCODE_MATCH_SQL = `
+  (
+    TRIM(COALESCE(i.barcode, '')) = $CODE
+    OR TRIM(COALESCE(i.sku, '')) = $CODE
+    OR TRIM(COALESCE(i.mp_offer_id, '')) = $CODE
+    OR TRIM(COALESCE(p.sku, '')) = $CODE
+    OR EXISTS (
+      SELECT 1 FROM barcodes b
+      WHERE b.product_id = p.id AND TRIM(b.barcode) = $CODE
+    )
+    OR EXISTS (
+      SELECT 1 FROM product_skus ps
+      WHERE ps.product_id = p.id AND TRIM(ps.sku) = $CODE
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM kit_components kc
+      JOIN products comp ON comp.id = kc.component_product_id
+      WHERE kc.kit_product_id = p.id
+        AND (
+          TRIM(COALESCE(comp.sku, '')) = $CODE
+          OR EXISTS (
+            SELECT 1 FROM barcodes b2
+            WHERE b2.product_id = comp.id AND TRIM(b2.barcode) = $CODE
+          )
+          OR EXISTS (
+            SELECT 1 FROM product_skus ps2
+            WHERE ps2.product_id = comp.id AND TRIM(ps2.sku) = $CODE
+          )
+        )
+    )
+  )
+`;
+
+function barcodeMatchSql(codeParamIndex) {
+  return SUPPLY_ITEM_BARCODE_MATCH_SQL.replaceAll('$CODE', `$${codeParamIndex}`);
+}
+
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const codes = productLookupCodesFromScan(barcode);
   const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
@@ -177,47 +217,64 @@ async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
 
-  const directR = await query(
-    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
-     FROM fbo_supply_items i
-     LEFT JOIN products p ON p.id = i.product_id
-     WHERE i.fbo_supply_id = $1
-       AND (
-         TRIM(COALESCE(i.barcode, '')) = $2
-         OR TRIM(COALESCE(i.sku, '')) = $2
-       )
-     LIMIT 1`,
-    [supplyId, code]
-  );
-  if (directR.rows?.[0]) return directR.rows[0];
-
   const pid = normalizeProfileId(profileId);
   const params = [supplyId, code];
   let profileFilter = '';
   if (pid != null) {
     params.push(pid);
-    profileFilter = ` AND p.profile_id = $${params.length}`;
+    profileFilter = ` AND (p.profile_id IS NULL OR p.profile_id = $${params.length})`;
   }
-  const byProductR = await query(
+  const r = await query(
     `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
      FROM fbo_supply_items i
-     JOIN products p ON p.id = i.product_id
+     LEFT JOIN products p ON p.id = i.product_id
      WHERE i.fbo_supply_id = $1${profileFilter}
-       AND (
-         TRIM(COALESCE(p.sku, '')) = $2
-         OR EXISTS (
-           SELECT 1 FROM barcodes b
-           WHERE b.product_id = p.id AND TRIM(b.barcode) = $2
-         )
-         OR EXISTS (
-           SELECT 1 FROM product_skus ps
-           WHERE ps.product_id = p.id AND TRIM(ps.sku) = $2
-         )
-       )
+       AND ${barcodeMatchSql(2)}
+     ORDER BY i.id ASC
      LIMIT 1`,
     params
   );
-  return byProductR.rows?.[0] || null;
+  return r.rows?.[0] || null;
+}
+
+/**
+ * Снятие: сначала ищем среди позиций, которые реально лежат в активном ГМ
+ * (в т.ч. по ШК комплектующей), иначе — по всей поставке.
+ */
+async function findSupplyItemForRemove(supplyId, cargoUnitId, barcode, profileId) {
+  const codes = productLookupCodesFromScan(barcode);
+  const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
+  const cargoId = Number(cargoUnitId);
+
+  for (const code of toTry) {
+    if (!code) continue;
+    const pid = normalizeProfileId(profileId);
+    const params = [cargoId, supplyId, code];
+    let profileFilter = '';
+    if (pid != null) {
+      params.push(pid);
+      profileFilter = ` AND (p.profile_id IS NULL OR p.profile_id = $${params.length})`;
+    }
+    const inCargo = await query(
+      `SELECT ${SUPPLY_ITEM_SCAN_SELECT}, cc.quantity AS cargo_qty
+       FROM fbo_supply_cargo_contents cc
+       JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
+       LEFT JOIN products p ON p.id = i.product_id
+       WHERE cc.cargo_unit_id = $1
+         AND i.fbo_supply_id = $2
+         AND cc.quantity > 0
+         ${profileFilter}
+         AND ${barcodeMatchSql(3)}
+       ORDER BY cc.quantity DESC, i.id ASC
+       LIMIT 1`,
+      params
+    );
+    if (inCargo.rows?.[0]) return inCargo.rows[0];
+
+    const found = await findSupplyItemForScanExact(supplyId, code, profileId);
+    if (found) return found;
+  }
+  return null;
 }
 
 function normalizeCargoKind(v) {
@@ -248,6 +305,11 @@ async function withPackingStatusSync(supplyId, packing) {
     packing?.itemStats?.length > 0
       ? packingEvalFromItemStats(packing.itemStats)
       : null;
+  try {
+    await touchFboSupplyPackActivity(supplyId);
+  } catch {
+    /* метка активности необязательна */
+  }
   const sync = await syncSupplyStatusForPacking(supplyId, {
     packingEval: packingEval ?? undefined,
   });
@@ -256,6 +318,7 @@ async function withPackingStatusSync(supplyId, packing) {
     supplyStatus: sync.status,
     packingAllMatch: sync.allMatch,
     statusReverted: sync.reverted,
+    lastPackAt: new Date().toISOString(),
   };
 }
 
@@ -526,19 +589,40 @@ class FboSuppliesPackingService {
       [supplyId, code]
     );
 
-    if (existingCargoR.rows?.length) {
-      const cargo = mapCargoRow(existingCargoR.rows[0]);
-      const packing = await this.getPackingState(supplyId, packingCtx);
-      return {
-        action: 'cargo_selected',
-        message: `Грузоместо: ${cargo.barcode}`,
-        activeCargoUnitId: cargo.id,
-        cargoUnit: cargo,
-        packing,
-      };
+    // Если штрихкод есть и у ГМ, и у товара — при активном ГМ и режиме «товар»
+    // упаковываем товар (иначе экспресс/упаковка вечно «переключают коробку»).
+    let existingCargoRow = existingCargoR.rows?.[0] || null;
+    if (existingCargoRow) {
+      if (mode === 'product' && Number.isFinite(activeId) && activeId > 0) {
+        const asProduct = await findSupplyItemForScan(supplyId, code, profileId);
+        if (asProduct) {
+          existingCargoRow = null;
+        }
+      }
+      if (existingCargoRow) {
+        const cargo = mapCargoRow(existingCargoRow);
+        const packing = await this.getPackingState(supplyId, packingCtx);
+        return {
+          action: 'cargo_selected',
+          message: `Грузоместо: ${cargo.barcode}`,
+          activeCargoUnitId: cargo.id,
+          cargoUnit: cargo,
+          packing,
+        };
+      }
     }
 
     if (mode === 'cargo') {
+      const asProduct = await findSupplyItemForScan(supplyId, code, profileId);
+      if (asProduct) {
+        const name = asProduct.product_name || asProduct.name || asProduct.sku || 'товар';
+        const err = new Error(
+          `«${name}» — штрихкод товара из поставки, а не коробки. Отмените «Новое грузоместо» и сканируйте товар снова, либо отсканируйте этикетку грузоместа.`
+        );
+        err.statusCode = 400;
+        err.code = 'CARGO_BARCODE_IS_PRODUCT';
+        throw err;
+      }
       return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
     }
 
@@ -690,8 +774,14 @@ class FboSuppliesPackingService {
 
   /**
    * Снять 1 шт. товара из активного грузоместа по скану штрихкода.
+   * @param {{ barcode: string, activeCargoUnitId?: number, revertCollect?: boolean }} body
+   * revertCollect — для экспресса: также −1 к collected_quantity (скан делал сборку+упаковку).
    */
-  async scanRemove(supplyId, { barcode, activeCargoUnitId } = {}, { profileId } = {}) {
+  async scanRemove(
+    supplyId,
+    { barcode, activeCargoUnitId, revertCollect = false } = {},
+    { profileId } = {}
+  ) {
     const supply = await assertSupplyAccess(supplyId, profileId);
     const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
     const packingCtx = { profileId, supply, weightLimits };
@@ -719,7 +809,7 @@ class FboSuppliesPackingService {
       throw err;
     }
 
-    const supplyItem = await findSupplyItemForScan(supplyId, code, profileId);
+    const supplyItem = await findSupplyItemForRemove(supplyId, activeId, code, profileId);
     if (!supplyItem) {
       const err = new Error('Товар не найден в этой поставке (штрихкод, артикул или SKU)');
       err.statusCode = 400;
@@ -751,16 +841,32 @@ class FboSuppliesPackingService {
       );
     }
 
+    let collectReverted = false;
+    if (revertCollect === true) {
+      const col = await query(
+        `UPDATE fbo_supply_items
+         SET collected_quantity = GREATEST(0, COALESCE(collected_quantity, 0) - 1),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND fbo_supply_id = $2
+         RETURNING collected_quantity`,
+        [supplyItem.id, supplyId]
+      );
+      collectReverted = Boolean(col.rows?.[0]);
+    }
+
     const packing = await this.getPackingState(supplyId, packingCtx);
     const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
     const newQty = Math.max(0, prevQty - 1);
     const syncMeta = await withPackingStatusSync(supplyId, packing);
     return {
       action: 'product_removed',
-      message: `${name}: −1 шт. из грузоместа ${cargoCheck.rows[0].barcode} (осталось ${newQty})`,
+      message: `${name}: −1 шт. из грузоместа ${cargoCheck.rows[0].barcode} (осталось ${newQty})${
+        collectReverted ? ' · сборка −1' : ''
+      }`,
       activeCargoUnitId: activeId,
       supplyItemId: supplyItem.id,
       quantityInCargo: newQty,
+      collectReverted,
       ...syncMeta,
     };
   }

@@ -64,6 +64,11 @@
   opacity: 0.65;
 }
 
+.fbo-reserve-breakdown__part--gap {
+  color: #b45309;
+  font-weight: 600;
+}
+
 .fbo-reserve-breakdown__part--hint {
   color: #b45309;
   font-size: 10px;
@@ -182,6 +187,16 @@
   color: #334155;
 }
 
+.fbo-status-badge--collecting {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.fbo-status-badge--packing {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
 .fbo-status-badge--packed {
   background: #dbeafe;
   color: #1d4ed8;
@@ -241,6 +256,16 @@
 .fbo-status-select--new {
   background: #e2e8f0;
   color: #334155;
+}
+
+.fbo-status-select--collecting {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.fbo-status-select--packing {
+  background: #ede9fe;
+  color: #6d28d9;
 }
 
 .fbo-status-select--packed {
@@ -305,6 +330,12 @@
 
 .fbo-status-step--new.active { background: #64748b; }
 .fbo-status-step--new.done { background: #e2e8f0; color: #475569; }
+
+.fbo-status-step--collecting.active { background: #0284c7; }
+.fbo-status-step--collecting.done { background: #e0f2fe; color: #0369a1; }
+
+.fbo-status-step--packing.active { background: #7c3aed; }
+.fbo-status-step--packing.done { background: #ede9fe; color: #6d28d9; }
 
 .fbo-status-step--packed.active { background: #2563eb; }
 .fbo-status-step--packed.done { background: #dbeafe; color: #1d4ed8; }
@@ -1106,6 +1137,92 @@
   text-underline-offset: 2px;
 }
 
+.fbo-supply-qty-cell__packed-part {
+  position: relative;
+}
+
+.fbo-packed-cargo-tip {
+  z-index: 1200;
+  min-width: 160px;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  text-decoration: none;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.fbo-packed-cargo-tip--fixed {
+  position: fixed;
+  transform: translate(-50%, -100%);
+}
+
+.fbo-packed-cargo-tip--fixed.fbo-packed-cargo-tip--below {
+  transform: translate(-50%, 0);
+}
+
+.fbo-packed-cargo-tip--above::after,
+.fbo-packed-cargo-tip--below::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  margin-left: -6px;
+  border: 6px solid transparent;
+}
+
+.fbo-packed-cargo-tip--above::after {
+  top: 100%;
+  border-top-color: #0f172a;
+}
+
+.fbo-packed-cargo-tip--below::after {
+  bottom: 100%;
+  border-bottom-color: #0f172a;
+}
+
+.fbo-packed-cargo-tip__title {
+  display: block;
+  margin-bottom: 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.fbo-packed-cargo-tip__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fbo-packed-cargo-tip__list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.fbo-packed-cargo-tip__bc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-packed-cargo-tip__qty {
+  flex: 0 0 auto;
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+}
+
 .fbo-packed-ok {
   color: #15803d;
   background: #f0fdf4;
@@ -1544,4 +1661,123 @@
 
 .fbo-cargo-kind__tare input {
   width: 88px;
+}
+
+/* Экспресс: переключатель ГМ + две колонки */
+.fbo-express-cargo-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.fbo-express-cargo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.fbo-express-cargo-chip:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.fbo-express-cargo-chip--active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 1px #2563eb;
+}
+
+.fbo-express-cargo-chip--overweight {
+  border-color: #d97706;
+}
+
+.fbo-express-cargo-chip strong {
+  font-size: 13px;
+}
+
+.fbo-express-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 0 0 12px;
+  max-width: 420px;
+}
+
+.fbo-express-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  margin-top: 4px;
+}
+
+.fbo-express-col {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(70vh, 720px);
+}
+
+.fbo-express-col .fbo-packing-section-title {
+  margin-top: 0;
+  margin-bottom: 8px;
+  flex: 0 0 auto;
+}
+
+.fbo-express-col__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* tables.css вешает overflow-y: clip на .table-responsive — без этого список Экспресса не скроллится */
+.app-main__inner .fbo-express-col__scroll.table-responsive,
+.app-main__inner .fbo-express-col__scroll {
+  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.fbo-express-cargo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fbo-express-left-qty {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .fbo-express-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .fbo-express-col {
+    max-height: 50vh;
+  }
 }

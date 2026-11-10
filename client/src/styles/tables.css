@@ -163,12 +163,12 @@
 
 /* Горизонтальный скролл без вертикального scrollport */
 .app-main__inner .prices-table-container,
-.app-main__inner .table-responsive,
+.app-main__inner .table-responsive:not(.fbo-express-col__scroll):not(.fbo-purchase-calc-wrap),
 .app-main__inner .questions-table-wrap,
 .app-main__inner .assembly-table-wrap,
 .app-main__inner .warehouse-ops-inventory-table-wrap,
 .app-main__inner .procurement-forecast__table-wrap,
-.platform-main .table-responsive {
+.platform-main .table-responsive:not(.fbo-express-col__scroll) {
   overflow-x: auto;
   overflow-y: clip;
   --erm-sticky-table-header-top: 0px;

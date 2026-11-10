@@ -1,8 +1,8 @@
 /**
- * Global Styles
- * Глобальные стили приложения
+ * Global Styles — светлая тема лендинга в приложении
  */
 
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Syne:wght@600;700;800&display=swap');
 @import './variables.css';
 @import './tables.css';
 @import './pages.css';
@@ -20,13 +20,17 @@ html, body {
 }
 
 body {
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-sans);
   line-height: 1.6;
   font-weight: 400;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, .title, .app-sidebar__heading, .app-brand-text {
+  font-family: var(--font-display);
 }
 
 #root {
@@ -39,7 +43,6 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
 
-/* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -50,7 +53,7 @@ code {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--muted);
+  background: #a8bfb2;
   border-radius: 4px;
 }
 
@@ -58,7 +61,6 @@ code {
   background: var(--primary-500);
 }
 
-/* Utility classes */
 .container {
   max-width: 1200px;
   margin: 0 auto;
@@ -81,4 +83,3 @@ code {
   border-radius: 8px;
   margin: 20px 0;
 }
-

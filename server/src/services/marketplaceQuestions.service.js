@@ -18,12 +18,21 @@ import {
 import logger from '../utils/logger.js';
 
 /**
- * Вопросы хранятся по profile_id. Кабинет выбранной организации может быть другим продавцом
- * на том же маркетплейсе — для синка и ответов всегда берём интеграцию профиля.
+ * Вопросы хранятся по profile_id. Для ответа/refresh предпочитаем кабинет выбранной организации;
+ * без organizationId — первый кабинет профиля (как раньше).
  */
-async function getQuestionsMarketplaceConfig(type, profileId) {
-  return integrationsService.getMarketplaceConfig(type, { profileId, organizationId: null });
+async function getQuestionsMarketplaceConfig(type, profileId, organizationId = null) {
+  return integrationsService.getMarketplaceConfig(type, {
+    profileId,
+    organizationId: organizationId ?? null,
+  });
 }
+
+/** Интерактив: ответ / открытие ветки — high, чтобы не ждать sync FBS и хвост stock-очереди. */
+const OZON_QUESTIONS_INTERACTIVE = { priority: 'high', maxAttempts: 2 };
+
+/** Лимит страниц ответов Яндекса на один вопрос (открытие ветки). Sync ответы не тянет. */
+const YANDEX_ANSWERS_MAX_PAGES = 3;
 
 async function enrichYandexQuestionWithAnswers(profileId, rawQuestion, questionId) {
   const config = await getQuestionsMarketplaceConfig('yandex', profileId);
@@ -36,7 +45,7 @@ async function enrichYandexQuestionWithAnswers(profileId, rawQuestion, questionI
 
   const all = [];
   let pageToken = '';
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < YANDEX_ANSWERS_MAX_PAGES; i++) {
     const qs = new URLSearchParams();
     qs.set('limit', '50');
     if (pageToken) qs.set('pageToken', pageToken);
@@ -49,6 +58,7 @@ async function enrichYandexQuestionWithAnswers(profileId, rawQuestion, questionI
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ questionId: Number(questionId) }),
+      signal: AbortSignal.timeout(12000),
       ...(agent && { agent }),
     });
     const text = await resp.text();
@@ -980,17 +990,9 @@ async function syncYandex(profileId, _organizationId = null) {
       const questions = result.questions ?? [];
       if (!Array.isArray(questions) || questions.length === 0) break;
       for (const q of questions) {
-        const ext = getYandexQuestionExternalId(q);
-        const qid = ext != null ? Number(String(ext).trim()) : NaN;
-        let payload = q;
-        if (Number.isFinite(qid) && qid >= 1) {
-          try {
-            payload = await enrichYandexQuestionWithAnswers(profileId, q, qid);
-          } catch (e) {
-            logger.warn('[MarketplaceQuestions] Yandex enrich on sync failed:', e?.message || e);
-          }
-        }
-        const row = mapYandexQuestion(payload, profileId);
+        // Ответы подтягиваем при открытии ветки — иначе sync (6 окон × N вопросов × страницы)
+        // легко уходит за nginx ~60s и рвёт авто-синк на странице «Вопросы».
+        const row = mapYandexQuestion(q, profileId);
         if (!row) continue;
         if (!rowNeedsSellerReply(row)) continue;
         externalIds.push(row.external_id);
@@ -1206,10 +1208,21 @@ async function fetchWbQuestionPayload(profileId, externalId, _organizationId = n
   const ext = String(externalId ?? '').trim();
   if (!ext) return null;
   const verifyUrl = `https://feedbacks-api.wildberries.ru/api/v1/question?id=${encodeURIComponent(ext)}`;
-  const response = await fetch(verifyUrl, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-  });
+  let response;
+  try {
+    response = await fetch(verifyUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: apiKey,
+        'x-api-key': apiKey,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] WB question fetch failed:', e?.message || e);
+    return null;
+  }
   const text = await response.text();
   if (!response.ok) return null;
   try {
@@ -1246,7 +1259,7 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
   if (mp === 'ozon') {
     const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
     const qid = parseOzonQuestionId(row);
-    const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
+    const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId, organizationId);
     const ozonOverride =
       ozonCfg?.client_id && ozonCfg?.api_key
         ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
@@ -1256,7 +1269,7 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
         const data = await integrationsService._ozonApiPost(
           '/v1/question/list',
           { filter: { question_id: qid }, limit: 1, offset: 0 },
-          { profileId, ozonOverride }
+          { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
         );
         const items = extractOzonQuestions(data);
         const item = items[0];
@@ -1389,7 +1402,7 @@ async function resolveOzonQuestionSku(profileId, row, ozonOverride) {
     const info = await integrationsService._ozonApiPost(
       '/v1/question/info',
       { question_id: questionId },
-      { profileId, ozonOverride }
+      { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
     );
     const n = Number(info?.sku);
     return Number.isFinite(n) && n > 0 ? n : null;
@@ -1446,8 +1459,8 @@ function mergeYandexRawAfterAnswer(row, trimmed) {
   return mergedRaw;
 }
 
-async function submitAnswerOzon(profileId, row, text, _organizationId = null) {
-  const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
+async function submitAnswerOzon(profileId, row, text, organizationId = null) {
+  const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId, organizationId);
   const ozonOverride =
     ozonCfg?.client_id && ozonCfg?.api_key
       ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
@@ -1479,7 +1492,7 @@ async function submitAnswerOzon(profileId, row, text, _organizationId = null) {
       await integrationsService._ozonApiPost(
         '/v1/question/answer/update',
         { question_id: questionId, answer_id: existingAnswerId, sku, text },
-        { profileId, ozonOverride }
+        { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
       );
       return;
     } catch (e) {
@@ -1497,7 +1510,7 @@ async function submitAnswerOzon(profileId, row, text, _organizationId = null) {
     await integrationsService._ozonApiPost(
       '/v1/question/answer/create',
       { question_id: questionId, sku, text },
-      { profileId, ozonOverride }
+      { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
     );
   } catch (e) {
     if (isOzonPremiumPlusQuestionsError(e)) {
@@ -1532,18 +1545,12 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
   }
 
   const url = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
-  // Для feedbacks-api WB ожидает API key в заголовке Authorization (HeaderApiKey), без "Bearer".
-  const wbAuthHeaderValue = apiKey;
-  // На практике разные WB-инструменты используют разные названия заголовка; дублируем для совместимости.
+  // feedbacks-api: HeaderApiKey в Authorization; дублируем x-api-key для совместимости.
   const wbAuthHeaders = {
-    Authorization: wbAuthHeaderValue,
-    'x-api-key': wbAuthHeaderValue,
-    'X-Api-Key': wbAuthHeaderValue,
+    Authorization: apiKey,
+    'x-api-key': apiKey,
+    'X-Api-Key': apiKey,
   };
-  // В документации WB id — string. Число иногда приводит к “тихому успеху” без применения.
-  const idToSend = ext;
-  // Вопросы в WB приходят с разными state (например suppliersPortalSynch / wbRu).
-  // Для PATCH часто требуется передавать тот же state, что и у вопроса, иначе возможен “тихий успех” без применения.
   const stateFromRow =
     row?.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload.state ?? row.raw_payload.status : null;
   const stateToSend =
@@ -1587,6 +1594,7 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000),
     });
     const t = await resp.text();
     const b = parseWbBodyOrNull(t);
@@ -1598,8 +1606,7 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
       bodyPreview: t ? String(t).slice(0, 300) : '',
     });
     if (!resp.ok) {
-      // ВАЖНО: 401 от WB — это не 401 "сессия ERM протухла".
-      // Если отдать наружу 401, фронт удалит JWT и "выкинет" пользователя на логин.
+      // 401 от WB ≠ протухшая сессия ERM (иначе фронт разлогинит).
       const mappedStatus = resp.status === 401 ? 403 : resp.status;
       const err = new Error(`Wildberries API ${resp.status} (${label}): ${t.substring(0, 400)}`);
       err.statusCode = mappedStatus;
@@ -1617,15 +1624,10 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
     const vr = await fetch(verifyUrl, {
       method: 'GET',
       headers: { ...wbAuthHeaders, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15000),
     });
     const vt = await vr.text();
     const vj = parseWbBodyOrNull(vt);
-    logger.info('[WB Questions] GET verify (single)', {
-      profileId,
-      id: ext,
-      status: vr.status,
-      bodyPreview: vt ? String(vt).slice(0, 300) : '',
-    });
     if (!vr.ok) return false;
     try {
       assertWbOkBody(vj, 'verify');
@@ -1637,8 +1639,8 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
     return !!ansStr && ansStr === trimmed;
   };
 
-  // WB schema помечен как oneOf; на практике разные аккаунты “принимают” разные формы.
-  // Пробуем несколько корректных вариантов, прежде чем идти в verify/pending.
+  // Документированная форма: nested answer + state. Плюс один fallback (flat).
+  // Раньше до 8 PATCH + длинный verify → nginx 504 / axios timeout.
   const statesToTry = Array.from(
     new Set(
       [stateToSend, 'wbRu']
@@ -1646,46 +1648,37 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
         .filter((s) => s !== '')
     )
   );
-
   const patchAttempts = [];
   for (const st of statesToTry) {
     patchAttempts.push({
-      label: `answer+viewed (flat) state=${st}`,
-      payload: { id: idToSend, text: trimmed, state: st, wasViewed: true },
+      label: `answer+viewed (nested) state=${st}`,
+      payload: { id: ext, state: st, answer: { text: trimmed }, wasViewed: true },
     });
+  }
+  for (const st of statesToTry) {
     patchAttempts.push({
       label: `answer (flat) state=${st}`,
-      payload: { id: idToSend, text: trimmed, state: st },
-    });
-    patchAttempts.push({
-      label: `answer+viewed (nested) state=${st}`,
-      payload: { id: idToSend, state: st, answer: { text: trimmed }, wasViewed: true },
-    });
-    patchAttempts.push({
-      label: `answer (nested) state=${st}`,
-      payload: { id: idToSend, state: st, answer: { text: trimmed } },
+      payload: { id: ext, text: trimmed, state: st },
     });
   }
 
-  // Важно: WB может вернуть 200, но реально не применить. Поэтому после каждого 200 делаем быстрый verify.
+  let accepted = false;
   for (const a of patchAttempts) {
     try {
       await doPatch(a.payload, a.label);
-      // Небольшая пауза — WB иногда применяет не мгновенно.
-      await new Promise((r) => setTimeout(r, 400));
+      accepted = true;
+      await new Promise((r) => setTimeout(r, 350));
       if (await verifyOnce()) {
         return { verified: true };
       }
+      // PATCH принят — не крутим остальные варианты payload (лимит WB 3 req/s).
+      break;
     } catch (e) {
-      // Если WB вернул внятную ошибку 4xx, нет смысла продолжать.
       const sc = Number(e?.statusCode);
       const msg = String(e?.message || '');
       const wbErrText =
         (e?.wbBody && typeof e.wbBody === 'object' ? (e.wbBody.errorText ?? e.wbBody.message) : null) ?? '';
       const errText = String(wbErrText || msg);
-
-      // Частая ситуация: на одной из попыток WB отвечает 400 “Empty/Unknown state”.
-      // Это не “фатальная” ошибка — просто этот вариант payload/state не принят, пробуем следующий.
       const isStateMismatch =
         errText.includes('Empty state') ||
         errText.includes('Empty state in request') ||
@@ -1701,7 +1694,6 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
         });
         continue;
       }
-
       if ((Number.isFinite(sc) && sc >= 400 && sc < 500 && sc !== 429) || msg.includes('422')) {
         throw e;
       }
@@ -1714,9 +1706,14 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
     }
   }
 
-  // Отдельно проставляем wasViewed — даже если ответ применится позже, вопрос не должен возвращаться “новым”.
+  if (!accepted) {
+    const err = new Error('Wildberries: не удалось отправить ответ (API не принял запрос).');
+    err.statusCode = 502;
+    throw err;
+  }
+
   try {
-    await doPatch({ id: idToSend, state: stateToSend, wasViewed: true }, 'wasViewed');
+    await doPatch({ id: ext, state: stateToSend, wasViewed: true }, 'wasViewed');
   } catch (e) {
     logger.warn('[WB Questions] PATCH wasViewed failed (non-fatal)', {
       profileId,
@@ -1725,83 +1722,16 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
     });
   }
 
-  // Верификация: WB может применить ответ асинхронно.
-  const verifyUrl = `https://feedbacks-api.wildberries.ru/api/v1/question?id=${encodeURIComponent(ext)}`;
-  const verifyListBaseUrl = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
-  const createdIso =
-    (row?.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload.createdDate : null) ||
-    row?.source_created_at ||
-    null;
-  const createdAtMs = createdIso ? new Date(createdIso).getTime() : NaN;
-  const nowMs = Date.now();
-  const listFromMs = Number.isFinite(createdAtMs) ? createdAtMs - 7 * 86400_000 : nowMs - 30 * 86400_000;
-  const listToMs = Number.isFinite(createdAtMs) ? createdAtMs + 7 * 86400_000 : nowMs;
-  const listDateFrom = Math.floor(listFromMs / 1000);
-  const listDateTo = Math.floor(listToMs / 1000);
-
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-
-    const vr = await fetch(verifyUrl, {
-      method: 'GET',
-      headers: { ...wbAuthHeaders, Accept: 'application/json' },
-    });
-    const vt = await vr.text();
-    const vj = parseWbBodyOrNull(vt);
-    logger.info('[WB Questions] GET verify', {
-      profileId,
-      id: ext,
-      attempt: attempt + 1,
-      status: vr.status,
-      bodyPreview: vt ? String(vt).slice(0, 300) : '',
-    });
-    if (vr.ok) {
-      assertWbOkBody(vj, 'verify');
-      const ans = vj?.data?.answer?.text ?? vj?.answer?.text ?? vj?.answerText ?? null;
-      const ansStr = ans != null ? String(ans).trim() : '';
-      if (ansStr && ansStr === trimmed) {
-        return { verified: true };
-      }
-    }
-
-    // Проверка через список отвеченных.
-    try {
-      const listUrl =
-        `${verifyListBaseUrl}?isAnswered=true&take=200&skip=0&order=dateDesc` +
-        `&dateFrom=${encodeURIComponent(String(listDateFrom))}&dateTo=${encodeURIComponent(String(listDateTo))}`;
-      const lr = await fetch(listUrl, {
-        method: 'GET',
-        headers: { ...wbAuthHeaders, Accept: 'application/json' },
-      });
-      const lt = await lr.text();
-      const lj = parseWbBodyOrNull(lt);
-      logger.info('[WB Questions] GET verify list', {
-        profileId,
-        id: ext,
-        attempt: attempt + 1,
-        status: lr.status,
-        bodyPreview: lt ? String(lt).slice(0, 300) : '',
-      });
-      if (lr.ok) {
-        assertWbOkBody(lj, 'verify list');
-        const arr = lj?.data?.questions;
-        if (Array.isArray(arr)) {
-          const found = arr.find((q) => String(q?.id ?? '').trim() === ext);
-          const listAns =
-            found?.answer?.text ?? found?.answerText ?? found?.answer_text ?? found?.answer ?? null;
-          const listAnsStr = listAns != null ? String(listAns).trim() : '';
-          if (listAnsStr && listAnsStr === trimmed) {
-            return { verified: true };
-          }
-        }
-      }
-    } catch (_) {
-      // ignore list verification errors
-    }
+  // Одна короткая повторная проверка — дальше считаем pending (ответ уже ушёл в WB).
+  await new Promise((r) => setTimeout(r, 800));
+  if (await verifyOnce()) {
+    return { verified: true };
   }
 
+  logger.warn('[MarketplaceQuestions] WB answer accepted but not yet visible', {
+    profileId,
+    id: ext,
+  });
   return { verified: false };
 }
 
