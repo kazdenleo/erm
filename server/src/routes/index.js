@@ -27,6 +27,7 @@ import {
 } from '../validators/orderValidator.js';
 import { requireAuth } from '../middleware/auth.js';
 import mobileAppController from '../controllers/mobileApp.controller.js';
+import catalogParserController from '../controllers/catalogParser.controller.js';
 import supplierStocksRoutes from './supplierStocks.routes.js';
 import integrationsRoutes from './integrations.routes.js';
 import { categoriesRoutes } from './categories.routes.js';
@@ -238,6 +239,19 @@ router.use('/auth', authRoutes);
 router.use(enforceSubscriptionAccess);
 
 router.get('/search', requireAuth, wrapAsync(globalSearchController.search.bind(globalSearchController)));
+
+// Установщик парсера каталогов — только профиль «Автолюбитель»
+router.get(
+  '/catalog-parser',
+  requireAuth,
+  wrapAsync(catalogParserController.getInfo.bind(catalogParserController))
+);
+router.get(
+  '/catalog-parser/download',
+  requireAuth,
+  wrapAsync(catalogParserController.download.bind(catalogParserController))
+);
+
 // Профили и пользователи (защищены в своих роутах)
 router.use('/profiles', profilesRoutes);
 router.use('/users', usersRoutes);

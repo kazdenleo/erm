@@ -86,3 +86,24 @@
   color: var(--muted, #6b7280);
   line-height: 1.4;
 }
+
+.settings-parser-section {
+  margin-top: 2.5rem;
+  max-width: 44rem;
+}
+
+.settings-parser-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.settings-parser-subtitle {
+  color: var(--muted, #6b7280);
+  margin: 0 0 1.25rem;
+  line-height: 1.4;
+}
+
+.settings-parser-card {
+  margin-top: 0;
+}
