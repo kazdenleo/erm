@@ -65,7 +65,10 @@ export function AiContextFieldsSelect({
   };
 
   return (
-    <div className={`ai-context-select${disabled ? ' is-disabled' : ''}`} ref={rootRef}>
+    <div
+      className={`ai-context-select${open ? ' is-open' : ''}${disabled ? ' is-disabled' : ''}`}
+      ref={rootRef}
+    >
       <button
         type="button"
         className={`ai-context-select__trigger${open ? ' is-open' : ''}${

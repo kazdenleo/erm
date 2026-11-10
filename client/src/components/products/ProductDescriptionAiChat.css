@@ -58,6 +58,11 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
+}
+
+.product-desc-ai-chat__sections:has(.ai-context-select.is-open) {
+  z-index: 50;
 }
 
 .product-desc-ai-chat__section-title {
@@ -180,6 +185,11 @@
 .ai-context-select {
   position: relative;
   z-index: 4;
+}
+
+/* Открытый select выше соседних строк — иначе нижний trigger перекрывает меню */
+.ai-context-select.is-open {
+  z-index: 40;
 }
 
 .ai-context-select.is-disabled {
