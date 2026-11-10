@@ -21,16 +21,17 @@ export function AiContextFieldsSelect({
 
   useEffect(() => {
     if (!open) return undefined;
+    // capture: Modal.dialog делает stopPropagation на mousedown — в bubble до document не доходит
     const onDoc = (e) => {
       if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
     };
     const onKey = (e) => {
       if (e.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('mousedown', onDoc, true);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('mousedown', onDoc, true);
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
