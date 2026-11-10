@@ -379,6 +379,25 @@ function resolveMappedValue(row, columnName) {
   return s;
 }
 
+/** Одна колонка или список колонок → массив имён */
+function normalizeMappedColumns(colSpec) {
+  if (Array.isArray(colSpec)) {
+    return colSpec.map((c) => String(c || '').trim()).filter(Boolean);
+  }
+  if (colSpec == null || colSpec === '') return [];
+  return [String(colSpec).trim()].filter(Boolean);
+}
+
+/** Значения из нескольких столбцов через точку (пустые пропускаем) */
+function resolveMappedColumnsValue(row, colSpec, joiner = '.') {
+  const parts = [];
+  for (const col of normalizeMappedColumns(colSpec)) {
+    const v = resolveMappedValue(row, col);
+    if (v) parts.push(v);
+  }
+  return parts.join(joiner);
+}
+
 function buildDescription(row, mapping, columns, extraUsedCols = []) {
   const used = mappedColumnSet(mapping);
   for (const c of extraUsedCols || []) {
@@ -763,7 +782,9 @@ export async function createFromSession(opts = {}) {
         continue;
       }
 
-      const attrColsUsed = Object.values(attributeMappings || {}).filter(Boolean);
+      const attrColsUsed = Object.values(attributeMappings || {}).flatMap((spec) =>
+        normalizeMappedColumns(spec)
+      );
       const mappedDescription = resolveMappedValue(raw, mapping.description);
       const description =
         mappedDescription ||
@@ -787,9 +808,10 @@ export async function createFromSession(opts = {}) {
         attrsToAttach.push(analogsAttr.id);
       }
 
-      for (const [attrId, colName] of Object.entries(attributeMappings || {})) {
+      for (const [attrId, colSpec] of Object.entries(attributeMappings || {})) {
         const aid = String(attrId || '').trim();
-        if (!aid || !colName) continue;
+        const cols = normalizeMappedColumns(colSpec);
+        if (!aid || !cols.length) continue;
         // Не дублируем, если уже записали через спец-поля
         if (
           (applicabilityAttr && aid === String(applicabilityAttr.id) && mapping.applicability) ||
@@ -799,7 +821,7 @@ export async function createFromSession(opts = {}) {
         }
         const attr = attrById.get(aid);
         if (!attr || attr.systemKey) continue;
-        const val = resolveMappedValue(raw, colName);
+        const val = resolveMappedColumnsValue(raw, cols, '.');
         if (!val) continue;
         attributeValues[aid] = val;
         attrsToAttach.push(aid);

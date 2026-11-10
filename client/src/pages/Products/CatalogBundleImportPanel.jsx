@@ -52,6 +52,36 @@ function ColumnSelect({ label, value, columns, onChange, emptyLabel = '—' }) {
   );
 }
 
+/** Несколько столбцов Excel → один атрибут (значения склеиваются через «.») */
+function ColumnMultiSelect({ label, value, columns, onChange }) {
+  const selected = Array.isArray(value) ? value.map(String) : value ? [String(value)] : [];
+  const size = Math.min(6, Math.max(3, (columns || []).length || 3));
+  return (
+    <label className="small catalog-bundle-attr-multi">
+      {label}
+      <select
+        className="form-control form-control-sm"
+        multiple
+        value={selected}
+        size={size}
+        onChange={(e) => {
+          const next = Array.from(e.target.selectedOptions || []).map((o) => o.value);
+          onChange(next);
+        }}
+      >
+        {(columns || []).map((c) => (
+          <option key={`${label}-${c}`} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <span className="text-muted" style={{ fontSize: 11 }}>
+        Ctrl/⌘ — несколько столбцов; значения через «.»
+      </span>
+    </label>
+  );
+}
+
 function suggestAttributeMappings(columns, attrs) {
   const out = {};
   const cols = Array.isArray(columns) ? columns : [];
@@ -60,7 +90,7 @@ function suggestAttributeMappings(columns, attrs) {
     const want = normCol(attr.name);
     if (!want) continue;
     const hit = cols.find((c) => normCol(c) === want);
-    if (hit) out[String(attr.id)] = hit;
+    if (hit) out[String(attr.id)] = [hit];
   }
   return out;
 }
@@ -526,21 +556,22 @@ export function CatalogBundleImportPanel() {
             ) : (
               <>
                 <p className="text-muted small mb-2">
-                  Сопоставьте столбцы Excel с атрибутами категории. Совпадение по имени
+                  Сопоставьте столбцы Excel с атрибутами категории (можно несколько
+                  столбцов на один атрибут — значения через «.»). Совпадение по имени
                   подставляется автоматически.
                 </p>
                 <div className="catalog-bundle-mapping-grid">
                   {mappableAttributes.map((attr) => (
-                    <ColumnSelect
+                    <ColumnMultiSelect
                       key={attr.id}
                       label={attr.name}
-                      value={attributeMappings[String(attr.id)] || ''}
+                      value={attributeMappings[String(attr.id)] || []}
                       columns={columns}
-                      onChange={(v) =>
+                      onChange={(cols) =>
                         setAttributeMappings((prev) => {
                           const next = { ...prev };
-                          if (!v) delete next[String(attr.id)];
-                          else next[String(attr.id)] = v;
+                          if (!cols?.length) delete next[String(attr.id)];
+                          else next[String(attr.id)] = cols;
                           return next;
                         })
                       }

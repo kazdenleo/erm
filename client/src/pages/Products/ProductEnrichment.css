@@ -51,6 +51,10 @@
   margin-top: 4px;
 }
 
+.catalog-bundle-attr-multi select[multiple] {
+  min-height: 4.5rem;
+}
+
 .product-enrichment-table tr.is-skipped {
   opacity: 0.72;
 }
