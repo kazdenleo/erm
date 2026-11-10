@@ -139,7 +139,8 @@ export function CatalogBundleImportPanel() {
   };
 
   const onPickZip = async (e) => {
-    const file = e.target.files?.[0];
+    const file = e.target.files?.[0] || null;
+    // Сначала копируем File: сброс value очищает живой FileList
     e.target.value = '';
     if (!file) return;
     setUploading(true);
@@ -161,9 +162,10 @@ export function CatalogBundleImportPanel() {
   };
 
   const onPickFolder = async (e) => {
-    const list = e.target.files;
+    // FileList живой — Array.from до сброса value, иначе список пустеет
+    const list = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!list?.length) return;
+    if (!list.length) return;
     setUploading(true);
     setUploadError('');
     setCreateMessage('');

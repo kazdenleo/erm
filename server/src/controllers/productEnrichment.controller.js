@@ -222,6 +222,10 @@ class ProductEnrichmentController {
         sessionId,
         profileId,
         mapping: req.body?.mapping || {},
+        attributeMappings:
+          req.body?.attributeMappings && typeof req.body.attributeMappings === 'object'
+            ? req.body.attributeMappings
+            : undefined,
         defaults: req.body?.defaults || {},
         selectedIndexes: Array.isArray(req.body?.selectedIndexes)
           ? req.body.selectedIndexes
