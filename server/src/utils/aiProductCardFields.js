@@ -30,7 +30,10 @@ export function instructionAllowsOverwrite(instruction) {
   const t = String(instruction || '').toLowerCase();
   if (!t.trim()) return false;
   const mentionsEmpty = /пуст/.test(t);
-  const wantsRewrite = /перепиш|сделай|продающ|улучш|сократи|перефразир|заполни названия|заполни описан/.test(t);
+  const wantsRewrite =
+    /перепиш|сделай|продающ|улучш|сократи|перефразир|заполни названия|заполни описан|удал|убери|замени|запиш|переформат|оставь только|через\s*;|без бренд|через точку|через запят/.test(
+      t
+    );
   if (mentionsEmpty && !wantsRewrite) return false;
   return wantsRewrite;
 }

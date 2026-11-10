@@ -190,9 +190,12 @@ export function ProductAiEditor({
           allItems.push(...(data?.items || []));
         }
         const changed = allItems.filter((it) => it?.changes?.length);
+        const fillBlocked = fillEmpty || allItems.some((it) => it?.fillEmptyOnlyApplied);
         const reply = changed.length
           ? `Готово: изменения по ${changed.length} из ${items.length} товаров. Ниже превью по каждому — снимите галочку, если товар не подставлять.`
-          : 'Модель не предложила изменений. Уточните запрос или снимите «Только пустые».';
+          : fillBlocked
+            ? 'Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.'
+            : 'Модель не предложила изменений. Уточните запрос или проверьте, что в «Учитывать при генерации» есть нужные данные.';
         setSkipIds(new Set());
         setLastResult({ bulk: true, items: allItems, total: items.length });
         setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
@@ -207,7 +210,9 @@ export function ProductAiEditor({
         });
         const reply = data?.changes?.length
           ? `${data.comment ? `${data.comment}\n\n` : ''}${formatAttrEditorChangesPreview(data.changes)}`
-          : 'Модель не предложила изменений. Уточните запрос или снимите «Только пустые».';
+          : data?.fillEmptyOnlyApplied || fillEmpty
+            ? 'Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.'
+            : 'Модель не предложила изменений. Уточните запрос или проверьте, что в «Учитывать при генерации» есть нужные данные.';
         setLastResult({ bulk: false, data });
         setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
       }
@@ -335,15 +340,21 @@ export function ProductAiEditor({
               placeholder="Выберите поля-источники"
             />
           </div>
-          <label className="product-desc-ai-chat__check">
-            <input
-              type="checkbox"
-              checked={fillEmptyOnly}
-              onChange={(e) => setFillEmptyOnly(e.target.checked)}
-              disabled={sending}
-            />
-            Только пустые — не переписывать уже заполненное
-          </label>
+            <label className="product-desc-ai-chat__check">
+              <input
+                type="checkbox"
+                checked={fillEmptyOnly}
+                onChange={(e) => setFillEmptyOnly(e.target.checked)}
+                disabled={sending}
+              />
+              Только пустые — не переписывать уже заполненное
+            </label>
+            {fillEmptyOnly ? (
+              <p className="product-ai-editor__hint">
+                Чтобы менять уже заполненные поля (OEM, описание и т.п.), снимите галочку
+                или напишите «перепиши / удали / замени…».
+              </p>
+            ) : null}
 
           <div className="product-desc-ai-chat__messages" ref={listRef}>
             {messages.length === 0 ? (

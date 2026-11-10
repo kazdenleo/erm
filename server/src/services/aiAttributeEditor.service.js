@@ -193,18 +193,30 @@ class AiAttributeEditorService {
       }
       cardDraft = buildCardDraft(product);
     }
-    const context = { ...cardDraft };
-    for (const [key, value] of Object.entries(clientContext)) {
-      if (value == null) continue;
-      const text = typeof value === 'string' ? value.trim() : stringifyDraftValue(value);
-      if (!text) continue;
-      context[key] = value;
+
+    // Контекст для модели — то, что выбрал пользователь («Учитывать при генерации»).
+    // Раньше подмешивался весь cardDraft (erp_attr_*), и выбор атрибутов почти не влиял.
+    const context = {};
+    const clientEntries = Object.entries(clientContext);
+    if (clientEntries.length) {
+      for (const [key, value] of clientEntries) {
+        if (value == null) {
+          context[key] = '';
+          continue;
+        }
+        context[key] =
+          typeof value === 'string' ? value : stringifyDraftValue(value);
+      }
+    } else {
+      Object.assign(context, cardDraft);
     }
 
     const current = {};
     for (const f of outputFields) {
       if (f.type === 'vehicles') continue;
-      current[f.key] = str(context[f.key] || cardDraft[f.key]);
+      current[f.key] = str(
+        cardDraft[f.key] || clientContext[f.key] || clientContext[f.label] || ''
+      );
     }
 
     const fieldLabels = outputFields.map((f) => f.label).join(', ');
@@ -212,10 +224,11 @@ class AiAttributeEditorService {
       'Ты редактор карточки товара (ERP + маркетплейсы).',
       'Верни результат ТОЛЬКО через функцию propose_attribute_editor.',
       `Можно менять поля: ${fieldLabels}.`,
+      'Опирайся только на поля из блока «Контекст» ниже (их выбрал пользователь). Пустые значения — данных нет.',
       'Не выдумывай совместимость и характеристики, которых нет во входных данных.',
       fillEmptyOnly
         ? 'Заполняй пустые поля; заполненные не переписывай без явной просьбы.'
-        : 'Перепиши поля по запросу пользователя.',
+        : 'Перепиши поля по запросу пользователя, даже если они уже заполнены.',
     ];
     if (instruction) rules.push(`Запрос: ${instruction}`);
     rules.push(`Контекст:\n${JSON.stringify(context)}`);
