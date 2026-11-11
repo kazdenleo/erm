@@ -23,11 +23,30 @@ import {
 } from '../services/marketplaceMinPricePush.service.js';
 import pricePushSettingsService from '../services/pricePushSettings.service.js';
 import {
+  exportPricesTableExcel,
+  buildPricesExportFiltersFromQuery,
+} from '../services/pricesExport.service.js';
+import {
   describePricePushScope,
   describePricePushSchemes,
   describePricePushMarketplaces,
 } from '../utils/pricePushSettings.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+function asciiContentDispositionFilename(name, fallback = 'prices.xlsx') {
+  const s = String(name || fallback);
+  const ascii = s.replace(/[^\x20-\x7E]/g, '_').replace(/_+/g, '_').trim() || fallback;
+  return ascii.slice(0, 180);
+}
+
+function setAttachmentXlsx(res, filename) {
+  const asciiName = asciiContentDispositionFilename(filename, 'prices.xlsx');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+  );
+}
 
 function formatPushSkipReason(reason) {
   switch (reason) {
@@ -439,6 +458,41 @@ class PricesController {
     } catch (error) {
       logger.error('[Prices Controller] pushOne error:', error);
       next(error);
+    }
+  }
+
+  /**
+   * GET /api/product/prices/export/excel — выгрузка таблицы цен (фильтры как на странице «Цены»).
+   */
+  async exportExcel(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Экспорт доступен только с привязкой к аккаунту' });
+      }
+      const profileId = tid != null ? tid : req.user?.profileId ?? null;
+      if (!profileId) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      const filters = buildPricesExportFiltersFromQuery(req.query || {}, profileId);
+      const { buffer, productCount } = await exportPricesTableExcel(filters, {
+        showFbs: req.query?.showFbs,
+        showFbo: req.query?.showFbo,
+        includePrivate: req.query?.includePrivate,
+      });
+      const date = new Date().toISOString().slice(0, 10);
+      const filename = `prices_export_${date}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      setAttachmentXlsx(res, filename);
+      res.setHeader('X-Prices-Exported', String(productCount ?? 0));
+      return res.send(buffer);
+    } catch (error) {
+      const status = error.statusCode || 500;
+      if (status >= 500) logger.error('[Prices Controller] exportExcel error:', error);
+      if (!res.headersSent) {
+        return res.status(status).json({ ok: false, message: error.message || 'Ошибка экспорта' });
+      }
+      return next(error);
     }
   }
 

@@ -118,6 +118,7 @@ export function Prices() {
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
+  const [exportExcelLoading, setExportExcelLoading] = useState(false);
   const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
   const [pricingStrategies, setPricingStrategies] = useState([]);
   const [pricingStrategiesEnabled, setPricingStrategiesEnabled] = useState(true);
@@ -910,6 +911,66 @@ export function Prices() {
     }
   };
 
+  const handleExportExcel = async () => {
+    setExportExcelLoading(true);
+    setRecalcAllMessage(null);
+    try {
+      const unlinkedArr = [...filterUnlinkedMp];
+      const linkedArr = [...filterLinkedMp];
+      const requireAnyMarketplaceLink = !privateOrdersEnabled && unlinkedArr.length === 0;
+      const { buffer, exportedCount, filename } = await pricesApi.exportExcel({
+        organizationId: filterOrganizationId || undefined,
+        brandId: filterBrandId || undefined,
+        categoryId: filterCategoryId || undefined,
+        productType: filterProductType || undefined,
+        search: listSearch.trim() || undefined,
+        includeArchived: filterArchiveMode === 'include' || filterArchiveMode === 'only',
+        archivedOnly: filterArchiveMode === 'only',
+        unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
+        linkedMp: linkedArr.length ? linkedArr : undefined,
+        requireAnyMarketplaceLink: requireAnyMarketplaceLink || undefined,
+        showFbs: showFbsPrices,
+        showFbo: showFboPrices,
+        includePrivate: privateOrdersEnabled,
+      });
+      if (exportedCount === 0) {
+        setRecalcAllMessage('В выгрузку не попало ни одного товара — измените фильтры.');
+        setTimeout(() => setRecalcAllMessage(null), 6000);
+        return;
+      }
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || `prices_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      const countLabel =
+        exportedCount >= 0 ? ` (${exportedCount} товар${exportedCount === 1 ? '' : 'ов'})` : '';
+      setRecalcAllMessage(`Excel скачан${countLabel}.`);
+      setTimeout(() => setRecalcAllMessage(null), 5000);
+    } catch (err) {
+      let msg = err.response?.data?.message || err.message || 'Не удалось выгрузить Excel';
+      if (err.response?.data instanceof ArrayBuffer) {
+        try {
+          const txt = new TextDecoder().decode(err.response.data);
+          const j = JSON.parse(txt);
+          msg = j.message || j.error || msg;
+        } catch {
+          /* ignore */
+        }
+      }
+      setRecalcAllMessage(`Ошибка: ${msg}`);
+      setTimeout(() => setRecalcAllMessage(null), 8000);
+    } finally {
+      setExportExcelLoading(false);
+    }
+  };
+
   if (loading && products.length === 0) {
     return <div className="loading">Загрузка цен...</div>;
   }
@@ -945,6 +1006,17 @@ export function Prices() {
                 >
                   Обновление списка…
                 </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  className="btn-shadow"
+                  onClick={handleExportExcel}
+                  disabled={exportExcelLoading || loading || pushAllLoading || recalcAllLoading}
+                  title="Выгрузить таблицу цен в Excel с учётом текущих фильтров"
+                >
+                  {exportExcelLoading ? '⏳ Excel…' : '📥 Excel'}
+                </Button>
                 <Button
                   type="button"
                   variant="secondary"

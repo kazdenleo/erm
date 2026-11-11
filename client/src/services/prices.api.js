@@ -88,6 +88,64 @@ export const pricesApi = {
     return response.data;
   },
 
+  /**
+   * Скачать Excel с таблицей цен (текущие фильтры страницы «Цены»).
+   * @returns {Promise<{ buffer: ArrayBuffer, exportedCount: number, filename: string }>}
+   */
+  async exportExcel(options = {}) {
+    const params = {};
+    if (options.organizationId != null && options.organizationId !== '') {
+      params.organizationId = options.organizationId;
+    }
+    if (options.brandId != null && options.brandId !== '') params.brandId = options.brandId;
+    if (options.categoryId != null && options.categoryId !== '') {
+      params.categoryId = options.categoryId;
+    }
+    if (options.productType != null && options.productType !== '') {
+      params.productType = options.productType;
+    }
+    if (options.search != null && String(options.search).trim() !== '') {
+      params.search = String(options.search).trim();
+    }
+    if (options.includeArchived) params.includeArchived = '1';
+    if (options.archivedOnly) params.archivedOnly = '1';
+    if (Array.isArray(options.unlinkedMp) && options.unlinkedMp.length) {
+      params.unlinkedMp = options.unlinkedMp.join(',');
+    }
+    if (Array.isArray(options.linkedMp) && options.linkedMp.length) {
+      params.linkedMp = options.linkedMp.join(',');
+    }
+    if (options.requireAnyMarketplaceLink) params.requireAnyMarketplaceLink = '1';
+    if (options.showFbs === false) params.showFbs = '0';
+    if (options.showFbo === false) params.showFbo = '0';
+    if (options.includePrivate === false) params.includePrivate = '0';
+
+    const response = await api.get('/product/prices/export/excel', {
+      params: Object.keys(params).length ? params : undefined,
+      responseType: 'arraybuffer',
+    });
+    const raw = response.headers?.['x-prices-exported'] ?? response.headers?.['X-Prices-Exported'];
+    const exportedCount = raw != null ? parseInt(String(raw), 10) : NaN;
+    const cd = String(response.headers?.['content-disposition'] || '');
+    let filename = `prices_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const mStar = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const mPlain = /filename="([^"]+)"/i.exec(cd);
+    if (mStar?.[1]) {
+      try {
+        filename = decodeURIComponent(mStar[1]);
+      } catch {
+        /* keep default */
+      }
+    } else if (mPlain?.[1]) {
+      filename = mPlain[1];
+    }
+    return {
+      buffer: response.data,
+      exportedCount: Number.isFinite(exportedCount) ? exportedCount : -1,
+      filename,
+    };
+  },
+
   /** Применить запрет авто-добавления товаров в акции Ozon для текущей организации */
   async enforceOzonBlockAutoPromotions() {
     const response = await api.post('/product/prices/ozon/block-auto-promotions/enforce');
