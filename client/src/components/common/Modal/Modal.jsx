@@ -9,6 +9,39 @@ import { createPortal } from 'react-dom';
 const STACK_BASE_MODAL = 1150;
 const STACK_STEP = 20;
 
+/** Блокировка скролла body без прыжка наверх при открытии/закрытии модалки. */
+let bodyScrollLockCount = 0;
+let lockedScrollY = 0;
+
+function lockBodyScroll() {
+  if (typeof document === 'undefined') return;
+  if (bodyScrollLockCount === 0) {
+    lockedScrollY = window.scrollY || window.pageYOffset || 0;
+    const body = document.body;
+    body.style.overflow = 'hidden';
+    body.style.position = 'fixed';
+    body.style.top = `-${lockedScrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+  }
+  bodyScrollLockCount += 1;
+}
+
+function unlockBodyScroll() {
+  if (typeof document === 'undefined') return;
+  bodyScrollLockCount = Math.max(0, bodyScrollLockCount - 1);
+  if (bodyScrollLockCount > 0) return;
+  const body = document.body;
+  body.style.overflow = '';
+  body.style.position = '';
+  body.style.top = '';
+  body.style.left = '';
+  body.style.right = '';
+  body.style.width = '';
+  window.scrollTo(0, lockedScrollY);
+}
+
 /** Сколько portaled-модалок уже в DOM (текущая ещё не смонтирована). */
 function countStackedModals() {
   if (typeof document === 'undefined') return 0;
@@ -45,19 +78,10 @@ export function Modal({
   const zModal = STACK_BASE_MODAL + stackDepth * STACK_STEP;
 
   useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      // Не снимаем overflow, если ещё открыта другая модалка.
-      if (!document.querySelector('.modal.modal-erm.show')) {
-        document.body.style.overflow = '';
-      }
-    }
-
+    if (!isOpen) return undefined;
+    lockBodyScroll();
     return () => {
-      if (!document.querySelector('.modal.modal-erm.show')) {
-        document.body.style.overflow = '';
-      }
+      unlockBodyScroll();
     };
   }, [isOpen]);
 

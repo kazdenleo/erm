@@ -128,18 +128,22 @@ export function Questions() {
 
   const load = useCallback(async ({ silent = false } = {}) => {
     try {
-      setFetching(true);
-      if (!silent) setError('');
+      if (!silent) {
+        setFetching(true);
+        setError('');
+      }
       const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       const data = await questionsApi.getAll(params);
       setItems(Array.isArray(data) ? data : []);
       bumpQuestionsStats();
     } catch (e) {
-      setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить вопросы');
-      if (!silent) setItems([]);
+      if (!silent) {
+        setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить вопросы');
+        setItems([]);
+      }
     } finally {
-      setFetching(false);
+      if (!silent) setFetching(false);
       loadCounts();
     }
   }, [marketplaceFilter, loadCounts]);
@@ -303,13 +307,19 @@ export function Questions() {
       setThreadError('Введите текст ответа');
       return;
     }
+    const answeredId = String(threadModalId);
     try {
       setThreadSending(true);
       setThreadError('');
       setError('');
-      await questionsApi.answer(threadModalId, text);
+      await questionsApi.answer(answeredId, text);
+      // Сразу убираем из списка — без полной перерисовки «с нуля», чтобы не прыгать наверх.
+      setItems((prev) => prev.filter((q) => String(q?.id) !== answeredId));
+      bumpQuestionsStats();
       closeThread();
-      await loadRef.current();
+      void loadCounts();
+      // Фоном подтянуть актуальные данные, не сбрасывая скролл страницы.
+      void loadRef.current({ silent: true });
     } catch (e) {
       setThreadError(getApiErrorMessage(e, 'Не удалось отправить ответ'));
     } finally {

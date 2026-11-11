@@ -15,6 +15,7 @@ import {
   createProductExcelImportUpload,
   createCatalogBundleZipUpload,
   createCatalogBundleFolderUpload,
+  createCatalogBundleFolderChunkUpload,
 } from '../middleware/uploads.js';
 import {
   validateCreateProduct,
@@ -27,6 +28,7 @@ const uploadProductImages = createProductImageUpload();
 const uploadProductExcel = createProductExcelImportUpload();
 const uploadCatalogBundleZip = createCatalogBundleZipUpload();
 const uploadCatalogBundleFolder = createCatalogBundleFolderUpload();
+const uploadCatalogBundleFolderChunk = createCatalogBundleFolderChunkUpload();
 
 // Принудительно обновить остатки и цены у поставщиков (должен быть ДО маршрута /:id)
 // POST /api/products/refresh-supplier-stocks?productId=123 (опционально)
@@ -62,6 +64,25 @@ router.post(
   uploadCatalogBundleFolder.array('files', 20000),
   wrapAsync(
     productEnrichmentController.catalogBundleFolderPreview.bind(productEnrichmentController)
+  )
+);
+router.post(
+  '/enrichment/catalog-bundle/folder/init',
+  wrapAsync(
+    productEnrichmentController.catalogBundleFolderInit.bind(productEnrichmentController)
+  )
+);
+router.post(
+  '/enrichment/catalog-bundle/folder/chunk/:uploadId',
+  uploadCatalogBundleFolderChunk.array('files', 300),
+  wrapAsync(
+    productEnrichmentController.catalogBundleFolderChunk.bind(productEnrichmentController)
+  )
+);
+router.post(
+  '/enrichment/catalog-bundle/folder/finalize',
+  wrapAsync(
+    productEnrichmentController.catalogBundleFolderFinalize.bind(productEnrichmentController)
   )
 );
 router.post(

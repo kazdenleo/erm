@@ -73,6 +73,46 @@
   padding-right: 4px;
 }
 
+/* Модалка пользователя: поля скроллятся, кнопки всегда видны */
+.modal-erm .modal-body:has(.settings-users-modal) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.settings-users-modal {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+.settings-users-modal__fields {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+  padding-bottom: 0.5rem;
+}
+.settings-users-modal__footer {
+  flex: 0 0 auto;
+  position: static;
+  margin-top: 0;
+  padding: 0.85rem 0 1.15rem;
+  background: #fff;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.settings-users-form-error {
+  margin: 0 0 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--error, #b91c1c);
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
 .access-multi-select {
   position: relative;
   margin-bottom: 0.85rem;
@@ -307,6 +347,11 @@
 .settings-roles-tab--active {
   border-color: var(--primary);
   background: var(--primary-100);
+}
+.settings-roles-tab--add {
+  border-style: dashed;
+  color: var(--primary);
+  background: transparent;
 }
 .settings-roles-tab-badge {
   margin-left: 0.35rem;

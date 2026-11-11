@@ -1599,6 +1599,15 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   const code = ship.marketplace === 'wb' ? 'wildberries' : ship.marketplace;
   let ozonFailedErr = null;
 
+  // Сначала локальная привязка: иначе при зависании/падении на API Ozon постинг уже
+  // «Ожидает отгрузки» на МП, а в ERM orderIds пустой — заказ-сирота вне поставки.
+  for (const id of toAdd) existing.add(String(id));
+  ship.orderIds = Array.from(existing);
+  if (toAdd.length > 0) {
+    await saveLocalShipments(shipments);
+    orderShipmentIndexCache = { key: '', at: 0, map: null };
+  }
+
   if (code === 'ozon') {
     let ozonConfig;
     try {
@@ -1611,6 +1620,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
     }
     if (ozonConfig?.client_id && ozonConfig?.api_key) {
       const ozonErrors = [];
+      const newlyAdded = new Set(toAdd.map(String));
       // Даже если заказ уже числится в локальной поставке, повторная «На сборку» должна
       // попытаться перевести его на Ozon в «Ожидает отгрузки», иначе этикетка может быть недоступна (409).
       for (const postingNumber of uniqueRequested) {
@@ -1623,6 +1633,18 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
         }
       }
       if (ozonErrors.length > 0) {
+        // Новых, кого не удалось перевести на Ozon — убрать из локальной поставки (как раньше).
+        // Уже лежавших в поставке при ошибке retry не трогаем.
+        let removed = false;
+        for (const e of ozonErrors) {
+          const pn = String(e.postingNumber);
+          if (newlyAdded.has(pn) && existing.delete(pn)) removed = true;
+        }
+        if (removed) {
+          ship.orderIds = Array.from(existing);
+          await saveLocalShipments(shipments);
+          orderShipmentIndexCache = { key: '', at: 0, map: null };
+        }
         const err = new Error(
           'Ozon: не удалось перевести заказы в «Ожидает отгрузки»: ' +
           ozonErrors.map((e) => `${e.postingNumber}: ${e.error}`).join('; ')
@@ -1673,11 +1695,12 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
     }
   }
 
-  // Всегда фиксируем, что заказ "привязан" к поставке локально, даже если повторно не добавляли в МП.
-  const ozonFailedIds = new Set(ozonFailedErr?.failedOrderIds || []);
-  uniqueRequested.filter((o) => !ozonFailedIds.has(String(o))).forEach((o) => existing.add(String(o)));
+  // WB / уже сохранённый Ozon: orderIds уже актуален; для идемпотентных повторов без toAdd — просто нормализуем.
   ship.orderIds = Array.from(existing);
-  await saveLocalShipments(shipments);
+  if (code !== 'ozon' || toAdd.length === 0) {
+    await saveLocalShipments(shipments);
+    orderShipmentIndexCache = { key: '', at: 0, map: null };
+  }
   const out = normalizeShipment(ship);
   if (ozonFailedErr) {
     ozonFailedErr.shipment = out;

@@ -207,6 +207,102 @@ class ProductEnrichmentController {
     }
   }
 
+  async catalogBundleFolderInit(req, res, next) {
+    try {
+      await resolveEffectiveProfileId(req, req.user);
+      const data = catalogBundleImportService.initFolderUpload();
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error('[productEnrichment] catalogBundleFolderInit:', error?.message || error);
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
+  async catalogBundleFolderChunk(req, res, next) {
+    try {
+      await resolveEffectiveProfileId(req, req.user);
+      const uploadId = String(req.params?.uploadId || '').trim();
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (!files.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Пустой чанк файлов',
+          message: 'Пустой чанк файлов',
+        });
+      }
+      const pathsRaw = req.body?.paths;
+      const paths = Array.isArray(pathsRaw)
+        ? pathsRaw
+        : pathsRaw != null && pathsRaw !== ''
+          ? [pathsRaw]
+          : [];
+      if (paths.length !== files.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Не совпали список файлов и путей папки',
+          message: 'Не совпали список файлов и путей папки',
+        });
+      }
+      const diskFiles = files.map((f, i) => ({
+        path: f.path,
+        relativePath: String(paths[i] || f.originalname || ''),
+      }));
+      const data = catalogBundleImportService.appendFolderUploadChunk(uploadId, diskFiles);
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error(
+        '[productEnrichment] catalogBundleFolderChunk:',
+        error?.message || error,
+        error?.stack
+      );
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
+  async catalogBundleFolderFinalize(req, res, next) {
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const uploadId = String(req.body?.uploadId || '').trim();
+      if (!uploadId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Нужен uploadId',
+          message: 'Нужен uploadId',
+        });
+      }
+      const data = await catalogBundleImportService.finalizeFolderUpload(uploadId, { profileId });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error(
+        '[productEnrichment] catalogBundleFolderFinalize:',
+        error?.message || error,
+        error?.stack
+      );
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
   async catalogBundleCreate(req, res, next) {
     try {
       const profileId = await resolveEffectiveProfileId(req, req.user);

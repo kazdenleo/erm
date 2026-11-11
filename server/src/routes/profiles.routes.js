@@ -14,6 +14,8 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/me/role-nav-sections', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getRoleNavSections));
+router.post('/me/custom-roles', requireProfile, requireProfileAdmin, wrapAsync(profilesController.createCustomRole));
+router.delete('/me/custom-roles/:role', requireProfile, requireProfileAdmin, wrapAsync(profilesController.deleteCustomRole));
 router.put('/me/role-nav-sections/:role', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateRoleNavSection));
 router.get('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getMyProfile));
 router.put('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateMyProfile));

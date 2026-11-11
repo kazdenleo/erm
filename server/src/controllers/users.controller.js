@@ -14,17 +14,19 @@ import {
 import { ensurePhoneAvailable, preparePhoneFields, requirePhoneFields } from '../utils/userPhone.js';
 import { parseBirthDate } from '../utils/userBirthDate.js';
 import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
+import { normalizeAccountRoleKey } from '../utils/userNavSections.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
+const profilesRepo = repositoryFactory.getProfilesRepository();
 
 const SALT_ROUNDS = 10;
 
-const ACCOUNT_ROLES = new Set(['admin', 'picker', 'warehouse_manager', 'editor']);
-
-function normalizeAccountRole(v) {
-  const s = v == null ? '' : String(v).trim().toLowerCase();
-  if (!s) return null;
-  return ACCOUNT_ROLES.has(s) ? s : null;
+async function normalizeAccountRoleForProfile(v, profileId) {
+  if (profileId == null || profileId === '') {
+    return normalizeAccountRoleKey(v);
+  }
+  const profile = await profilesRepo.findById(profileId);
+  return normalizeAccountRoleKey(v, profile?.role_nav_sections ?? null);
 }
 
 function isAccountAdmin(user) {
@@ -238,7 +240,6 @@ export const usersController = {
       }
       const { email, password, phone, birthDate, birth_date: birthDateSnake, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
-      const targetAccountRole = normalizeAccountRole(accountRole) || (isProfileAdmin ? 'admin' : 'editor');
       if (!password) {
         return res.status(400).json({ ok: false, message: 'Укажите пароль' });
       }
@@ -255,6 +256,9 @@ export const usersController = {
         req.user.role === 'admin'
           ? (requestedProfileId != null && requestedProfileId !== '' ? Number(requestedProfileId) : null)
           : req.user.profileId;
+      const targetAccountRole =
+        (await normalizeAccountRoleForProfile(accountRole, effectiveProfileId)) ||
+        (isProfileAdmin ? 'admin' : 'editor');
       let effectiveIsProfileAdmin =
         req.user.role === 'admin'
           ? !!isProfileAdmin
@@ -388,7 +392,12 @@ export const usersController = {
         delete updates.isProfileAdmin;
       }
       if (updates.accountRole !== undefined && updates.account_role === undefined) {
-        updates.account_role = normalizeAccountRole(updates.accountRole);
+        const profileForRole =
+          updates.profile_id !== undefined ? updates.profile_id : existing.profile_id;
+        updates.account_role = await normalizeAccountRoleForProfile(
+          updates.accountRole,
+          profileForRole ?? req.user.profileId
+        );
         delete updates.accountRole;
       }
       delete updates.navSections;
@@ -478,7 +487,7 @@ export const usersController = {
           ? !!updates.is_profile_admin
           : !!existing.is_profile_admin;
       const isFullAccessUser =
-        mergedIsAdmin || normalizeAccountRole(mergedAccountRole) === 'admin';
+        mergedIsAdmin || normalizeAccountRoleKey(mergedAccountRole) === 'admin';
       const targetProfileId =
         updates.profile_id !== undefined ? updates.profile_id : existing.profile_id;
 

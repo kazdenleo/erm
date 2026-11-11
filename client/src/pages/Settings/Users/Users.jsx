@@ -14,6 +14,11 @@ import { Modal } from '../../../components/common/Modal/Modal';
 import { buildFullName } from '../../../utils/userName.js';
 import { UsersRolesTab } from './UsersRolesTab.jsx';
 import { AccessMultiSelect } from './AccessMultiSelect.jsx';
+import { profilesApi } from '../../../services/profiles.api.js';
+import {
+  ACCOUNT_ROLE_LABELS,
+  accountRoleLabel as roleLabelFromKey,
+} from '../../../utils/userNavSections.js';
 import './Users.css';
 
 const TABS = [
@@ -21,14 +26,13 @@ const TABS = [
   { id: 'roles', label: 'Роли' },
 ];
 
-function accountRoleLabel(u) {
+function accountRoleLabel(u, assignable = []) {
   if (u.role === 'admin') return 'Администратор системы';
   const r = String(u.account_role ?? '').trim().toLowerCase();
   if (r === 'admin' || u.is_profile_admin) return 'Администратор';
-  if (r === 'picker') return 'Сборщик';
-  if (r === 'warehouse_manager') return 'Руководитель склада';
-  if (r === 'editor') return 'Редактор';
-  return 'Редактор';
+  const fromList = assignable.find((x) => x.key === r);
+  if (fromList?.label) return fromList.label;
+  return roleLabelFromKey(r) || ACCOUNT_ROLE_LABELS.editor;
 }
 
 function emptyUserForm() {
@@ -58,9 +62,17 @@ export function SettingsUsers() {
   const [error, setError] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [savingUser, setSavingUser] = useState(false);
+  const [formError, setFormError] = useState('');
   const [form, setForm] = useState(emptyUserForm);
   const [organizations, setOrganizations] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
+  const [assignableRoles, setAssignableRoles] = useState([
+    { key: 'admin', label: 'Администратор' },
+    { key: 'picker', label: 'Сборщик' },
+    { key: 'warehouse_manager', label: 'Руководитель склада' },
+    { key: 'editor', label: 'Редактор' },
+  ]);
 
   const canManage = isTenantAccountAdmin;
   const showSystemAdminRoleOption = false;
@@ -91,10 +103,15 @@ export function SettingsUsers() {
   const loadAccessOptions = useCallback(async () => {
     if (!canManage) return;
     try {
-      const [orgRes, whRes] = await Promise.all([
+      const [orgRes, whRes, rolesRes] = await Promise.all([
         organizationsApi.getAll(),
         warehousesApi.getAll(),
+        profilesApi.getRoleNavSections().catch(() => null),
       ]);
+      const assignable = Array.isArray(rolesRes?.data?.assignable) ? rolesRes.data.assignable : null;
+      if (assignable?.length) {
+        setAssignableRoles(assignable);
+      }
       setOrganizations(Array.isArray(orgRes?.data) ? orgRes.data : []);
       const whList = Array.isArray(whRes?.data) ? whRes.data : Array.isArray(whRes) ? whRes : [];
       // Показываем физические склады (type=warehouse); если type пустой — тоже включаем
@@ -119,12 +136,14 @@ export function SettingsUsers() {
 
   const openCreate = () => {
     setEditing(null);
+    setFormError('');
     setForm(emptyUserForm());
     setModalOpen(true);
   };
 
   const openEdit = (u) => {
     setEditing(u);
+    setFormError('');
     setForm({
       email: u.email ?? '',
       password: '',
@@ -146,26 +165,39 @@ export function SettingsUsers() {
     setModalOpen(true);
   };
 
+  const closeModal = () => {
+    if (savingUser) return;
+    setModalOpen(false);
+    setFormError('');
+  };
+
   const save = async () => {
+    if (savingUser) return;
     const phone = String(form.phone ?? '').trim();
-    if (!phone) {
-      alert('Введите телефон (логин)');
+    // При создании телефон обязателен. При редактировании — только если задали;
+    // иначе роль/доступ сохраняются и без телефона (у части пользователей phone=null).
+    if (!editing && !phone) {
+      setFormError('Введите телефон (логин)');
       return;
     }
     if (!editing && !form.password) {
-      alert('Введите пароль для нового пользователя');
+      setFormError('Введите пароль для нового пользователя');
       return;
     }
+    setSavingUser(true);
+    setFormError('');
     try {
       const payload = {
         email: String(form.email ?? '').trim() || null,
         lastName: String(form.lastName ?? '').trim(),
         firstName: String(form.firstName ?? '').trim(),
         middleName: String(form.middleName ?? '').trim(),
-        phone,
         birthDate: String(form.birthDate ?? '').trim() || null,
         role: 'user',
       };
+      if (!editing || phone) {
+        payload.phone = phone;
+      }
       if (form.password) payload.password = form.password;
       payload.isProfileAdmin = !!form.isProfileAdmin;
       payload.accountRole = form.isProfileAdmin ? 'admin' : form.accountRole;
@@ -182,9 +214,12 @@ export function SettingsUsers() {
         await usersApi.create(payload);
       }
       setModalOpen(false);
+      setFormError('');
       load();
     } catch (err) {
-      alert(err?.response?.data?.message || err?.message || 'Ошибка сохранения');
+      setFormError(err?.response?.data?.message || err?.message || 'Ошибка сохранения');
+    } finally {
+      setSavingUser(false);
     }
   };
 
@@ -270,7 +305,7 @@ export function SettingsUsers() {
                       <div>
                         <span className="settings-users-email">{u.phone || u.email || 'без логина'}</span>
                         {userDisplayName(u) && <span className="settings-users-name"> — {userDisplayName(u)}</span>}
-                        <span className="settings-users-role">{accountRoleLabel(u)}</span>
+                        <span className="settings-users-role">{accountRoleLabel(u, assignableRoles)}</span>
                         <span className="settings-users-access">{accessSummary(u)}</span>
                       </div>
                       <div className="settings-users-actions">
@@ -288,180 +323,207 @@ export function SettingsUsers() {
             </>
           )}
 
-          <Modal
-            isOpen={modalOpen}
-            onClose={() => setModalOpen(false)}
-            title={editing ? 'Редактировать пользователя' : 'Добавить пользователя'}
-            size="large"
-          >
-            <div className="settings-users-form settings-users-form--scroll">
-              <label>
-                Телефон (логин) <span style={{ color: 'var(--error)' }}>*</span>
-                <input
-                  type="tel"
-                  value={form.phone}
-                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="tel"
-                  placeholder="+7 999 123-45-67"
-                />
-              </label>
-              <label>
-                Почта
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
-              </label>
-              <label>
-                {editing ? 'Новый пароль (оставьте пустым, чтобы не менять)' : 'Пароль'}{' '}
-                {!editing && <span style={{ color: 'var(--error)' }}>*</span>}
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
-              </label>
-              <label>
-                Фамилия
-                <input
-                  type="text"
-                  value={form.lastName}
-                  onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="family-name"
-                />
-              </label>
-              <label>
-                Имя
-                <input
-                  type="text"
-                  value={form.firstName}
-                  onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="given-name"
-                />
-              </label>
-              <label>
-                Отчество
-                <input
-                  type="text"
-                  value={form.middleName}
-                  onChange={(e) => setForm((f) => ({ ...f, middleName: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="additional-name"
-                />
-              </label>
-              <label>
-                Дата рождения
-                <input
-                  type="date"
-                  value={form.birthDate}
-                  onChange={(e) => setForm((f) => ({ ...f, birthDate: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="bday"
-                />
-              </label>
-              <label>
-                Роль
-                <select
-                  value={form.isProfileAdmin ? 'admin' : form.accountRole}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      isProfileAdmin: e.target.value === 'admin',
-                      accountRole: e.target.value === 'admin' ? 'admin' : e.target.value,
-                      ...(e.target.value === 'admin'
-                        ? { organizationIds: [], warehouseIds: [] }
-                        : null),
-                    }))
-                  }
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                >
-                  <option value="admin">Администратор</option>
-                  <option value="picker">Сборщик</option>
-                  <option value="warehouse_manager">Руководитель склада</option>
-                  <option value="editor">Редактор</option>
-                </select>
-                <div className="text-muted small" style={{ marginTop: 8, lineHeight: 1.35 }}>
-                  {form.isProfileAdmin ? (
-                    <div>Администратор аккаунта — полный доступ, управление пользователями и ролями.</div>
-                  ) : (
-                    <div>Видимые разделы для этой роли настраиваются на вкладке «Роли».</div>
-                  )}
-                </div>
-              </label>
-
-              <div className={`settings-users-access-block${form.isProfileAdmin ? ' settings-users-access-block--disabled' : ''}`}>
-                <div className="settings-users-access-title">Доступ к организациям и складам</div>
-                {form.isProfileAdmin ? (
-                  <p className="text-muted small settings-users-access-hint">
-                    У администратора полный доступ ко всем организациям и складам. Ограничения не применяются.
-                  </p>
-                ) : (
-                  <p className="text-muted small settings-users-access-hint">
-                    Можно выбрать несколько. Если не выбрано — полный доступ ко всем.
-                  </p>
-                )}
-
-                <AccessMultiSelect
-                  label="Организации"
-                  emptyLabel="Все организации (полный доступ)"
-                  disabled={form.isProfileAdmin}
-                  options={organizations.map((org) => ({
-                    id: org.id,
-                    label: org.name || `Организация #${org.id}`,
-                  }))}
-                  value={form.organizationIds}
-                  onChange={(organizationIds) => setForm((f) => ({ ...f, organizationIds }))}
-                />
-
-                <AccessMultiSelect
-                  label="Склады"
-                  emptyLabel="Все склады (полный доступ)"
-                  disabled={form.isProfileAdmin}
-                  options={warehouses.map((wh) => ({
-                    id: wh.id,
-                    label: wh.address || wh.name || `Склад #${wh.id}`,
-                  }))}
-                  value={form.warehouseIds}
-                  onChange={(warehouseIds) => setForm((f) => ({ ...f, warehouseIds }))}
-                />
-              </div>
-
-              {showSystemAdminRoleOption && (
-                <label>
-                  Роль для входа
-                  <select
-                    value={form.role}
-                    onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-                    className="login-input"
-                    style={{ width: '100%', marginTop: '4px' }}
-                  >
-                    <option value="user">Пользователь</option>
-                    <option value="admin">Администратор системы</option>
-                  </select>
-                </label>
-              )}
-              <div className="admin-form-actions">
-                <Button variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button>
-                <Button variant="primary" onClick={save}>{editing ? 'Сохранить' : 'Добавить'}</Button>
-              </div>
-            </div>
-          </Modal>
         </>
       )}
+
+      <Modal
+        isOpen={modalOpen}
+        onClose={closeModal}
+        title={editing ? 'Редактировать пользователя' : 'Добавить пользователя'}
+        size="large"
+      >
+        <form
+          className="settings-users-modal"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <div className="settings-users-modal__fields settings-users-form">
+            {formError ? <p className="settings-users-form-error">{formError}</p> : null}
+            <label>
+              Телефон (логин) <span style={{ color: 'var(--error)' }}>*</span>
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                autoComplete="tel"
+                placeholder="+7 999 123-45-67"
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Почта
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              {editing ? 'Новый пароль (оставьте пустым, чтобы не менять)' : 'Пароль'}{' '}
+              {!editing && <span style={{ color: 'var(--error)' }}>*</span>}
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Фамилия
+              <input
+                type="text"
+                value={form.lastName}
+                onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                autoComplete="family-name"
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Имя
+              <input
+                type="text"
+                value={form.firstName}
+                onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                autoComplete="given-name"
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Отчество
+              <input
+                type="text"
+                value={form.middleName}
+                onChange={(e) => setForm((f) => ({ ...f, middleName: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                autoComplete="additional-name"
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Дата рождения
+              <input
+                type="date"
+                value={form.birthDate}
+                onChange={(e) => setForm((f) => ({ ...f, birthDate: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                autoComplete="bday"
+                disabled={savingUser}
+              />
+            </label>
+            <label>
+              Роль
+              <select
+                value={form.isProfileAdmin ? 'admin' : form.accountRole}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    isProfileAdmin: e.target.value === 'admin',
+                    accountRole: e.target.value === 'admin' ? 'admin' : e.target.value,
+                    ...(e.target.value === 'admin'
+                      ? { organizationIds: [], warehouseIds: [] }
+                      : null),
+                  }))
+                }
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                disabled={savingUser}
+              >
+                <option value="admin">Администратор</option>
+                {assignableRoles
+                  .filter((r) => r.key !== 'admin')
+                  .map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.label}
+                    </option>
+                  ))}
+              </select>
+              <div className="text-muted small" style={{ marginTop: 8, lineHeight: 1.35 }}>
+                {form.isProfileAdmin ? (
+                  <div>Администратор аккаунта — полный доступ, управление пользователями и ролями.</div>
+                ) : (
+                  <div>Видимые разделы для этой роли настраиваются на вкладке «Роли».</div>
+                )}
+              </div>
+            </label>
+
+            <div className={`settings-users-access-block${form.isProfileAdmin ? ' settings-users-access-block--disabled' : ''}`}>
+              <div className="settings-users-access-title">Доступ к организациям и складам</div>
+              {form.isProfileAdmin ? (
+                <p className="text-muted small settings-users-access-hint">
+                  У администратора полный доступ ко всем организациям и складам. Ограничения не применяются.
+                </p>
+              ) : (
+                <p className="text-muted small settings-users-access-hint">
+                  Можно выбрать несколько. Если не выбрано — полный доступ ко всем.
+                </p>
+              )}
+
+              <AccessMultiSelect
+                label="Организации"
+                emptyLabel="Все организации (полный доступ)"
+                disabled={form.isProfileAdmin || savingUser}
+                options={organizations.map((org) => ({
+                  id: org.id,
+                  label: org.name || `Организация #${org.id}`,
+                }))}
+                value={form.organizationIds}
+                onChange={(organizationIds) => setForm((f) => ({ ...f, organizationIds }))}
+              />
+
+              <AccessMultiSelect
+                label="Склады"
+                emptyLabel="Все склады (полный доступ)"
+                disabled={form.isProfileAdmin || savingUser}
+                options={warehouses.map((wh) => ({
+                  id: wh.id,
+                  label: wh.address || wh.name || `Склад #${wh.id}`,
+                }))}
+                value={form.warehouseIds}
+                onChange={(warehouseIds) => setForm((f) => ({ ...f, warehouseIds }))}
+              />
+            </div>
+
+            {showSystemAdminRoleOption && (
+              <label>
+                Роль для входа
+                <select
+                  value={form.role}
+                  onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                  className="login-input"
+                  style={{ width: '100%', marginTop: '4px' }}
+                  disabled={savingUser}
+                >
+                  <option value="user">Пользователь</option>
+                  <option value="admin">Администратор системы</option>
+                </select>
+              </label>
+            )}
+          </div>
+          <div className="settings-users-modal__footer admin-form-actions">
+            <Button variant="secondary" type="button" onClick={closeModal} disabled={savingUser}>
+              Отмена
+            </Button>
+            <Button variant="primary" type="submit" disabled={savingUser}>
+              {savingUser ? 'Сохранение…' : editing ? 'Сохранить' : 'Добавить'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

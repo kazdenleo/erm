@@ -11,6 +11,7 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { productAttributeListFilter } from '../utils/productAttributeTenant.js';
 import { isProfileProductEnrichmentEnabled } from '../utils/profileProductEnrichment.js';
 import { saveLocalImageBufferToProductFolder } from './productImagesImport.service.js';
 
@@ -18,6 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const SESSION_ROOT = path.resolve(__dirname, '../../uploads/tmp/catalog-import');
+const INCOMING_ROOT = path.resolve(__dirname, '../../uploads/tmp/catalog-import-incoming');
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_CREATE = 5000;
 const MAX_IMAGES = 50;
@@ -71,7 +73,122 @@ function skuKey(s) {
     .toUpperCase();
 }
 
-function cellText(cell) {
+/** Марки для разъединения «NISSANALTRA» / «…07NISSAN…» (длинные первыми). */
+const UNGLUE_CAR_BRANDS = [
+  'MERCEDES-BENZ',
+  'MERCEDES BENZ',
+  'MERCEDESBENZ',
+  'GENERAL MOTORS',
+  'GENERALMOTORS',
+  'LAND ROVER',
+  'LANDROVER',
+  'GREAT WALL',
+  'GREATWALL',
+  'VOLKSWAGEN',
+  'MITSUBISHI',
+  'SSANGYONG',
+  'CHEVROLET',
+  'INFINITI',
+  'HYUNDAI',
+  'CITROEN',
+  'CITROËN',
+  'RENAULT',
+  'PEUGEOT',
+  'SUBARU',
+  'SUZUKI',
+  'TOYOTA',
+  'NISSAN',
+  'HONDA',
+  'MAZDA',
+  'SKODA',
+  'ŠKODA',
+  'VOLVO',
+  'LEXUS',
+  'CHERY',
+  'GEELY',
+  'HAVAL',
+  'AUDI',
+  'FORD',
+  'FIAT',
+  'OPEL',
+  'SEAT',
+  'JEEP',
+  'LADA',
+  'BMW',
+  'KIA',
+  'VAZ',
+  'UAZ',
+  'GAZ',
+  'VW',
+];
+
+const UNGLUE_BRAND_RE = new RegExp(
+  `\\b(${UNGLUE_CAR_BRANDS.map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?=[A-ZА-ЯЁa-zа-яё0-9(])`,
+  'gi'
+);
+
+/**
+ * Парсер Miles и подобные часто склеивают ячейки без пробелов.
+ * Восстанавливаем пробелы; переносы строк не вставляем.
+ */
+function unglueParserCellText(raw) {
+  let s = String(raw ?? '');
+  if (!s) return '';
+
+  // Шапка применимости в значение не нужна — вырезаем (в т.ч. дубли).
+  s = s.replace(/(?:Марка\s*авто\s*Модель\s*авто\s*Модификация\s*Год\s*выпуска\s*)+/gi, '');
+  s = s.replace(/(?:Марка автоМодель автоМодификацияГод выпуска\s*)+/gi, '');
+
+  // «автоМодель», «выпускаNISSAN»
+  s = s.replace(/([а-яё])([А-ЯЁ])/g, '$1 $2');
+  s = s.replace(/([а-яё])([A-Z])/g, '$1 $2');
+
+  // OEM/кроссы: …025NISSAN272…
+  s = s.replace(/([0-9])([A-Z]{3,}\d)/g, '$1 $2');
+  s = s.replace(/(\d{2})([A-Z]{3,})/g, '$1 $2');
+  s = s.replace(/(время)([A-Z]{3,})/gi, '$1 $2');
+
+  // Марка+модель / марка+код: NISSANALTRA, HONDA08R79, BMW5
+  s = s.replace(UNGLUE_BRAND_RE, '$1 ');
+  // GENERAL MOTORS937… / MOTORS937…
+  s = s.replace(/(MOTORS)(\d)/gi, '$1 $2');
+
+  // л.с1997 → л.с 1997
+  s = s.replace(/(л\.?\s*с\.?)(\d{4})/gi, '$1 $2');
+  s = s.replace(/:(?=\S)/g, ': ');
+  s = s.replace(/\)\[/g, ') [');
+
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/** RichText: не склеивать куски вплотную, если между ними нет пробела/переноса. */
+function joinRichTextRuns(runs) {
+  let out = '';
+  for (const p of runs || []) {
+    const t = String(p?.text ?? '');
+    if (!t) continue;
+    if (!out) {
+      out = t;
+      continue;
+    }
+    const leftWs = /\s$/.test(out);
+    const rightWs = /^\s/.test(t);
+    if (leftWs || rightWs) {
+      out += t;
+      continue;
+    }
+    // Граница «слово/цифра|слово/цифра» без пробела — вставляем пробел (типичный блок применимости/OEM).
+    if (/[\dA-Za-zА-Яа-яЁё]$/.test(out) && /^[\dA-Za-zА-Яа-яЁё]/.test(t)) {
+      out += ` ${t}`;
+    } else {
+      out += t;
+    }
+  }
+  return unglueParserCellText(out);
+}
+
+/** Сырое значение ячейки без разъединения (для оценки качества файла). */
+function cellTextRaw(cell) {
   if (cell == null) return '';
   const v = cell.value != null ? cell.value : cell;
   if (v == null) return '';
@@ -79,18 +196,50 @@ function cellText(cell) {
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'string') return v.trim();
   if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v)) {
+    return v
+      .map((item) => cellTextRaw(item))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
   if (typeof v === 'object') {
-    if (v.text != null) return String(v.text).trim();
-    if (v.result != null) return cellText({ value: v.result });
     if (Array.isArray(v.richText)) {
-      return v.richText
-        .map((p) => p?.text || '')
-        .join('')
-        .trim();
+      let out = '';
+      for (const p of v.richText) {
+        const t = String(p?.text ?? '');
+        if (!t) continue;
+        if (!out) {
+          out = t;
+          continue;
+        }
+        if (/\s$/.test(out) || /^\s/.test(t)) out += t;
+        else if (/[\dA-Za-zА-Яа-яЁё]$/.test(out) && /^[\dA-Za-zА-Яа-яЁё]/.test(t)) out += ` ${t}`;
+        else out += t;
+      }
+      return out.trim();
     }
+    if (v.text != null) return String(v.text).trim();
+    if (v.result != null) return cellTextRaw({ value: v.result });
     if (v.hyperlink != null && v.text != null) return String(v.text).trim();
   }
   return String(v).trim();
+}
+
+function cellText(cell) {
+  return unglueParserCellText(cellTextRaw(cell));
+}
+
+/** Насколько «слипшийся» сырой текст — для выбора лучшего xlsx. */
+function gluePointsForText(s) {
+  const t = String(s || '');
+  if (!t) return 0;
+  let score = 0;
+  if (/Марка автоМодель авто/i.test(t)) score += 80;
+  score += (t.match(/[а-яё][А-ЯЁ]/g) || []).length * 3;
+  score += (t.match(/[0-9][A-Z]{3,}\d/g) || []).length * 4;
+  score += (t.match(/л\.?\s*с\.?\d{4}/gi) || []).length * 2;
+  return score;
 }
 
 function pickColumnByHints(columns, hints, { exactFirst = true } = {}) {
@@ -127,28 +276,71 @@ function suggestMapping(columns) {
 }
 
 function mappedColumnSet(mapping = {}) {
-  return new Set(
-    ['sku', 'name', 'brand', 'description', 'country', 'applicability', 'analogs']
-      .map((k) => normKey(mapping[k]))
-      .filter(Boolean)
-  );
+  const used = new Set();
+  for (const k of ['sku', 'name', 'brand', 'description', 'country', 'applicability', 'analogs']) {
+    for (const col of normalizeMappedColumns(mapping[k])) {
+      const n = normKey(col);
+      if (n) used.add(n);
+    }
+  }
+  return used;
 }
 
-async function loadAttributeCatalog() {
+async function loadAttributeCatalog(profileId) {
   try {
+    const filter = productAttributeListFilter(
+      profileId != null && profileId !== '' ? profileId : null
+    );
     const result = await query(
-      `SELECT id, name, system_key
+      `SELECT id, name, system_key, type, profile_id
        FROM product_attributes
-       ORDER BY name`
+       WHERE ${filter.sql}
+       ORDER BY name, id`,
+      filter.params
     );
     return (result.rows || []).map((r) => ({
       id: String(r.id),
       name: String(r.name || ''),
       systemKey: r.system_key != null ? String(r.system_key) : null,
+      type: r.type != null ? String(r.type) : 'text',
+      profileId: r.profile_id != null ? String(r.profile_id) : null,
     }));
   } catch {
     return [];
   }
+}
+
+/** Выбрать атрибут по имени с учётом категории и аккаунта (не чужой profile_id). */
+function pickAttrByNames(attributes, names, { categoryAttrIds = null, profileId = null } = {}) {
+  const want = new Set((names || []).map((n) => normKey(n)).filter(Boolean));
+  if (!want.size) return null;
+  const matches = (attributes || []).filter((a) => want.has(normKey(a.name)));
+  if (!matches.length) return null;
+  if (categoryAttrIds && categoryAttrIds.size) {
+    const inCat = matches.find((a) => categoryAttrIds.has(String(a.id)));
+    if (inCat) return inCat;
+  }
+  if (profileId != null && profileId !== '') {
+    const same = matches.find((a) => String(a.profileId) === String(profileId));
+    if (same) return same;
+  }
+  return matches[0];
+}
+
+function isMultilineMappingTarget(attr, mainKey = '') {
+  const key = String(mainKey || '').trim();
+  if (key === 'description' || key === 'applicability' || key === 'analogs') return true;
+  const type = String(attr?.type || '').toLowerCase();
+  if (type === 'editable') return true;
+  const name = String(attr?.name || '');
+  if (/применимост|аналог|описан/i.test(name)) return true;
+  return false;
+}
+
+function joinMappedParts(parts, { multiline = false } = {}) {
+  const list = (parts || []).map((p) => String(p || '').trim()).filter(Boolean);
+  if (!list.length) return '';
+  return list.join(multiline ? '\n' : '. ');
 }
 
 function suggestAttributeMappings(columns, attributes) {
@@ -256,6 +448,34 @@ function removeSession(sessionId) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+function cleanupExpiredIncomingUploads() {
+  ensureDirSync(INCOMING_ROOT);
+  let removed = 0;
+  for (const name of fs.readdirSync(INCOMING_ROOT)) {
+    const dir = path.join(INCOMING_ROOT, name);
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+      const mp = path.join(dir, 'manifest.json');
+      if (fs.existsSync(mp)) {
+        const man = JSON.parse(fs.readFileSync(mp, 'utf8'));
+        if (man?.expiresAt && Date.now() > Number(man.expiresAt)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          removed += 1;
+        }
+        continue;
+      }
+      const age = Date.now() - fs.statSync(dir).mtimeMs;
+      if (age > SESSION_TTL_MS) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed += 1;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return removed;
+}
+
 export function cleanupExpiredCatalogImportSessions() {
   ensureDirSync(SESSION_ROOT);
   let removed = 0;
@@ -281,7 +501,123 @@ export function cleanupExpiredCatalogImportSessions() {
       /* ignore */
     }
   }
+  removed += cleanupExpiredIncomingUploads();
   return removed;
+}
+
+function sanitizeUploadId(uploadId) {
+  const id = String(uploadId || '')
+    .trim()
+    .replace(/[^a-f0-9-]/gi, '');
+  if (!id || id.length < 8) {
+    const err = new Error('Некорректный uploadId');
+    err.statusCode = 400;
+    throw err;
+  }
+  return id;
+}
+
+function incomingDir(uploadId) {
+  return path.join(INCOMING_ROOT, sanitizeUploadId(uploadId));
+}
+
+function readIncomingManifest(uploadId) {
+  const dir = incomingDir(uploadId);
+  const mp = path.join(dir, 'manifest.json');
+  if (!fs.existsSync(dir) || !fs.existsSync(mp)) {
+    const err = new Error('Сессия загрузки папки не найдена или устарела');
+    err.statusCode = 404;
+    throw err;
+  }
+  const man = JSON.parse(fs.readFileSync(mp, 'utf8'));
+  if (man?.expiresAt && Date.now() > Number(man.expiresAt)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+    const err = new Error('Сессия загрузки папки истекла. Выберите папку снова.');
+    err.statusCode = 410;
+    throw err;
+  }
+  return man;
+}
+
+function writeIncomingManifest(uploadId, man) {
+  const dir = incomingDir(uploadId);
+  ensureDirSync(dir);
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(man, null, 2), 'utf8');
+}
+
+/** Старт чанковой загрузки папки парсера */
+export function initFolderUpload() {
+  cleanupExpiredIncomingUploads();
+  const uploadId = crypto.randomUUID
+    ? crypto.randomUUID()
+    : crypto.randomBytes(16).toString('hex');
+  ensureDirSync(incomingDir(uploadId));
+  writeIncomingManifest(uploadId, {
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_TTL_MS,
+    files: [],
+  });
+  return { uploadId };
+}
+
+/**
+ * Добавить чанк файлов в staging.
+ * @param {string} uploadId
+ * @param {Array<{ path: string, relativePath: string }>} diskFiles
+ */
+export function appendFolderUploadChunk(uploadId, diskFiles) {
+  const man = readIncomingManifest(uploadId);
+  const list = Array.isArray(diskFiles) ? diskFiles : [];
+  if (!list.length) {
+    const err = new Error('Пустой чанк файлов');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (man.files.length + list.length > 20000) {
+    const err = new Error('Слишком много файлов в папке (лимит 20000)');
+    err.statusCode = 400;
+    throw err;
+  }
+  for (const f of list) {
+    const abs = String(f?.path || '');
+    const rel = String(f?.relativePath || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+    if (!abs || !fs.existsSync(abs) || !rel) continue;
+    man.files.push({ diskName: path.basename(abs), relativePath: rel });
+  }
+  man.expiresAt = Date.now() + SESSION_TTL_MS;
+  writeIncomingManifest(uploadId, man);
+  return { uploadId, received: man.files.length };
+}
+
+/**
+ * Закончить чанковую загрузку → превью сессии импорта.
+ * @param {string} uploadId
+ * @param {{ profileId: number|string }} opts
+ */
+export async function finalizeFolderUpload(uploadId, opts = {}) {
+  const man = readIncomingManifest(uploadId);
+  const dir = incomingDir(uploadId);
+  const diskFiles = (man.files || [])
+    .map((f) => ({
+      path: path.join(dir, f.diskName),
+      relativePath: f.relativePath,
+    }))
+    .filter((f) => f.path && fs.existsSync(f.path));
+  try {
+    return await uploadAndPreviewFromFolderFiles(diskFiles, opts);
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function parseWorkbookBuffer(buffer) {
@@ -298,6 +634,19 @@ async function parseWorkbookBuffer(buffer) {
   ws.getRow(1).eachCell({ includeEmpty: false }, (cell) => {
     if (cell.col > maxCol) maxCol = cell.col;
   });
+  // actualColumnCount/columnCount иногда шире первой строки (дыры в заголовках)
+  const declared = Math.max(
+    Number(ws.actualColumnCount) || 0,
+    Number(ws.columnCount) || 0
+  );
+  if (declared > maxCol) maxCol = declared;
+  // добрать хвост по нескольким строкам данных, если заголовок оборван
+  const probeTo = Math.min(ws.rowCount || 0, 30);
+  for (let r = 2; r <= probeTo; r++) {
+    ws.getRow(r).eachCell({ includeEmpty: false }, (cell) => {
+      if (cell.col > maxCol) maxCol = cell.col;
+    });
+  }
   if (maxCol < 1) {
     const err = new Error('В Excel пустая первая строка (заголовки)');
     err.statusCode = 400;
@@ -311,6 +660,7 @@ async function parseWorkbookBuffer(buffer) {
   }
 
   const rows = [];
+  let rawGlueScore = 0;
   const maxRow = Math.min(ws.rowCount || 0, MAX_PREVIEW_ROWS + 2);
   let emptyStreak = 0;
   for (let r = 2; r <= maxRow; r++) {
@@ -319,7 +669,9 @@ async function parseWorkbookBuffer(buffer) {
     let any = false;
     for (let c = 1; c <= maxCol; c++) {
       const key = columns[c - 1];
-      const val = cellText(excelRow.getCell(c));
+      const raw = cellTextRaw(excelRow.getCell(c));
+      if (r <= 9) rawGlueScore += gluePointsForText(raw);
+      const val = unglueParserCellText(raw);
       if (val) any = true;
       if (!shouldSkipColumn(key)) obj[key] = val;
     }
@@ -332,7 +684,73 @@ async function parseWorkbookBuffer(buffer) {
     rows.push(obj);
   }
 
-  return { columns: columns.filter((c) => !shouldSkipColumn(c)), rows };
+  return {
+    columns: columns.filter((c) => !shouldSkipColumn(c)),
+    rows,
+    rawGlueScore,
+  };
+}
+
+/**
+ * Если в корне несколько .xlsx (повторный экспорт парсера) — берём самый «полный»:
+ * больше столбцов, затем больше строк, затем больший файл / имя новее.
+ * @param {Array<{ key?: string, path?: string, relativePath?: string, buffer: Buffer }>} candidates
+ */
+async function pickBestParsedXlsx(candidates) {
+  const list = Array.isArray(candidates) ? candidates.filter((c) => c?.buffer?.length) : [];
+  if (!list.length) {
+    const err = new Error('Нет Excel для разбора');
+    err.statusCode = 400;
+    throw err;
+  }
+  let best = null;
+  for (const cand of list) {
+    let parsed;
+    try {
+      parsed = await parseWorkbookBuffer(cand.buffer);
+    } catch {
+      continue;
+    }
+    if (!parsed?.rows?.length) continue;
+    const score = {
+      colCount: (parsed.columns || []).length,
+      rowCount: (parsed.rows || []).length,
+      glue: Number(parsed.rawGlueScore) || 0,
+      size: cand.buffer.length,
+      name: String(cand.relativePath || cand.key || cand.path || ''),
+      parsed,
+      cand,
+    };
+    if (!best) {
+      best = score;
+      continue;
+    }
+    // Больше столбцов — главный критерий (текст при чтении разъединяем).
+    // При равном числе столбцов предпочитаем файл с менее «слипшимся» сырьём.
+    if (score.colCount !== best.colCount) {
+      if (score.colCount > best.colCount) best = score;
+      continue;
+    }
+    if (score.glue !== best.glue) {
+      if (score.glue < best.glue) best = score;
+      continue;
+    }
+    if (score.rowCount !== best.rowCount) {
+      if (score.rowCount > best.rowCount) best = score;
+      continue;
+    }
+    if (score.size !== best.size) {
+      if (score.size > best.size) best = score;
+      continue;
+    }
+    if (score.name.localeCompare(best.name, 'ru') > 0) best = score;
+  }
+  if (!best) {
+    const err = new Error('Не удалось прочитать Excel (.xlsx) с данными');
+    err.statusCode = 400;
+    throw err;
+  }
+  return best;
 }
 
 function listImageFilesInDir(absDir) {
@@ -388,14 +806,48 @@ function normalizeMappedColumns(colSpec) {
   return [String(colSpec).trim()].filter(Boolean);
 }
 
-/** Значения из нескольких столбцов через точку (пустые пропускаем) */
-function resolveMappedColumnsValue(row, colSpec, joiner = '.') {
+/**
+ * Значения из нескольких столбцов.
+ * @param {string|string[]} colSpec
+ * @param {{ joiner?: string, multiline?: boolean }} [opts]
+ */
+function resolveMappedColumnsValue(row, colSpec, opts = {}) {
   const parts = [];
   for (const col of normalizeMappedColumns(colSpec)) {
     const v = resolveMappedValue(row, col);
     if (v) parts.push(v);
   }
-  return parts.join(joiner);
+  if (!parts.length) return '';
+  if (opts && typeof opts === 'string') {
+    // обратная совместимость: раньше передавали joiner строкой
+    return parts.join(opts);
+  }
+  if (opts?.joiner != null) return parts.join(String(opts.joiner));
+  return joinMappedParts(parts, { multiline: Boolean(opts?.multiline) });
+}
+
+/** Системные атрибуты габаритов/веса → поля products.* */
+const SYSTEM_DIM_PAYLOAD_KEYS = {
+  product_length: 'product_length',
+  product_width: 'product_width',
+  product_height: 'product_height',
+  product_weight: 'product_weight',
+  length: 'length',
+  width: 'width',
+  height: 'height',
+  weight: 'weight',
+};
+
+function parseLooseNumber(raw) {
+  const s = String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(',', '.');
+  if (!s) return null;
+  const m = s.match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
 }
 
 function buildDescription(row, mapping, columns, extraUsedCols = []) {
@@ -456,27 +908,30 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
-  xlsxKeys.sort();
-  const xlsxKey = xlsxKeys[0];
-  const xlsxBuf = Buffer.from(await zip.files[xlsxKey].async('uint8array'));
-  const { columns, rows: rawRows } = await parseWorkbookBuffer(xlsxBuf);
-  if (!rawRows.length) {
-    const err = new Error('В Excel нет строк с данными');
-    err.statusCode = 400;
-    throw err;
+  const xlsxCandidates = [];
+  for (const key of xlsxKeys) {
+    xlsxCandidates.push({
+      key,
+      relativePath: key,
+      buffer: Buffer.from(await zip.files[key].async('uint8array')),
+    });
   }
+  const best = await pickBestParsedXlsx(xlsxCandidates);
+  const xlsxKey = best.cand.key;
+  const xlsxBuf = best.cand.buffer;
+  const { columns, rows: rawRows } = best.parsed;
 
   const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
   const root = sessionDir(sessionId);
   const extractRoot = path.join(root, 'files');
   ensureDirSync(extractRoot);
 
-  // Write xlsx
+  // Write chosen xlsx (лишние корневые .xlsx не копируем — иначе снова возьмётся старый)
   fs.writeFileSync(path.join(extractRoot, path.basename(zipPathParts(xlsxKey).pop())), xlsxBuf);
 
   // Extract image folders / files
   for (const key of fileEntries) {
-    if (key === xlsxKey) continue;
+    if (xlsxKeys.includes(key)) continue;
     const parts = stripRoot(zipPathParts(key));
     if (!parts.length) continue;
     const abs = path.join(extractRoot, ...parts);
@@ -533,21 +988,23 @@ export async function uploadAndPreviewFromFolderFiles(diskFiles, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
-  xlsxIdx.sort((a, b) => relPaths[a].localeCompare(relPaths[b], 'ru'));
-  const xlsxFile = list[xlsxIdx[0]];
-  const xlsxBuf = fs.readFileSync(xlsxFile.path);
-  const { columns, rows: rawRows } = await parseWorkbookBuffer(xlsxBuf);
-  if (!rawRows.length) {
-    const err = new Error('В Excel нет строк с данными');
-    err.statusCode = 400;
-    throw err;
-  }
+  const xlsxCandidates = xlsxIdx.map((i) => ({
+    path: list[i].path,
+    relativePath: relPaths[i],
+    buffer: fs.readFileSync(list[i].path),
+    index: i,
+  }));
+  const best = await pickBestParsedXlsx(xlsxCandidates);
+  const chosenIdx = best.cand.index;
+  const { columns, rows: rawRows } = best.parsed;
+  const xlsxSkip = new Set(xlsxIdx.filter((i) => i !== chosenIdx));
 
   const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
   const extractRoot = path.join(sessionDir(sessionId), 'files');
   ensureDirSync(extractRoot);
 
   for (let i = 0; i < list.length; i++) {
+    if (xlsxSkip.has(i)) continue;
     const parts = stripRoot(zipPathParts(relPaths[i]));
     if (!parts.length) continue;
     if (parts.some((p) => p === '..' || p.includes('\0'))) continue;
@@ -587,7 +1044,7 @@ export async function uploadAndPreviewFromFolderFiles(diskFiles, opts = {}) {
 async function finalizePreviewSession({ sessionId, profileId, extractRoot, columns, rawRows }) {
   const folderIndex = buildFolderIndex(extractRoot);
   const suggestedMapping = suggestMapping(columns);
-  const attributes = await loadAttributeCatalog();
+  const attributes = await loadAttributeCatalog(profileId);
   const suggestedAttributeMappings = suggestAttributeMappings(columns, attributes);
 
   const previewRows = rawRows.slice(0, MAX_PREVIEW_ROWS).map((row, index) => {
@@ -641,6 +1098,7 @@ async function finalizePreviewSession({ sessionId, profileId, extractRoot, colum
       id: a.id,
       name: a.name,
       systemKey: a.systemKey,
+      type: a.type,
     })),
     totalRows: previewRows.length,
     rows: previewRows.map(({ raw, imagePaths, ...rest }) => ({
@@ -704,16 +1162,29 @@ export async function createFromSession(opts = {}) {
     err.statusCode = 400;
     throw err;
   }
-  const attributes = Array.isArray(meta.attributes)
-    ? meta.attributes
-    : await loadAttributeCatalog();
+  const attributes = await loadAttributeCatalog(opts.profileId);
+  // meta.attributes мог быть сохранён без фильтра профиля — берём актуальный каталог
   const attrById = new Map(attributes.map((a) => [String(a.id), a]));
-  const attrByName = new Map(
-    attributes.map((a) => [normKey(a.name), a]).filter(([k]) => k)
+  let categoryAttrIds = null;
+  try {
+    const cid = Number(categoryId);
+    if (Number.isFinite(cid)) {
+      const ca = await query(
+        `SELECT attribute_id FROM category_attributes WHERE user_category_id = $1`,
+        [cid]
+      );
+      categoryAttrIds = new Set((ca.rows || []).map((r) => String(r.attribute_id)));
+    }
+  } catch {
+    categoryAttrIds = null;
+  }
+  const pickOpts = { categoryAttrIds, profileId: opts.profileId };
+  const applicabilityAttr = pickAttrByNames(
+    attributes,
+    ['применимость', 'applicability', 'применяемость'],
+    pickOpts
   );
-  const applicabilityAttr =
-    attrByName.get('применимость') || attrByName.get('applicability') || null;
-  const analogsAttr = attrByName.get('аналоги') || attrByName.get('analogs') || null;
+  const analogsAttr = pickAttrByNames(attributes, ['аналоги', 'analogs', 'analogues'], pickOpts);
 
   const extractRoot = path.join(sessionDir(sessionId), meta.extractRel || 'files');
   const folderIndex = buildFolderIndex(extractRoot);
@@ -749,14 +1220,14 @@ export async function createFromSession(opts = {}) {
   for (const item of candidates) {
     const raw = item.raw || {};
     const sku =
-      resolveMappedValue(raw, mapping.sku) ||
+      resolveMappedColumnsValue(raw, mapping.sku, { multiline: false }) ||
       String(item.sku || '').trim();
     const name =
-      resolveMappedValue(raw, mapping.name) ||
+      resolveMappedColumnsValue(raw, mapping.name, { multiline: false }) ||
       String(item.name || '').trim() ||
       sku;
     const brandName =
-      resolveMappedValue(raw, mapping.brand) ||
+      resolveMappedColumnsValue(raw, mapping.brand, { multiline: false }) ||
       String(defaults.brand || item.brand || '').trim();
     const row = { index: item.index, sku, name, brand: brandName, ok: false };
 
@@ -785,44 +1256,67 @@ export async function createFromSession(opts = {}) {
       const attrColsUsed = Object.values(attributeMappings || {}).flatMap((spec) =>
         normalizeMappedColumns(spec)
       );
-      const mappedDescription = resolveMappedValue(raw, mapping.description);
+      const mappedDescription = resolveMappedColumnsValue(raw, mapping.description, {
+        multiline: true,
+      });
       const description =
         mappedDescription ||
         buildDescription(raw, mapping, meta.columns || [], attrColsUsed) ||
         null;
-      const countryFromCol = resolveMappedValue(raw, mapping.country);
+      const countryFromCol = resolveMappedColumnsValue(raw, mapping.country, {
+        multiline: false,
+      });
       const countryDefault = String(defaults.countryOfOrigin || defaults.country_of_origin || '').trim();
       const countryOfOrigin = countryFromCol || countryDefault || null;
 
       const attributeValues = {};
       const attrsToAttach = [];
 
-      const applicabilityText = resolveMappedValue(raw, mapping.applicability);
+      const applicabilityText = resolveMappedColumnsValue(raw, mapping.applicability, {
+        multiline: isMultilineMappingTarget(applicabilityAttr, 'applicability'),
+      });
       if (applicabilityText && applicabilityAttr?.id) {
         attributeValues[String(applicabilityAttr.id)] = applicabilityText;
         attrsToAttach.push(applicabilityAttr.id);
       }
-      const analogsText = resolveMappedValue(raw, mapping.analogs);
+      const analogsText = resolveMappedColumnsValue(raw, mapping.analogs, {
+        multiline: isMultilineMappingTarget(analogsAttr, 'analogs'),
+      });
       if (analogsText && analogsAttr?.id) {
         attributeValues[String(analogsAttr.id)] = analogsText;
         attrsToAttach.push(analogsAttr.id);
       }
 
+      const dimPayload = {};
       for (const [attrId, colSpec] of Object.entries(attributeMappings || {})) {
         const aid = String(attrId || '').trim();
         const cols = normalizeMappedColumns(colSpec);
         if (!aid || !cols.length) continue;
         // Не дублируем, если уже записали через спец-поля
         if (
-          (applicabilityAttr && aid === String(applicabilityAttr.id) && mapping.applicability) ||
-          (analogsAttr && aid === String(analogsAttr.id) && mapping.analogs)
+          (applicabilityAttr &&
+            aid === String(applicabilityAttr.id) &&
+            normalizeMappedColumns(mapping.applicability).length) ||
+          (analogsAttr &&
+            aid === String(analogsAttr.id) &&
+            normalizeMappedColumns(mapping.analogs).length)
         ) {
           continue;
         }
         const attr = attrById.get(aid);
-        if (!attr || attr.systemKey) continue;
-        const val = resolveMappedColumnsValue(raw, cols, '.');
+        if (!attr) continue; // чужой профиль / неизвестный id — не пишем
+        const val = resolveMappedColumnsValue(raw, cols, {
+          multiline: isMultilineMappingTarget(attr),
+        });
         if (!val) continue;
+        const sk = attr.systemKey ? String(attr.systemKey) : '';
+        if (sk && SYSTEM_DIM_PAYLOAD_KEYS[sk]) {
+          // Только явно сопоставленные габариты; упаковку с товара не копируем
+          const num = parseLooseNumber(val);
+          if (num != null) dimPayload[SYSTEM_DIM_PAYLOAD_KEYS[sk]] = num;
+          continue;
+        }
+        if (sk) continue; // прочие системные поля карточки уже в «Сопоставление колонок»
         attributeValues[aid] = val;
         attrsToAttach.push(aid);
       }
@@ -844,6 +1338,7 @@ export async function createFromSession(opts = {}) {
         organizationId,
         description,
         country_of_origin: countryOfOrigin,
+        ...dimPayload,
       };
       if (payload.brand_id != null && !Number.isFinite(payload.brand_id)) {
         delete payload.brand_id;
@@ -913,6 +1408,9 @@ export async function createFromSession(opts = {}) {
 export default {
   uploadAndPreview,
   uploadAndPreviewFromFolderFiles,
+  initFolderUpload,
+  appendFolderUploadChunk,
+  finalizeFolderUpload,
   createFromSession,
   cleanupExpiredCatalogImportSessions,
 };

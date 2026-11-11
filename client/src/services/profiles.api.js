@@ -43,6 +43,16 @@ export const profilesApi = {
     return response.data;
   },
 
+  async createCustomRole(data) {
+    const response = await api.post('/profiles/me/custom-roles', data);
+    return response.data;
+  },
+
+  async deleteCustomRole(role) {
+    const response = await api.delete(`/profiles/me/custom-roles/${encodeURIComponent(role)}`);
+    return response.data;
+  },
+
   async getAll() {
     const response = await api.get('/profiles');
     return response.data;

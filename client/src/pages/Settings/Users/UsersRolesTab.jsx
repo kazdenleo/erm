@@ -2,7 +2,7 @@
  * Вкладка «Роли» в разделе Пользователи.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { profilesApi } from '../../../services/profiles.api.js';
 import { Button } from '../../../components/common/Button/Button';
 import {
@@ -21,9 +21,27 @@ export function UsersRolesTab() {
   const [error, setError] = useState('');
   const [activeRole, setActiveRole] = useState('picker');
   const [rolesData, setRolesData] = useState({});
-  const [navSections, setNavSections] = useState(defaultNavSectionsAllEnabled);
+  const [customRoles, setCustomRoles] = useState([]);
+  const [navSections, setNavSections] = useState(() => defaultNavSectionsAllEnabled());
   const [dailyLogout, setDailyLogout] = useState(false);
   const [configured, setConfigured] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newLabel, setNewLabel] = useState('');
+  const [newBase, setNewBase] = useState('editor');
+
+  const roleTabs = useMemo(() => {
+    const system = CONFIGURABLE_ACCOUNT_ROLES.map((key) => ({
+      key,
+      label: ACCOUNT_ROLE_LABELS[key] || key,
+      system: true,
+    }));
+    const custom = customRoles.map((r) => ({
+      key: r.key,
+      label: r.label || r.key,
+      system: false,
+    }));
+    return [...system, ...custom];
+  }, [customRoles]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -32,6 +50,7 @@ export function UsersRolesTab() {
       const res = await profilesApi.getRoleNavSections();
       const roles = res?.data?.roles ?? {};
       setRolesData(roles);
+      setCustomRoles(Array.isArray(res?.data?.customRoles) ? res.data.customRoles : []);
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка загрузки');
     } finally {
@@ -44,24 +63,34 @@ export function UsersRolesTab() {
   }, [load]);
 
   useEffect(() => {
+    if (!roleTabs.some((r) => r.key === activeRole) && roleTabs[0]) {
+      setActiveRole(roleTabs[0].key);
+    }
+  }, [roleTabs, activeRole]);
+
+  useEffect(() => {
     const row = rolesData[activeRole];
+    const custom = customRoles.find((r) => r.key === activeRole);
+    const base = custom?.base || activeRole;
     if (row) {
       setNavSections(row.navSections || defaultNavSectionsAllEnabled());
       setDailyLogout(row.dailyLogout === true);
       setConfigured(!!row.configured);
     } else {
-      setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
+      setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[base] || ROLE_NAV_PRESETS.editor || {}));
       setDailyLogout(false);
       setConfigured(false);
     }
-  }, [activeRole, rolesData]);
+  }, [activeRole, rolesData, customRoles]);
 
   const setNavSection = (key, enabled) => {
     setNavSections((prev) => ({ ...prev, [key]: enabled }));
   };
 
   const applyDefaultPreset = () => {
-    setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
+    const custom = customRoles.find((r) => r.key === activeRole);
+    const base = custom?.base || activeRole;
+    setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[base] || ROLE_NAV_PRESETS.editor || {}));
     setDailyLogout(false);
   };
 
@@ -74,9 +103,13 @@ export function UsersRolesTab() {
       setRolesData((prev) => ({
         ...prev,
         [activeRole]: {
+          ...(prev[activeRole] || {}),
           configured: data?.configured ?? true,
           navSections: data?.navSections ?? navSections,
           dailyLogout: data?.dailyLogout === true,
+          label: data?.label || prev[activeRole]?.label,
+          system: data?.system,
+          base: data?.base,
         },
       }));
       setConfigured(true);
@@ -98,17 +131,20 @@ export function UsersRolesTab() {
     try {
       const res = await profilesApi.updateRoleNavSection(activeRole, { useDefaultPreset: true });
       const data = res?.data;
+      const custom = customRoles.find((r) => r.key === activeRole);
+      const base = custom?.base || activeRole;
       setRolesData((prev) => ({
         ...prev,
         [activeRole]: {
+          ...(prev[activeRole] || {}),
           configured: false,
-          navSections: data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}),
+          navSections: data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[base] || {}),
           dailyLogout: false,
         },
       }));
       setConfigured(false);
       setDailyLogout(false);
-      setNavSections(data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
+      setNavSections(data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[base] || {}));
       alert('Восстановлены стандартные настройки роли');
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка сброса');
@@ -117,34 +153,155 @@ export function UsersRolesTab() {
     }
   };
 
+  const createRole = async () => {
+    const label = String(newLabel || '').trim();
+    if (!label) {
+      setError('Укажите название роли');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const res = await profilesApi.createCustomRole({ label, base: newBase });
+      const data = res?.data;
+      const key = data?.role;
+      await load();
+      if (key) setActiveRole(key);
+      setAddOpen(false);
+      setNewLabel('');
+      setNewBase('editor');
+      alert(key ? `Роль «${label}» создана` : 'Роль создана');
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Не удалось создать роль');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveOrCreate = async () => {
+    if (addOpen) {
+      await createRole();
+      return;
+    }
+    await save();
+  };
+
+  const deleteRole = async () => {
+    const tab = roleTabs.find((r) => r.key === activeRole);
+    if (!tab || tab.system) return;
+    if (!window.confirm(`Удалить роль «${tab.label}»?`)) return;
+    setSaving(true);
+    setError('');
+    try {
+      await profilesApi.deleteCustomRole(activeRole);
+      setActiveRole('editor');
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Не удалось удалить роль');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) return <div className="settings-users-loading">Загрузка...</div>;
+
+  const activeMeta = roleTabs.find((r) => r.key === activeRole);
+  const activeCustom = customRoles.find((r) => r.key === activeRole);
 
   return (
     <>
       <p className="text-muted small" style={{ marginBottom: '1rem', lineHeight: 1.4 }}>
-        Настройте, какие разделы видны пользователям с выбранной ролью. Пользователю достаточно назначить роль на вкладке «Список».
+        Настройте, какие разделы видны пользователям с выбранной ролью. Можно добавить свои роли.
         Администратор аккаунта всегда видит все разделы.
       </p>
       {error && <p className="text-danger">{error}</p>}
 
       <div className="settings-roles-tabs">
-        {CONFIGURABLE_ACCOUNT_ROLES.map((role) => (
+        {roleTabs.map((role) => (
           <button
-            key={role}
+            key={role.key}
             type="button"
-            className={`settings-roles-tab${activeRole === role ? ' settings-roles-tab--active' : ''}`}
-            onClick={() => setActiveRole(role)}
+            className={`settings-roles-tab${activeRole === role.key ? ' settings-roles-tab--active' : ''}`}
+            onClick={() => setActiveRole(role.key)}
           >
-            {ACCOUNT_ROLE_LABELS[role]}
-            {rolesData[role]?.configured ? <span className="settings-roles-tab-badge">свои</span> : null}
+            {role.label}
+            {rolesData[role.key]?.configured ? <span className="settings-roles-tab-badge">свои</span> : null}
           </button>
         ))}
+        <button
+          type="button"
+          className="settings-roles-tab settings-roles-tab--add"
+          onClick={() => setAddOpen((v) => !v)}
+          disabled={saving}
+        >
+          + Роль
+        </button>
       </div>
+
+      {addOpen && (
+        <div className="settings-users-nav-sections" style={{ marginBottom: '1rem' }}>
+          <div className="settings-users-nav-group-title">Новая роль</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+            <label className="form-group" style={{ margin: 0, minWidth: 200, flex: 1 }}>
+              <span className="form-label">Название</span>
+              <input
+                className="form-control"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    createRole();
+                  }
+                }}
+                placeholder="Например, Менеджер продаж"
+                disabled={saving}
+                autoFocus
+              />
+            </label>
+            <label className="form-group" style={{ margin: 0, minWidth: 220 }}>
+              <span className="form-label">Шаблон прав</span>
+              <select
+                className="form-control"
+                value={newBase}
+                onChange={(e) => setNewBase(e.target.value)}
+                disabled={saving}
+              >
+                {CONFIGURABLE_ACCOUNT_ROLES.map((key) => (
+                  <option key={key} value={key}>
+                    {ACCOUNT_ROLE_LABELS[key]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button variant="primary" size="small" type="button" onClick={createRole} disabled={saving}>
+              Создать роль
+            </Button>
+            <Button
+              variant="secondary"
+              size="small"
+              type="button"
+              onClick={() => {
+                setAddOpen(false);
+                setNewLabel('');
+                setError('');
+              }}
+              disabled={saving}
+            >
+              Отмена
+            </Button>
+          </div>
+          <p className="text-muted small" style={{ marginTop: 8, marginBottom: 0 }}>
+            Нажмите «Создать роль» — нижняя кнопка «Сохранить роль» тоже создаст роль, пока открыта эта форма.
+          </p>
+        </div>
+      )}
 
       <div className="settings-users-nav-sections">
         <div className="settings-users-nav-header">
           <span className="settings-users-nav-title">
-            Роль: {ACCOUNT_ROLE_LABELS[activeRole]}
+            Роль: {activeMeta?.label || activeRole}
+            {activeCustom ? ` (на основе: ${ACCOUNT_ROLE_LABELS[activeCustom.base] || activeCustom.base})` : ''}
             {configured ? ' (настроено для аккаунта)' : ' (стандартные настройки)'}
           </span>
           <div className="settings-roles-actions">
@@ -154,6 +311,11 @@ export function UsersRolesTab() {
             {configured && (
               <Button variant="secondary" size="small" type="button" onClick={resetToSystemDefault} disabled={saving}>
                 Сбросить к стандарту
+              </Button>
+            )}
+            {activeMeta && !activeMeta.system && (
+              <Button variant="secondary" size="small" type="button" onClick={deleteRole} disabled={saving}>
+                Удалить роль
               </Button>
             )}
           </div>
@@ -205,8 +367,8 @@ export function UsersRolesTab() {
       </div>
 
       <div className="settings-users-footer">
-        <Button variant="primary" onClick={save} disabled={saving}>
-          {saving ? 'Сохранение…' : 'Сохранить роль'}
+        <Button variant="primary" onClick={saveOrCreate} disabled={saving}>
+          {saving ? 'Сохранение…' : addOpen ? 'Создать роль' : 'Сохранить роль'}
         </Button>
       </div>
     </>

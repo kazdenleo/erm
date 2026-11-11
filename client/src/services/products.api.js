@@ -639,23 +639,64 @@ export const productsApi = {
     return response.data;
   },
 
-  /** Превью папки парсера: файлы + относительные пути (без ZIP в браузере) */
-  catalogBundlePreviewFolder: async (fileList) => {
-    const files = Array.from(fileList || []);
-    const form = new FormData();
-    for (const file of files) {
+  /**
+   * Превью папки парсера: чанками (один огромный multipart даёт Network Error в браузере).
+   * @param {FileList|File[]} fileList
+   * @param {{ onProgress?: (info: { phase: string, done: number, total: number }) => void }} [opts]
+   */
+  catalogBundlePreviewFolder: async (fileList, opts = {}) => {
+    const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+    const prepared = [];
+    for (const file of Array.from(fileList || [])) {
       const rel = String(file.webkitRelativePath || file.name || '')
         .replace(/\\/g, '/')
         .replace(/^\/+/, '');
       if (!rel || rel.endsWith('/')) continue;
       if (/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(rel)) continue;
       if (rel.split('/').some((p) => p === '.' || p === '..')) continue;
-      form.append('files', file);
-      form.append('paths', rel);
+      prepared.push({ file, rel });
     }
-    const response = await api.post('/products/enrichment/catalog-bundle/folder', form, {
-      timeout: 600000,
-    });
+    if (!prepared.length) {
+      const err = new Error('Папка пустая или без подходящих файлов');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const CHUNK = 80;
+    onProgress?.({ phase: 'init', done: 0, total: prepared.length });
+    const initRes = await api.post(
+      '/products/enrichment/catalog-bundle/folder/init',
+      {},
+      { timeout: 60000 }
+    );
+    const uploadId = initRes?.data?.data?.uploadId || initRes?.data?.uploadId;
+    if (!uploadId) {
+      const err = new Error('Не удалось начать загрузку папки');
+      err.statusCode = 500;
+      throw err;
+    }
+
+    let done = 0;
+    for (let i = 0; i < prepared.length; i += CHUNK) {
+      const slice = prepared.slice(i, i + CHUNK);
+      const form = new FormData();
+      for (const item of slice) {
+        form.append('files', item.file);
+        form.append('paths', item.rel);
+      }
+      await api.post(`/products/enrichment/catalog-bundle/folder/chunk/${uploadId}`, form, {
+        timeout: 600000,
+      });
+      done = Math.min(prepared.length, i + slice.length);
+      onProgress?.({ phase: 'upload', done, total: prepared.length });
+    }
+
+    onProgress?.({ phase: 'finalize', done: prepared.length, total: prepared.length });
+    const response = await api.post(
+      '/products/enrichment/catalog-bundle/folder/finalize',
+      { uploadId },
+      { timeout: 600000 }
+    );
     return response.data;
   },
 

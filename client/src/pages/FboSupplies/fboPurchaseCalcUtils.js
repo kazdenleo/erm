@@ -243,6 +243,38 @@ export function rowMatchesPurchaseSearch(row, search, extra = null) {
   return collectSearchHaystack(row, extra).some((v) => normalizeSearchText(v).includes(needle));
 }
 
+function rowSupplierId(row) {
+  if (row?.supplierId == null || row.supplierId === '') return null;
+  const n = Number(row.supplierId);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Фильтр по поставщику карточки товара.
+ * Комплект: если поставщик у шапки — весь комплект; иначе — шапка + совпавшие комплектующие.
+ */
+export function filterPurchaseRowsBySupplier(rows, supplierId) {
+  if (supplierId == null || supplierId === '') return rows;
+  const filterSid = Number(supplierId);
+  if (!Number.isFinite(filterSid)) return rows;
+  const out = [];
+  for (const g of partitionPurchaseGroups(rows)) {
+    if (g.header) {
+      const headerMatches = rowSupplierId(g.header) === filterSid;
+      if (headerMatches) {
+        out.push(g.header, ...g.components);
+        continue;
+      }
+      const comps = g.components.filter((c) => rowSupplierId(c) === filterSid);
+      if (comps.length) out.push(g.header, ...comps);
+      continue;
+    }
+    const row = g.components[0];
+    if (row && rowSupplierId(row) === filterSid) out.push(row);
+  }
+  return out;
+}
+
 /** Поиск по названию, артикулу и штрихкоду; комплект показывается целиком, если совпала любая его строка. */
 export function filterPurchaseRows(rows, search) {
   const needle = normalizeSearchText(search).trim();

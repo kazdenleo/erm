@@ -1252,3 +1252,85 @@ body.products-bulk-col-resizing * {
   z-index: 1040;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
+
+.products-bulk-fill-mode {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.products-bulk-fill-mode__btn {
+  border: 0;
+  background: #fff;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.products-bulk-fill-mode__btn + .products-bulk-fill-mode__btn {
+  border-left: 1px solid var(--border, #e5e7eb);
+}
+
+.products-bulk-fill-mode__btn.is-active {
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.products-bulk-fill-formula__builder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.products-bulk-fill-formula__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  flex: 1 1 140px;
+  margin: 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.products-bulk-fill-formula__field--op {
+  flex: 0 1 140px;
+  min-width: 120px;
+}
+
+.products-bulk-fill-formula__field--num {
+  flex: 0 1 100px;
+  min-width: 88px;
+}
+
+.products-bulk-fill-formula__input {
+  min-height: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.products-bulk-fill-formula__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.products-bulk-fill-formula__chip {
+  border: 1px solid var(--border, #e5e7eb);
+  background: #fff;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.products-bulk-fill-formula__chip:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}

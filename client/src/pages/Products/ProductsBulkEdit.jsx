@@ -38,8 +38,12 @@ import {
 import { createAsyncQueue } from '../../utils/asyncQueue.js';
 import {
   applyComputedAttributeValues,
+  evaluateFormula,
+  formatComputedValue,
   isComputedAttrType,
   isSystemPriceAttr,
+  PRODUCT_FORMULA_FIELDS,
+  validateFormula,
 } from '../../utils/attributeFormula.js';
 import { attrShowsRelatedFields, isEditableAttrType } from '../../utils/editableAttribute.js';
 import {
@@ -125,6 +129,7 @@ import {
   isOzonSellerCodeAttr,
   isStandaloneOemAttrName,
   OZON_PARTNUMBER_ATTR_ID,
+  OZON_SELLER_CODE_ATTR_ID,
 } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import { isOzonRichContentAttrId } from '../../constants/marketplaceRichContent.js';
@@ -593,18 +598,39 @@ function bulkMpColumnDedicatedTargets(col) {
   const mp = col?.mpBucket || col?.mpAttr?.bucket || col?.mpOfferField?.mp;
   if (col?.mpAttr) {
     const attrName = String(col._humanName || col.label || '');
+    const meta = { id: col.mpAttr.attrId, name: attrName };
     targets.push({
       kind: 'attr',
       attrId: String(col.mpAttr.attrId),
       attrName,
     });
-    if (mp === 'ozon' && isOzonManufacturerArticleAttr({ id: col.mpAttr.attrId, name: attrName })) {
+    // В категории могут быть поля оффера вместо id характеристики (и наоборот)
+    if (mp === 'ozon' && isOzonManufacturerArticleAttr(meta)) {
       targets.push({ kind: 'offer', offerId: '__ozon_vendor_code__' });
+    }
+    if (mp === 'ozon' && isOzonSellerCodeAttr(meta)) {
+      targets.push({ kind: 'offer', offerId: '__ozon_offer_id__' });
     }
   }
   const offerId =
     col?.mpOfferField?.offerId || (col?.key ? BULK_DEDICATED_OFFER_FIELD_BY_COL[col.key] : null);
-  if (offerId) targets.push({ kind: 'offer', offerId: String(offerId) });
+  if (offerId) {
+    targets.push({ kind: 'offer', offerId: String(offerId) });
+    if (mp === 'ozon' && offerId === '__ozon_vendor_code__') {
+      targets.push({
+        kind: 'attr',
+        attrId: String(OZON_PARTNUMBER_ATTR_ID),
+        attrName: 'Партномер (артикул производителя)',
+      });
+    }
+    if (mp === 'ozon' && offerId === '__ozon_offer_id__') {
+      targets.push({
+        kind: 'attr',
+        attrId: String(OZON_SELLER_CODE_ATTR_ID),
+        attrName: 'Код продавца',
+      });
+    }
+  }
   return targets;
 }
 
@@ -1013,26 +1039,43 @@ function copyMainSkuToMp(row, mp, erpAttrCols = [], mpAttrColDefs = []) {
   const col = BULK_SKU_COLS[mp];
   if (col) next = { ...next, [col]: sku };
   let syncedOzonMfr = false;
+  let syncedOzonSeller = false;
   for (const c of mpAttrColDefs || []) {
     const cMp = c.mpBucket || c.mpAttr?.bucket || c.mpOfferField?.mp;
     if (cMp !== mp) continue;
     const linkKey = resolveBulkMpColumnLinkFieldKey(c, erpAttrCols);
-    if (linkKey !== 'sku') continue;
+    const meta = c.mpAttr
+      ? { id: c.mpAttr.attrId, name: c._humanName || c.label }
+      : null;
+    // Колонки с dedicatedMainField=sku ИЛИ стандартные Ozon зеркала артикула (код продавца / партномер),
+    // даже если мета колонки ещё не успела подтянуть linkFieldKey после «Применить связь».
+    const skuMirrorAttr =
+      mp === 'ozon' &&
+      meta &&
+      (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
+    const skuOffer =
+      c.mpOfferField?.offerId === '__ozon_offer_id__' ||
+      c.mpOfferField?.offerId === '__ozon_vendor_code__' ||
+      (mp === 'ozon' && (c.key === 'sku_ozon' || BULK_DEDICATED_OFFER_FIELD_BY_COL[c.key] === '__ozon_offer_id__'));
+    if (linkKey !== 'sku' && !skuMirrorAttr && !skuOffer && !mpColOwnedBySku(c)) continue;
     if (c.mpOfferField?.offerId) {
       next = applyMpOfferFieldToForm(rowAsOfferFieldForm(next), c.mpOfferField.offerId, sku);
       if (mp === 'ozon' && c.mpOfferField.offerId === '__ozon_vendor_code__') syncedOzonMfr = true;
+      if (mp === 'ozon' && c.mpOfferField.offerId === '__ozon_offer_id__') syncedOzonSeller = true;
       continue;
     }
     if (c.mpAttr) {
       if (str(next[c.key]) !== sku) next = { ...next, [c.key]: sku };
-      if (mp === 'ozon' && isOzonManufacturerArticleAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })) {
-        syncedOzonMfr = true;
-      }
+      if (mp === 'ozon' && isOzonManufacturerArticleAttr(meta)) syncedOzonMfr = true;
+      if (mp === 'ozon' && isOzonSellerCodeAttr(meta)) syncedOzonSeller = true;
     }
   }
   if (syncedOzonMfr) {
     next = syncOzonMfrArticleColsOnRow(next, sku, mpAttrColDefs);
     next = applyMpOfferFieldToForm(rowAsOfferFieldForm(next), '__ozon_vendor_code__', sku);
+  }
+  if (syncedOzonSeller && col) {
+    next = { ...next, [col]: sku };
   }
   return next;
 }
@@ -3842,6 +3885,46 @@ function rowToFormulaProduct(row) {
   };
 }
 
+/** Числовые столбцы — в «Заполнить» доступен режим формулы. */
+function isBulkFillFormulaCapable(col) {
+  if (!col || col.readonly || col.noBulk) return false;
+  if (col.input === 'number') return true;
+  const t = String(col.erpAttr?.type || '').toLowerCase();
+  return t === 'number' || isComputedAttrType(t);
+}
+
+function buildBulkFormulaAttrValues(row, erpAttrColDefs = []) {
+  const values = {};
+  for (const c of erpAttrColDefs || []) {
+    if (!c?.erpAttr?.id) continue;
+    values[String(c.erpAttr.id)] = row?.[c.key] ?? '';
+  }
+  return values;
+}
+
+function buildBulkFormulaAttributes(erpAttrColDefs = [], allProductAttributes = []) {
+  const byId = new Map();
+  for (const a of allProductAttributes || []) {
+    if (a?.id == null) continue;
+    byId.set(String(a.id), a);
+  }
+  for (const c of erpAttrColDefs || []) {
+    const a = c?.erpAttr;
+    if (!a?.id) continue;
+    const id = String(a.id);
+    if (!byId.has(id)) byId.set(id, a);
+  }
+  return [...byId.values()];
+}
+
+function evaluateBulkFillFormula(formula, row, erpAttrColDefs = [], allProductAttributes = []) {
+  return evaluateFormula(String(formula || '').trim(), {
+    product: rowToFormulaProduct(row),
+    attributes: buildBulkFormulaAttributes(erpAttrColDefs, allProductAttributes),
+    values: buildBulkFormulaAttrValues(row, erpAttrColDefs),
+  });
+}
+
 function isBulkComputedLocked(row, attrId) {
   const aid = String(attrId);
   return (
@@ -5731,6 +5814,13 @@ export function ProductsBulkEdit() {
 
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
+  /** value — одно значение на все строки; formula — выражение по атрибутам каждой строки */
+  const [bulkFillMode, setBulkFillMode] = useState('value');
+  const [bulkFormula, setBulkFormula] = useState('');
+  const [bulkFormulaPick, setBulkFormulaPick] = useState('');
+  const [bulkFormulaOp, setBulkFormulaOp] = useState('*');
+  const [bulkFormulaOperand, setBulkFormulaOperand] = useState('');
+  const [bulkFormulaMessage, setBulkFormulaMessage] = useState('');
   const [textPopup, setTextPopup] = useState(EMPTY_TEXT_POPUP);
   const [imagesModal, setImagesModal] = useState({
     open: false,
@@ -7185,8 +7275,69 @@ export function ProductsBulkEdit() {
   const openBulk = (col) => {
     if (col.readonly || col.noBulk) return;
     setBulkDraft('');
+    setBulkFillMode('value');
+    setBulkFormula('');
+    setBulkFormulaPick('');
+    setBulkFormulaOp('*');
+    setBulkFormulaOperand('');
+    setBulkFormulaMessage('');
     setBulkModal({ open: true, column: col });
   };
+
+  const bulkFormulaChipOptions = useMemo(() => {
+    const attrs = buildBulkFormulaAttributes(erpAttrColumnDefs, allProductAttributes)
+      .filter((a) => !isSystemMainFieldAttr(a))
+      .slice()
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'));
+    return {
+      fields: PRODUCT_FORMULA_FIELDS,
+      attrs,
+    };
+  }, [erpAttrColumnDefs, allProductAttributes]);
+
+  const insertBulkFormulaToken = useCallback((token) => {
+    setBulkFormula((prev) => `${prev || ''}${token}`);
+    setBulkFormulaMessage('');
+  }, []);
+
+  const buildBulkFormulaFromPick = useCallback(() => {
+    const pick = String(bulkFormulaPick || '').trim();
+    const operand = String(bulkFormulaOperand || '').trim().replace(',', '.');
+    if (!pick) {
+      setBulkFormulaMessage('Выберите атрибут или поле');
+      return;
+    }
+    if (!operand || !Number.isFinite(Number(operand))) {
+      setBulkFormulaMessage('Укажите число для операции');
+      return;
+    }
+    const op = ['+', '-', '*', '/'].includes(bulkFormulaOp) ? bulkFormulaOp : '*';
+    const expr = `${pick} ${op} ${operand}`;
+    setBulkFormula(expr);
+    setBulkFillMode('formula');
+    setBulkFormulaMessage('');
+  }, [bulkFormulaPick, bulkFormulaOp, bulkFormulaOperand]);
+
+  const bulkFormulaPreview = useMemo(() => {
+    if (bulkFillMode !== 'formula' || !String(bulkFormula || '').trim()) return null;
+    const sample = tableRows[0];
+    if (!sample) return { ok: false, error: 'Нет строк для предпросмотра' };
+    const result = evaluateBulkFillFormula(
+      bulkFormula,
+      sample,
+      erpAttrColumnDefs,
+      allProductAttributes
+    );
+    if (!result.ok) return { ok: false, error: result.error || 'Ошибка формулы' };
+    return { ok: true, value: formatComputedValue(result.value), sku: sample.sku || sample.id };
+  }, [
+    bulkFillMode,
+    bulkFormula,
+    tableRows,
+    erpAttrColumnDefs,
+    allProductAttributes,
+  ]);
+
 
   const applyImagesToRow = useCallback((productId, images) => {
     const pid = str(productId);
@@ -7375,8 +7526,6 @@ export function ProductsBulkEdit() {
     if (!col) return;
     const key = col.key;
     const targetIds = new Set(tableRows.map((r) => r.id));
-    markChangedForPush([...targetIds]);
-    markDirty();
     const ctx = {
       erpAttrColumnDefs,
       mpAttrColumnDefs,
@@ -7384,6 +7533,58 @@ export function ProductsBulkEdit() {
       weightUnit,
       ozonDictOptions: ozonBulkDictOptionsRef.current,
     };
+
+    if (bulkFillMode === 'formula' && isBulkFillFormulaCapable(col)) {
+      const formula = String(bulkFormula || '').trim();
+      const syntaxErr = validateFormula(formula);
+      if (syntaxErr) {
+        setBulkFormulaMessage(syntaxErr);
+        return;
+      }
+      const updates = new Map();
+      let skipped = 0;
+      for (const r of tableRows) {
+        const result = evaluateBulkFillFormula(
+          formula,
+          r,
+          erpAttrColumnDefs,
+          allProductAttributes
+        );
+        if (!result.ok) {
+          skipped += 1;
+          continue;
+        }
+        updates.set(r.id, formatComputedValue(result.value));
+      }
+      if (updates.size === 0) {
+        setBulkFormulaMessage(
+          skipped
+            ? `Не удалось вычислить ни для одной строки (${skipped}). Проверьте формулу и заполненность атрибутов.`
+            : 'Нет строк для применения'
+        );
+        return;
+      }
+      markChangedForPush([...updates.keys()]);
+      markDirty();
+      setRows((prev) =>
+        prev.map((r) =>
+          updates.has(r.id) ? applyOneBulkCellChange(r, key, updates.get(r.id), ctx) : r
+        )
+      );
+      setBulkModal({ open: false, column: null });
+      setBulkFillMode('value');
+      setBulkFormula('');
+      setBulkFormulaMessage('');
+      if (skipped > 0) {
+        window.alert(
+          `Формула применена к ${updates.size} из ${updates.size + skipped} строк. Пропущено (нет значений в формуле): ${skipped}.`
+        );
+      }
+      return;
+    }
+
+    markChangedForPush([...targetIds]);
+    markDirty();
     setRows((prev) =>
       prev.map((r) => (targetIds.has(r.id) ? applyOneBulkCellChange(r, key, bulkDraft, ctx) : r))
     );
@@ -7458,6 +7659,7 @@ export function ProductsBulkEdit() {
     [categories]
   );
 
+  /** Галочки в таблице — приоритетнее фильтра: ИИ только по отмеченным. */
   const aiBulkSelectedItems = useMemo(() => {
     const out = [];
     for (const sid of selectedRowIds) {
@@ -7467,13 +7669,14 @@ export function ProductsBulkEdit() {
     return out;
   }, [selectedRowIds, rows, toAiBulkItem]);
 
-  const aiBulkPageItems = useMemo(
-    () => rows.map(toAiBulkItem).filter(Boolean),
-    [rows, toAiBulkItem]
+  /** Без галочек — отфильтрованные строки текущей выдачи (с учётом локального поиска). */
+  const aiBulkFilteredItems = useMemo(
+    () => tableRows.map(toAiBulkItem).filter(Boolean),
+    [tableRows, toAiBulkItem]
   );
 
-  const aiBulkItems = aiBulkSelectedItems.length ? aiBulkSelectedItems : aiBulkPageItems;
-  const aiBulkScope = aiBulkSelectedItems.length ? 'selected' : 'page';
+  const aiBulkItems = aiBulkSelectedItems.length ? aiBulkSelectedItems : aiBulkFilteredItems;
+  const aiBulkScope = aiBulkSelectedItems.length ? 'selected' : 'filtered';
 
   const collectBulkAiTargets = useCallback(async () => {
     const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
@@ -7481,7 +7684,14 @@ export function ProductsBulkEdit() {
       row
         ? snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' })
         : {};
+
+    // 1) Есть выделенные галочками — только они
     if (aiBulkSelectedItems.length) return aiBulkSelectedItems;
+
+    // 2) Локальный поиск сужает текущую страницу — берём видимые отфильтрованные
+    if (localSearchQuery) {
+      return aiBulkFilteredItems.slice(0, MAX_BULK_AI_RUN);
+    }
 
     const org = filterOrganizationId || undefined;
     const brand = filterBrandId || undefined;
@@ -7490,7 +7700,8 @@ export function ProductsBulkEdit() {
     const search = typeof listSearch === 'string' ? listSearch.trim() : '';
     const unlinkedArr = [...mpFilterSetFromState(filterUnlinkedMp)];
     const linkedArr = [...mpFilterSetFromState(filterLinkedMp)];
-    const selectedIds = [...new Set((appliedSelectedIds || []).map((x) => str(x)).filter(Boolean))];
+    // Выборка, с которой зашли с «Товаров» — это и есть текущий фильтр списка
+    const scopeIds = [...new Set((appliedSelectedIds || []).map((x) => str(x)).filter(Boolean))];
     const baseParams = {
       organizationId: org,
       brandId: brand,
@@ -7516,8 +7727,9 @@ export function ProductsBulkEdit() {
       });
     };
 
-    if (selectedIds.length > 0) {
-      for (const id of selectedIds) {
+    // 3) Без галочек — все товары текущего фильтра (все страницы / вся исходная выборка)
+    if (scopeIds.length > 0) {
+      for (const id of scopeIds) {
         if (found.length >= MAX_BULK_AI_RUN) break;
         const row = rows.find((r) => str(r.id) === str(id));
         const nid = Number(id);
@@ -7547,6 +7759,8 @@ export function ProductsBulkEdit() {
     return found;
   }, [
     aiBulkSelectedItems,
+    aiBulkFilteredItems,
+    localSearchQuery,
     categories,
     rows,
     filterOrganizationId,
@@ -7769,6 +7983,41 @@ export function ProductsBulkEdit() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mpLinksFingerprint, bulkLinkableFieldDefs, rows.length]);
+
+  /** После подтягивания dedicatedMainField (артикул→партномер) дозаполнить пустые ячейки без F5. */
+  const skuDedicatedMpColsKey = useMemo(
+    () =>
+      (mpAttrColumnDefs || [])
+        .filter((c) => mpColOwnedBySku(c) || resolveBulkMpColumnLinkFieldKey(c, erpAttrColumnDefs) === 'sku')
+        .map((c) => c.key)
+        .sort()
+        .join('|'),
+    [mpAttrColumnDefs, erpAttrColumnDefs]
+  );
+
+  useEffect(() => {
+    if (!skuDedicatedMpColsKey || !rowsRef.current?.length) return;
+    const prev = rowsRef.current;
+    const changedIds = [];
+    const nextRows = prev.map((r) => {
+      const links = normalizeMpFieldLinks(r.mp_field_links);
+      let next = r;
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (!isMpFieldLinked(links, 'sku', mp)) continue;
+        const updated = copyMainSkuToMp(next, mp, erpAttrColumnDefs, mpAttrColumnDefs);
+        if (updated !== next) next = updated;
+      }
+      if (next === r) return r;
+      changedIds.push(r.id);
+      return syncOfferFieldColsOnRow(next, mpAttrColumnDefs);
+    });
+    if (!changedIds.length) return;
+    setRows(nextRows);
+    markChangedForPush(changedIds);
+    markDirty();
+    // Только при появлении sku-колонок МП / смене схемы, не на каждый ввод
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skuDedicatedMpColsKey, erpAttrColumnDefs, mpAttrColumnDefs]);
 
   const handleSave = async (opts = {}) => {
     const suppressPushOffer = opts?.suppressPushOffer === true;
@@ -10088,15 +10337,151 @@ export function ProductsBulkEdit() {
             <p className="text-muted small">
               {localSearchQuery ? (
                 <>
-                  Значение будет применено к строкам, найденным поиском ({tableRows.length} из {rows.length} товаров).
+                  Будет применено к строкам, найденным поиском ({tableRows.length} из {rows.length} товаров).
                 </>
               ) : (
                 <>
-                  Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
+                  Будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
                 </>
               )}
             </p>
-            {bulkModalCol.input === 'checkbox' ? (
+            {isBulkFillFormulaCapable(bulkModalCol) ? (
+              <div className="products-bulk-fill-mode mb-3" role="tablist" aria-label="Режим заполнения">
+                <button
+                  type="button"
+                  className={`products-bulk-fill-mode__btn${bulkFillMode === 'value' ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setBulkFillMode('value');
+                    setBulkFormulaMessage('');
+                  }}
+                >
+                  Значение
+                </button>
+                <button
+                  type="button"
+                  className={`products-bulk-fill-mode__btn${bulkFillMode === 'formula' ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setBulkFillMode('formula');
+                    setBulkFormulaMessage('');
+                  }}
+                >
+                  Формула
+                </button>
+              </div>
+            ) : null}
+
+            {bulkFillMode === 'formula' && isBulkFillFormulaCapable(bulkModalCol) ? (
+              <div className="products-bulk-fill-formula">
+                <div className="products-bulk-fill-formula__builder">
+                  <label className="products-bulk-fill-formula__field">
+                    <span>Атрибут / поле</span>
+                    <select
+                      className="form-control form-control-sm"
+                      value={bulkFormulaPick}
+                      onChange={(e) => setBulkFormulaPick(e.target.value)}
+                    >
+                      <option value="">— выберите —</option>
+                      <optgroup label="Поля карточки">
+                        {bulkFormulaChipOptions.fields.map((f) => (
+                          <option key={f.key} value={`{${f.key}}`}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {bulkFormulaChipOptions.attrs.length ? (
+                        <optgroup label="Атрибуты">
+                          {bulkFormulaChipOptions.attrs.map((a) => (
+                            <option key={String(a.id)} value={`{${a.name || a.id}}`}>
+                              {a.name || `Атр. ${a.id}`}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                    </select>
+                  </label>
+                  <label className="products-bulk-fill-formula__field products-bulk-fill-formula__field--op">
+                    <span>Действие</span>
+                    <select
+                      className="form-control form-control-sm"
+                      value={bulkFormulaOp}
+                      onChange={(e) => setBulkFormulaOp(e.target.value)}
+                    >
+                      <option value="*">× умножить</option>
+                      <option value="/">÷ разделить</option>
+                      <option value="+">+ прибавить</option>
+                      <option value="-">− вычесть</option>
+                    </select>
+                  </label>
+                  <label className="products-bulk-fill-formula__field products-bulk-fill-formula__field--num">
+                    <span>Число</span>
+                    <input
+                      className="form-control form-control-sm"
+                      type="text"
+                      inputMode="decimal"
+                      value={bulkFormulaOperand}
+                      onChange={(e) => setBulkFormulaOperand(e.target.value)}
+                      placeholder="1.2"
+                    />
+                  </label>
+                  <Button type="button" variant="secondary" size="small" onClick={buildBulkFormulaFromPick}>
+                    Подставить
+                  </Button>
+                </div>
+                <label className="products-bulk-fill-formula__field d-block mt-2">
+                  <span>Формула</span>
+                  <textarea
+                    className="form-control products-bulk-modal-field products-bulk-fill-formula__input"
+                    value={bulkFormula}
+                    onChange={(e) => {
+                      setBulkFormula(e.target.value);
+                      setBulkFormulaMessage('');
+                    }}
+                    rows={3}
+                    placeholder="{cost} * 1.2"
+                    autoFocus
+                  />
+                </label>
+                <p className="text-muted small mb-1">
+                  Математика: + − * / и скобки. Нажмите поле, чтобы вставить в формулу.
+                </p>
+                <div className="products-bulk-fill-formula__chips">
+                  {bulkFormulaChipOptions.fields.map((f) => (
+                    <button
+                      key={f.key}
+                      type="button"
+                      className="products-bulk-fill-formula__chip"
+                      onClick={() => insertBulkFormulaToken(`{${f.key}}`)}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                  {bulkFormulaChipOptions.attrs.map((a) => (
+                    <button
+                      key={String(a.id)}
+                      type="button"
+                      className="products-bulk-fill-formula__chip"
+                      onClick={() => insertBulkFormulaToken(`{${a.name || a.id}}`)}
+                    >
+                      {a.name || `Атр. ${a.id}`}
+                    </button>
+                  ))}
+                </div>
+                {bulkFormulaPreview ? (
+                  <p
+                    className={`small mt-2 mb-0${
+                      bulkFormulaPreview.ok ? ' text-muted' : ' text-danger'
+                    }`}
+                  >
+                    {bulkFormulaPreview.ok
+                      ? `Пример (SKU ${bulkFormulaPreview.sku}): ${bulkFormulaPreview.value}`
+                      : bulkFormulaPreview.error}
+                  </p>
+                ) : null}
+                {bulkFormulaMessage ? (
+                  <p className="small text-danger mt-2 mb-0">{bulkFormulaMessage}</p>
+                ) : null}
+              </div>
+            ) : bulkModalCol.input === 'checkbox' ? (
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
                 <option value="true">Да</option>
                 <option value="false">Нет</option>
@@ -10237,7 +10622,16 @@ export function ProductsBulkEdit() {
               />
             )}
             <div className="d-flex justify-content-end gap-2 mt-3">
-              <Button type="button" variant="secondary" size="small" onClick={() => setBulkModal({ open: false, column: null })}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="small"
+                onClick={() => {
+                  setBulkModal({ open: false, column: null });
+                  setBulkFillMode('value');
+                  setBulkFormulaMessage('');
+                }}
+              >
                 Отмена
               </Button>
               <Button
@@ -10245,7 +10639,12 @@ export function ProductsBulkEdit() {
                 variant="primary"
                 size="small"
                 onClick={applyBulk}
-                disabled={bulkModalCol.input === 'select_type' && bulkDraft === ''}
+                disabled={
+                  (bulkModalCol.input === 'select_type' && bulkDraft === '') ||
+                  (bulkFillMode === 'formula' &&
+                    isBulkFillFormulaCapable(bulkModalCol) &&
+                    !String(bulkFormula || '').trim())
+                }
               >
                 Применить ко всем строкам
               </Button>

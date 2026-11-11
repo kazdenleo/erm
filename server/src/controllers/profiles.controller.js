@@ -21,11 +21,17 @@ import {
 import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
+  ROLE_NAV_PRESETS,
   formStateToNavSections,
   normalizeAccountRoleKey,
+  parseCustomRoles,
   parseRoleFlags,
   parseRoleNavSections,
   roleNavSectionsToFormState,
+  slugifyCustomRoleKey,
+  isSystemAccountRole,
+  getAccountRoleBase,
+  accountRoleLabel,
 } from '../utils/userNavSections.js';
 
 const repo = repositoryFactory.getProfilesRepository();
@@ -348,15 +354,37 @@ export const profilesController = {
       }
       const stored = parseRoleNavSections(item.role_nav_sections);
       const flags = parseRoleFlags(item.role_nav_sections);
+      const customRoles = parseCustomRoles(item.role_nav_sections);
       const roles = {};
-      for (const role of CONFIGURABLE_ACCOUNT_ROLES) {
+      const roleKeys = [...CONFIGURABLE_ACCOUNT_ROLES, ...customRoles.map((r) => r.key)];
+      for (const role of roleKeys) {
+        const custom = customRoles.find((r) => r.key === role) || null;
         roles[role] = {
           configured: Object.prototype.hasOwnProperty.call(stored, role),
           navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
           dailyLogout: flags[role]?.dailyLogout === true,
+          system: isSystemAccountRole(role),
+          label: accountRoleLabel(role, item.role_nav_sections),
+          base: getAccountRoleBase(role, item.role_nav_sections),
+          custom: !!custom,
         };
       }
-      res.json({ ok: true, data: { roles } });
+      res.json({
+        ok: true,
+        data: {
+          roles,
+          customRoles,
+          assignable: [
+            { key: 'admin', label: accountRoleLabel('admin'), system: true, base: 'admin' },
+            ...roleKeys.map((key) => ({
+              key,
+              label: accountRoleLabel(key, item.role_nav_sections),
+              system: isSystemAccountRole(key),
+              base: getAccountRoleBase(key, item.role_nav_sections),
+            })),
+          ],
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -368,16 +396,17 @@ export const profilesController = {
       if (id == null || id === '') {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
-      const role = normalizeAccountRoleKey(req.params.role);
-      if (!role || !CONFIGURABLE_ACCOUNT_ROLES.includes(role)) {
-        return res.status(400).json({ ok: false, message: 'Неизвестная роль' });
-      }
       const current = await repo.findById(id);
       if (!current) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
+      const role = normalizeAccountRoleKey(req.params.role, current.role_nav_sections);
+      if (!role || role === 'admin') {
+        return res.status(400).json({ ok: false, message: 'Неизвестная роль' });
+      }
       const all = parseRoleNavSections(current.role_nav_sections);
       const flags = parseRoleFlags(current.role_nav_sections);
+      const customRoles = parseCustomRoles(current.role_nav_sections);
       const { navSections, useDefaultPreset, dailyLogout } = req.body || {};
       if (useDefaultPreset) {
         delete all[role];
@@ -388,7 +417,7 @@ export const profilesController = {
           dailyLogout: dailyLogout === true,
         };
       }
-      const payload = { ...all, roleFlags: flags };
+      const payload = { ...all, customRoles, roleFlags: flags };
       const item = await repo.update(id, { role_nav_sections: payload });
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
@@ -401,7 +430,99 @@ export const profilesController = {
           configured: Object.prototype.hasOwnProperty.call(parseRoleNavSections(item.role_nav_sections), role),
           navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
           dailyLogout: savedFlags[role]?.dailyLogout === true,
+          label: accountRoleLabel(role, item.role_nav_sections),
+          system: isSystemAccountRole(role),
+          base: getAccountRoleBase(role, item.role_nav_sections),
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async createCustomRole(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const label = String(req.body?.label || '').trim().slice(0, 80);
+      if (!label) {
+        return res.status(400).json({ ok: false, message: 'Укажите название роли' });
+      }
+      let base = String(req.body?.base || 'editor')
+        .trim()
+        .toLowerCase();
+      if (!CONFIGURABLE_ACCOUNT_ROLES.includes(base)) base = 'editor';
+      const all = parseRoleNavSections(current.role_nav_sections);
+      const flags = parseRoleFlags(current.role_nav_sections);
+      const customRoles = parseCustomRoles(current.role_nav_sections);
+      const key = slugifyCustomRoleKey(
+        label,
+        customRoles.map((r) => r.key)
+      );
+      customRoles.push({ key, label, base });
+      all[key] = formStateToNavSections(ROLE_NAV_PRESETS[base] || ROLE_NAV_PRESETS.editor || {});
+      flags[key] = { dailyLogout: false };
+      const payload = { ...all, customRoles, roleFlags: flags };
+      const item = await repo.update(id, { role_nav_sections: payload });
+      res.status(201).json({
+        ok: true,
+        data: {
+          role: key,
+          label,
+          base,
+          system: false,
+          configured: true,
+          navSections: roleNavSectionsToFormState(item.role_nav_sections, key),
+          dailyLogout: false,
+          customRoles: parseCustomRoles(item.role_nav_sections),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async deleteCustomRole(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const role = normalizeAccountRoleKey(req.params.role, current.role_nav_sections);
+      if (!role || isSystemAccountRole(role)) {
+        return res.status(400).json({ ok: false, message: 'Можно удалить только свою роль' });
+      }
+      const inUse = await query(
+        `SELECT COUNT(*)::int AS c FROM users
+         WHERE profile_id = $1 AND LOWER(TRIM(COALESCE(account_role, ''))) = $2`,
+        [id, role]
+      );
+      if (Number(inUse.rows[0]?.c || 0) > 0) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Роль назначена пользователям. Сначала смените им роль.',
+        });
+      }
+      const all = parseRoleNavSections(current.role_nav_sections);
+      const flags = parseRoleFlags(current.role_nav_sections);
+      const customRoles = parseCustomRoles(current.role_nav_sections).filter((r) => r.key !== role);
+      delete all[role];
+      delete flags[role];
+      const payload = { ...all, customRoles, roleFlags: flags };
+      const item = await repo.update(id, { role_nav_sections: payload });
+      res.json({
+        ok: true,
+        data: { deleted: role, customRoles: parseCustomRoles(item.role_nav_sections) },
       });
     } catch (error) {
       next(error);

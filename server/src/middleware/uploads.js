@@ -112,7 +112,43 @@ export function createCatalogBundleFolderUpload() {
   });
   return multer({
     storage,
-    limits: { fileSize: 40 * 1024 * 1024, files: 20000 },
+    // paths[] идут отдельными полями — без fields лимит busboy рвёт большой multipart
+    limits: { fileSize: 40 * 1024 * 1024, files: 20000, fields: 50000, parts: 50000 },
+  });
+}
+
+/**
+ * Чанк папки парсера: uploadId уже создан (init), файлы пишем в его staging-директорию.
+ * uploadId в URL — иначе multer ещё не видит body.uploadId при destination.
+ */
+export function createCatalogBundleFolderChunkUpload() {
+  const stagingRoot = path.resolve(__dirname, '../../uploads/tmp/catalog-import-incoming');
+  ensureDirSync(stagingRoot);
+  const storage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const uploadId = String(req.params?.uploadId || '')
+        .trim()
+        .replace(/[^a-f0-9-]/gi, '');
+      if (!uploadId || uploadId.length < 8) {
+        return cb(new Error('Некорректный uploadId'));
+      }
+      const dir = path.join(stagingRoot, uploadId);
+      if (!fs.existsSync(dir)) {
+        return cb(new Error('Сессия загрузки папки не найдена. Начните заново.'));
+      }
+      req._catalogIncomingDir = dir;
+      cb(null, dir);
+    },
+    filename: (_req, _file, cb) => {
+      const id = crypto.randomUUID
+        ? crypto.randomUUID()
+        : crypto.randomBytes(12).toString('hex');
+      cb(null, id);
+    },
+  });
+  return multer({
+    storage,
+    limits: { fileSize: 40 * 1024 * 1024, files: 300, fields: 1000, parts: 1500 },
   });
 }
 

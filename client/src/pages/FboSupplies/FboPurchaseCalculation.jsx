@@ -13,6 +13,7 @@ import {
   calcPurchaseTotals,
   componentQtyToKitUnits,
   filterPurchaseRows,
+  filterPurchaseRowsBySupplier,
   getPurchaseRowDisplayName,
   isPurchasablePurchaseRow,
   kitUnitsToComponentQty,
@@ -116,9 +117,9 @@ export function FboPurchaseCalculation() {
     try {
       let payload;
       if (sessionIdFromUrl) {
-        payload = await fboSuppliesApi.getPurchaseCalcSession(sessionIdFromUrl, {
-          supplierId: filterSupplierId || undefined,
-        });
+        // Полный расчёт без фильтра: фильтр по поставщику — на клиенте
+        // (шапка комплекта тоже учитывает supplier_id комплекта).
+        payload = await fboSuppliesApi.getPurchaseCalcSession(sessionIdFromUrl);
       } else {
         payload = await fboSuppliesApi.openPurchaseCalcSession(supplyIds);
         if (payload?.session?.id || payload?.id) {
@@ -146,11 +147,15 @@ export function FboPurchaseCalculation() {
     } finally {
       setLoading(false);
     }
-  }, [sessionIdFromUrl, supplyIds, navigate, filterSupplierId]);
+  }, [sessionIdFromUrl, supplyIds, navigate]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    setSelectedRowKeys(new Set());
+  }, [filterSupplierId]);
 
   const rowsBodyRef = useRef(null);
 
@@ -178,18 +183,28 @@ export function FboPurchaseCalculation() {
     [session?.supplyIds, supplyIds]
   );
 
+  const supplierFilteredRows = useMemo(
+    () => filterPurchaseRowsBySupplier(calc?.rows || [], filterSupplierId),
+    [calc?.rows, filterSupplierId]
+  );
+
   const selectableRows = useMemo(
-    () => (calc?.rows || []).filter(isRowSelectable),
-    [calc?.rows]
+    () => supplierFilteredRows.filter(isRowSelectable),
+    [supplierFilteredRows]
   );
 
   const visibleRows = useMemo(
-    () => filterPurchaseRows(calc?.rows || [], search),
-    [calc?.rows, search]
+    () => filterPurchaseRows(supplierFilteredRows, search),
+    [supplierFilteredRows, search]
   );
 
   const visibleSelectableRows = useMemo(
     () => visibleRows.filter(isRowSelectable),
+    [visibleRows]
+  );
+
+  const visibleTotals = useMemo(
+    () => calcPurchaseTotals(visibleRows),
     [visibleRows]
   );
 
@@ -899,10 +914,12 @@ export function FboPurchaseCalculation() {
               </tr>
             </thead>
             <tbody ref={rowsBodyRef} onBlur={handleRowsBlur}>
-              {search.trim() && !visibleRows.length ? (
+              {(search.trim() || filterSupplierId) && !visibleRows.length ? (
                 <tr>
                   <td colSpan={10 + calc.supplies.length} className="text-center text-muted">
-                    Ничего не найдено
+                    {search.trim()
+                      ? 'Ничего не найдено'
+                      : 'Нет товаров выбранного поставщика в этом расчёте'}
                   </td>
                 </tr>
               ) : null}
@@ -1110,16 +1127,16 @@ export function FboPurchaseCalculation() {
                   Итого к закупке
                 </th>
                 <th>
-                  <strong>{calc.totals.supplyQtyTotal ?? 0}</strong>
+                  <strong>{visibleTotals.supplyQtyTotal ?? 0}</strong>
                 </th>
                 <th>
-                  <strong>{calc.totals.toPurchaseQty}</strong>
+                  <strong>{visibleTotals.toPurchaseQty}</strong>
                 </th>
-                <th>{calc.totals.purchasedQty > 0 ? calc.totals.purchasedQty : '—'}</th>
+                <th>{visibleTotals.purchasedQty > 0 ? visibleTotals.purchasedQty : '—'}</th>
                 <th colSpan={2 + calc.supplies.length} />
                 <th />
                 <th>
-                  <strong>{fmtMoney(calc.totals.costSum)}</strong>
+                  <strong>{fmtMoney(visibleTotals.costSum)}</strong>
                 </th>
               </tr>
             </tfoot>

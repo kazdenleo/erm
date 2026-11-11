@@ -218,16 +218,98 @@ export const ACCOUNT_ROLE_LABELS = {
   editor: 'Редактор',
 };
 
-export function normalizeAccountRoleKey(v) {
+const ROLE_META_KEYS = new Set(['roleflags', 'customroles']);
+
+export function isSystemAccountRole(key) {
+  const s = String(key || '')
+    .trim()
+    .toLowerCase();
+  return s === 'admin' || CONFIGURABLE_ACCOUNT_ROLES.includes(s);
+}
+
+export function isValidCustomRoleKey(key) {
+  const s = String(key || '')
+    .trim()
+    .toLowerCase();
+  if (!/^[a-z][a-z0-9_]{1,47}$/.test(s)) return false;
+  if (isSystemAccountRole(s) || ROLE_META_KEYS.has(s)) return false;
+  return true;
+}
+
+/** Кастомные роли аккаунта: [{ key, label, base }] в role_nav_sections.customRoles */
+export function parseCustomRoles(raw) {
+  const src = parseNavSections(raw);
+  const list = Array.isArray(src.customRoles) ? src.customRoles : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const key = String(row.key || '')
+      .trim()
+      .toLowerCase();
+    const label = String(row.label || '').trim().slice(0, 80);
+    let base = String(row.base || 'editor')
+      .trim()
+      .toLowerCase();
+    if (!CONFIGURABLE_ACCOUNT_ROLES.includes(base)) base = 'editor';
+    if (!isValidCustomRoleKey(key) || !label || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, label, base });
+  }
+  return out;
+}
+
+export function accountRoleLabel(roleKey, roleNavSections = null) {
+  const s = String(roleKey || '')
+    .trim()
+    .toLowerCase();
+  if (!s) return 'Редактор';
+  if (ACCOUNT_ROLE_LABELS[s]) return ACCOUNT_ROLE_LABELS[s];
+  const custom = parseCustomRoles(roleNavSections).find((r) => r.key === s);
+  return custom?.label || s;
+}
+
+export function listAssignableAccountRoles(roleNavSections = null) {
+  const custom = parseCustomRoles(roleNavSections);
+  return [
+    { key: 'admin', label: ACCOUNT_ROLE_LABELS.admin, system: true, base: 'admin' },
+    ...CONFIGURABLE_ACCOUNT_ROLES.map((key) => ({
+      key,
+      label: ACCOUNT_ROLE_LABELS[key],
+      system: true,
+      base: key,
+    })),
+    ...custom.map((r) => ({ key: r.key, label: r.label, system: false, base: r.base })),
+  ];
+}
+
+export function getAccountRoleBase(roleKey, roleNavSections = null) {
+  const s = String(roleKey || '')
+    .trim()
+    .toLowerCase();
+  if (!s || s === 'admin') return s || 'editor';
+  if (CONFIGURABLE_ACCOUNT_ROLES.includes(s)) return s;
+  const custom = parseCustomRoles(roleNavSections).find((r) => r.key === s);
+  return custom?.base || 'editor';
+}
+
+export function normalizeAccountRoleKey(v, roleNavSections = null) {
   const s = v == null ? '' : String(v).trim().toLowerCase();
-  if (!s || s === 'admin') return s || null;
-  return CONFIGURABLE_ACCOUNT_ROLES.includes(s) ? s : null;
+  if (!s) return null;
+  if (s === 'admin' || CONFIGURABLE_ACCOUNT_ROLES.includes(s)) return s;
+  if (roleNavSections != null) {
+    if (parseCustomRoles(roleNavSections).some((r) => r.key === s)) return s;
+    return null;
+  }
+  // без контекста профиля — принимаем валидный slug кастомной роли (значение уже в БД)
+  return isValidCustomRoleKey(s) ? s : null;
 }
 
 export function parseRoleNavSections(raw) {
   const src = parseNavSections(raw);
   const out = {};
-  for (const role of [...CONFIGURABLE_ACCOUNT_ROLES, 'admin']) {
+  const customKeys = parseCustomRoles(src).map((r) => r.key);
+  for (const role of [...CONFIGURABLE_ACCOUNT_ROLES, 'admin', ...customKeys]) {
     if (src[role] != null && typeof src[role] === 'object' && !Array.isArray(src[role])) {
       out[role] = normalizeNavSections(src[role]);
     }
@@ -236,12 +318,13 @@ export function parseRoleNavSections(raw) {
 }
 
 export function resolveNavSectionsForAccountRole(roleNavSections, accountRole) {
-  const role = normalizeAccountRoleKey(accountRole) || 'editor';
+  const role = normalizeAccountRoleKey(accountRole, roleNavSections) || 'editor';
   if (role === 'admin') return {};
   const all = parseRoleNavSections(roleNavSections);
+  const base = getAccountRoleBase(role, roleNavSections);
   let sections = Object.prototype.hasOwnProperty.call(all, role)
     ? all[role]
-    : ROLE_NAV_PRESETS[role] || {};
+    : ROLE_NAV_PRESETS[base] || ROLE_NAV_PRESETS.editor || {};
   // card_work раньше был подпунктом аналитики (analytics_sales)
   if (
     !Object.prototype.hasOwnProperty.call(sections, 'card_work') &&

@@ -477,7 +477,18 @@ function buildPurchaseDisplayRows(kitHeaderMap, productRowMap) {
   return sortPurchaseDisplayRows(rows);
 }
 
-/** Оставить только строки выбранного поставщика; шапки комплектов — только если под ними есть строки. */
+function rowSupplierId(row) {
+  if (row?.supplierId == null || row.supplierId === '') return null;
+  const n = Number(row.supplierId);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Оставить строки выбранного поставщика.
+ * Комплект попадает в выборку, если:
+ * — у карточки комплекта (шапки) тот же поставщик → весь комплект с комплектующими;
+ * — или у комплектующей тот же поставщик → шапка + совпавшие комплектующие.
+ */
 function filterRowsBySupplier(rows, filterSid) {
   if (filterSid == null) return rows;
   const out = [];
@@ -487,17 +498,21 @@ function filterRowsBySupplier(rows, filterSid) {
     if (row.isKitHeader || row.rowType === 'kit') {
       const header = row;
       i += 1;
-      const comps = [];
+      const allComps = [];
       while (i < rows.length && rows[i].rowType === 'component' && !rows[i].isKitHeader) {
-        const sid = rows[i].supplierId != null ? Number(rows[i].supplierId) : null;
-        if (sid === filterSid) comps.push(rows[i]);
+        allComps.push(rows[i]);
         i += 1;
       }
+      const headerMatches = rowSupplierId(header) === filterSid;
+      if (headerMatches) {
+        out.push(header, ...allComps);
+        continue;
+      }
+      const comps = allComps.filter((c) => rowSupplierId(c) === filterSid);
       if (comps.length) out.push(header, ...comps);
       continue;
     }
-    const sid = row.supplierId != null ? Number(row.supplierId) : null;
-    if (sid === filterSid) out.push(row);
+    if (rowSupplierId(row) === filterSid) out.push(row);
     i += 1;
   }
   return out;
@@ -729,10 +744,17 @@ class FboSuppliesPurchaseCalcService {
         ? Number(supplierId)
         : null;
     const rowsWithSupplier = rows.map((row) => {
-      const productId = row.productId != null ? Number(row.productId) : null;
+      // У шапки комплекта productId нет — поставщик берём с kitProductId.
+      const productId =
+        row.productId != null
+          ? Number(row.productId)
+          : row.kitProductId != null
+            ? Number(row.kitProductId)
+            : null;
       const info = productId != null ? productInfoById.get(productId) : null;
       return {
         ...row,
+        productId: row.productId != null ? Number(row.productId) : row.productId,
         supplierId: info?.supplierId ?? null,
       };
     });

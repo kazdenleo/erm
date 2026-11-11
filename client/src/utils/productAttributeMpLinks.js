@@ -5,7 +5,12 @@
  */
 
 import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
-import { isOzonManufacturerArticleAttr } from './ozonManufacturerArticle.js';
+import {
+  isOzonManufacturerArticleAttr,
+  isOzonSellerCodeAttr,
+  OZON_PARTNUMBER_ATTR_ID,
+  OZON_SELLER_CODE_ATTR_ID,
+} from './ozonManufacturerArticle.js';
 import {
   DEDICATED_ADDED_KEYS_FIELD,
   erpAttrLinkFieldKey,
@@ -152,6 +157,31 @@ export function isMpOfferFieldLinkedInCategory(categoryAttributes, mp, offerId, 
   );
 }
 
+/** Ozon: партномер attr ↔ поле оффера __ozon_vendor_code__; код продавца ↔ offer_id. */
+function ozonSkuMirrorTargetMeta(target) {
+  if (!target || typeof target !== 'object') return null;
+  if (target.kind === 'offer') {
+    const offerId = String(target.offerId || '');
+    if (offerId === '__ozon_vendor_code__') {
+      return { id: OZON_PARTNUMBER_ATTR_ID, name: 'Партномер (артикул производителя)', offerId };
+    }
+    if (offerId === '__ozon_offer_id__') {
+      return { id: OZON_SELLER_CODE_ATTR_ID, name: 'Код продавца', offerId };
+    }
+    return null;
+  }
+  if (target.kind === 'attr') {
+    const meta = { id: target.attrId, name: target.attrName || '' };
+    if (isOzonManufacturerArticleAttr(meta)) {
+      return { ...meta, offerId: '__ozon_vendor_code__' };
+    }
+    if (isOzonSellerCodeAttr(meta)) {
+      return { ...meta, offerId: '__ozon_offer_id__' };
+    }
+  }
+  return null;
+}
+
 function mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps = {}) {
   const code = String(mp || '').toLowerCase();
   const e = normalizeAttrMpLinkEntry(entry);
@@ -162,6 +192,21 @@ function mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps = {}) {
   if (target.kind === 'attr') {
     const wantAttrId = String(target.attrId ?? '');
     if (wantAttrId && e.id && !isMpOfferFieldAttrId(e.id) && String(e.id) === wantAttrId) return true;
+    // Связь сохранена только по имени (без id) — сравнить с подписью колонки
+    if (!e.id && e.name && target.attrName) {
+      if (normalizeAttrCompareName(e.name) === normalizeAttrCompareName(target.attrName)) return true;
+    }
+  }
+  // Ozon: в категории может быть __ozon_vendor_code__, а в таблице — характеристика 7236 (и наоборот)
+  if (code === 'ozon') {
+    const mirror = ozonSkuMirrorTargetMeta(target);
+    if (mirror) {
+      if (e.id && isMpOfferFieldAttrId(e.id) && String(e.id) === String(mirror.offerId)) return true;
+      if (e.id && !isMpOfferFieldAttrId(e.id) && String(e.id) === String(mirror.id)) return true;
+      const entryMeta = { id: e.id, name: e.name };
+      if (mirror.offerId === '__ozon_vendor_code__' && isOzonManufacturerArticleAttr(entryMeta)) return true;
+      if (mirror.offerId === '__ozon_offer_id__' && isOzonSellerCodeAttr(entryMeta)) return true;
+    }
   }
   let resolved;
   try {

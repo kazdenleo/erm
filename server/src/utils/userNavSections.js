@@ -218,16 +218,96 @@ export const ACCOUNT_ROLE_LABELS = {
   editor: 'Редактор',
 };
 
-export function normalizeAccountRoleKey(v) {
+const ROLE_META_KEYS = new Set(['roleflags', 'customroles']);
+
+export function isSystemAccountRole(key) {
+  const s = String(key || '')
+    .trim()
+    .toLowerCase();
+  return s === 'admin' || CONFIGURABLE_ACCOUNT_ROLES.includes(s);
+}
+
+export function isValidCustomRoleKey(key) {
+  const s = String(key || '')
+    .trim()
+    .toLowerCase();
+  if (!/^[a-z][a-z0-9_]{1,47}$/.test(s)) return false;
+  if (isSystemAccountRole(s) || ROLE_META_KEYS.has(s)) return false;
+  return true;
+}
+
+export function parseCustomRoles(raw) {
+  const src = parseNavSections(raw);
+  const list = Array.isArray(src.customRoles) ? src.customRoles : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const key = String(row.key || '')
+      .trim()
+      .toLowerCase();
+    const label = String(row.label || '').trim().slice(0, 80);
+    let base = String(row.base || 'editor')
+      .trim()
+      .toLowerCase();
+    if (!CONFIGURABLE_ACCOUNT_ROLES.includes(base)) base = 'editor';
+    if (!isValidCustomRoleKey(key) || !label || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, label, base });
+  }
+  return out;
+}
+
+export function accountRoleLabel(roleKey, roleNavSections = null) {
+  const s = String(roleKey || '')
+    .trim()
+    .toLowerCase();
+  if (!s) return 'Редактор';
+  if (ACCOUNT_ROLE_LABELS[s]) return ACCOUNT_ROLE_LABELS[s];
+  const custom = parseCustomRoles(roleNavSections).find((r) => r.key === s);
+  return custom?.label || s;
+}
+
+export function listAssignableAccountRoles(roleNavSections = null) {
+  const custom = parseCustomRoles(roleNavSections);
+  return [
+    { key: 'admin', label: ACCOUNT_ROLE_LABELS.admin, system: true, base: 'admin' },
+    ...CONFIGURABLE_ACCOUNT_ROLES.map((key) => ({
+      key,
+      label: ACCOUNT_ROLE_LABELS[key],
+      system: true,
+      base: key,
+    })),
+    ...custom.map((r) => ({ key: r.key, label: r.label, system: false, base: r.base })),
+  ];
+}
+
+export function getAccountRoleBase(roleKey, roleNavSections = null) {
+  const s = String(roleKey || '')
+    .trim()
+    .toLowerCase();
+  if (!s || s === 'admin') return s || 'editor';
+  if (CONFIGURABLE_ACCOUNT_ROLES.includes(s)) return s;
+  const custom = parseCustomRoles(roleNavSections).find((r) => r.key === s);
+  return custom?.base || 'editor';
+}
+
+export function normalizeAccountRoleKey(v, roleNavSections = null) {
   const s = v == null ? '' : String(v).trim().toLowerCase();
-  if (!s || s === 'admin') return s || null;
-  return CONFIGURABLE_ACCOUNT_ROLES.includes(s) ? s : null;
+  if (!s) return null;
+  if (s === 'admin' || CONFIGURABLE_ACCOUNT_ROLES.includes(s)) return s;
+  if (roleNavSections != null) {
+    if (parseCustomRoles(roleNavSections).some((r) => r.key === s)) return s;
+    return null;
+  }
+  return isValidCustomRoleKey(s) ? s : null;
 }
 
 export function parseRoleNavSections(raw) {
   const src = parseNavSections(raw);
   const out = {};
-  for (const role of [...CONFIGURABLE_ACCOUNT_ROLES, 'admin']) {
+  const customKeys = parseCustomRoles(src).map((r) => r.key);
+  for (const role of [...CONFIGURABLE_ACCOUNT_ROLES, 'admin', ...customKeys]) {
     if (src[role] != null && typeof src[role] === 'object' && !Array.isArray(src[role])) {
       out[role] = normalizeNavSections(src[role]);
     }
@@ -243,7 +323,8 @@ export function parseRoleFlags(raw) {
       ? src.roleFlags
       : {};
   const out = {};
-  for (const role of CONFIGURABLE_ACCOUNT_ROLES) {
+  const keys = [...CONFIGURABLE_ACCOUNT_ROLES, ...parseCustomRoles(src).map((r) => r.key)];
+  for (const role of keys) {
     const row = flagsRaw[role];
     out[role] = {
       dailyLogout: !!(row && typeof row === 'object' && row.dailyLogout === true),
@@ -256,10 +337,11 @@ export function setRoleFlag(rawRoleNavSections, role, flagKey, value) {
   const src = parseNavSections(rawRoleNavSections);
   const navOnly = parseRoleNavSections(src);
   const flags = parseRoleFlags(src);
-  const r = normalizeAccountRoleKey(role);
-  if (!r || !CONFIGURABLE_ACCOUNT_ROLES.includes(r)) return { ...navOnly, roleFlags: flags };
+  const custom = parseCustomRoles(src);
+  const r = normalizeAccountRoleKey(role, src);
+  if (!r || r === 'admin') return { ...navOnly, customRoles: custom, roleFlags: flags };
   flags[r] = { ...flags[r], [flagKey]: value === true };
-  return { ...navOnly, roleFlags: flags };
+  return { ...navOnly, customRoles: custom, roleFlags: flags };
 }
 
 /** Нужен ли ежедневный принудительный выход для пользователя. */
@@ -267,20 +349,22 @@ export function resolveDailyLogoutForUser(user, profile) {
   if (!user) return false;
   if (user.role === 'admin') return false;
   if (user.is_profile_admin === true || user.isProfileAdmin === true) return false;
-  const ar = normalizeAccountRoleKey(user.account_role ?? user.accountRole);
+  const roleNav = profile?.role_nav_sections ?? profile?.roleNavSections ?? {};
+  const ar = normalizeAccountRoleKey(user.account_role ?? user.accountRole, roleNav);
   if (!ar || ar === 'admin') return false;
-  const flags = parseRoleFlags(profile?.role_nav_sections ?? profile?.roleNavSections ?? {});
+  const flags = parseRoleFlags(roleNav);
   return flags[ar]?.dailyLogout === true;
 }
 
 /** Эффективные скрытые разделы для роли: сохранённые в профиле или пресет по умолчанию. */
 export function resolveNavSectionsForAccountRole(roleNavSections, accountRole) {
-  const role = normalizeAccountRoleKey(accountRole) || 'editor';
+  const role = normalizeAccountRoleKey(accountRole, roleNavSections) || 'editor';
   if (role === 'admin') return {};
   const all = parseRoleNavSections(roleNavSections);
+  const base = getAccountRoleBase(role, roleNavSections);
   let sections = Object.prototype.hasOwnProperty.call(all, role)
     ? all[role]
-    : ROLE_NAV_PRESETS[role] || {};
+    : ROLE_NAV_PRESETS[base] || ROLE_NAV_PRESETS.editor || {};
   // card_work раньше был подпунктом аналитики (analytics_sales)
   if (
     !Object.prototype.hasOwnProperty.call(sections, 'card_work') &&
@@ -299,10 +383,51 @@ export function resolveNavSectionsForUser(user, profile) {
   if (!user) return {};
   if (user.role === 'admin') return {};
   if (user.is_profile_admin === true || user.isProfileAdmin === true) return {};
-  const ar = normalizeAccountRoleKey(user.account_role ?? user.accountRole);
-  if (ar === 'admin') return {};
   const roleNav = profile?.role_nav_sections ?? profile?.roleNavSections ?? {};
+  const ar = normalizeAccountRoleKey(user.account_role ?? user.accountRole, roleNav);
+  if (ar === 'admin') return {};
   return resolveNavSectionsForAccountRole(roleNav, ar || 'editor');
+}
+
+export function buildRoleNavPayload(src, navByRole, flags, customRoles) {
+  return {
+    ...navByRole,
+    customRoles: customRoles || parseCustomRoles(src),
+    roleFlags: flags || parseRoleFlags(src),
+  };
+}
+
+export function slugifyCustomRoleKey(label, existingKeys = []) {
+  const map = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+    х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  };
+  let base = String(label || '')
+    .trim()
+    .toLowerCase()
+    .split('')
+    .map((ch) => map[ch] ?? ch)
+    .join('')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_');
+  if (!base || !/^[a-z]/.test(base)) base = `role_${base || 'custom'}`.replace(/_+/g, '_');
+  base = base.slice(0, 40);
+  let key = base;
+  let i = 2;
+  const taken = new Set(
+    [...CONFIGURABLE_ACCOUNT_ROLES, 'admin', ...existingKeys].map((k) => String(k).toLowerCase())
+  );
+  while (taken.has(key) || !isValidCustomRoleKey(key)) {
+    key = `${base}_${i}`.slice(0, 48);
+    i += 1;
+    if (i > 99) {
+      key = `role_${Date.now().toString(36)}`;
+      break;
+    }
+  }
+  return key;
 }
 
 export function parseNavSections(raw) {
