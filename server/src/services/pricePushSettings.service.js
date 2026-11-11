@@ -40,6 +40,9 @@ class PricePushSettingsService {
       excludeProductIds: settings.excludeProductIds,
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
+      pushOzon: settings.pushOzon,
+      pushWb: settings.pushWb,
+      pushYm: settings.pushYm,
       minMarkupRules: settings.minMarkupRules,
       highDrrPercent: settings.highDrrPercent,
       organizations: (orgs || []).map((o) => ({
@@ -63,6 +66,9 @@ class PricePushSettingsService {
       excludeProductIds: settings.excludeProductIds,
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
+      pushOzon: settings.pushOzon,
+      pushWb: settings.pushWb,
+      pushYm: settings.pushYm,
       minMarkupRules: settings.minMarkupRules,
       highDrrPercent: settings.highDrrPercent,
     };

@@ -31,6 +31,9 @@ function buildScopePayload(
   scope,
   pushFbs,
   pushFbo,
+  pushOzon,
+  pushWb,
+  pushYm,
   pickedCategoryIds,
   selectedProducts,
   showFbsOption,
@@ -41,6 +44,9 @@ function buildScopePayload(
     scope,
     pushFbs: showFbsOption ? pushFbs === true : false,
     pushFbo: showFboOption ? pushFbo === true : false,
+    pushOzon: pushOzon === true,
+    pushWb: pushWb === true,
+    pushYm: pushYm === true,
     categoryIds:
       scope === SCOPES.categories || scope === SCOPES.categoriesAndProducts
         ? [...pickedCategoryIds]
@@ -63,7 +69,15 @@ function buildScopeSummaryText(settings) {
   if (!schemeParts.length) {
     return 'не отправлять цены на маркетплейсы (FBS и FBO выкл.)';
   }
+  const mpParts = [];
+  if (settings.pushOzon === true) mpParts.push('Ozon');
+  if (settings.pushWb === true) mpParts.push('WB');
+  if (settings.pushYm === true) mpParts.push('Яндекс');
+  if (!mpParts.length) {
+    return 'не отправлять цены (все маркетплейсы выкл.)';
+  }
   const schemeText = schemeParts.join(' + ');
+  const mpText = mpParts.length === 3 ? 'все МП' : mpParts.join(', ');
   let scopeText = 'все товары организаций с включённой отправкой';
   if (settings.scope === 'categories_and_products' && settings.categoryIds?.length && settings.productIds?.length) {
     scopeText = `${settings.categoryIds.length} категор(ий), ${settings.productIds.length} товар(ов)`;
@@ -75,7 +89,7 @@ function buildScopeSummaryText(settings) {
   if (settings.excludeProductIds?.length) {
     scopeText += `, −${settings.excludeProductIds.length} искл.`;
   }
-  return `${scopeText}, мин. ${schemeText}`;
+  return `${scopeText}, мин. ${schemeText}, ${mpText}`;
 }
 
 function productLabel(p) {
@@ -112,6 +126,9 @@ export function PricesPushSettingsPanel({
   const [scope, setScope] = useState(SCOPES.all);
   const [pushFbs, setPushFbs] = useState(true);
   const [pushFbo, setPushFbo] = useState(true);
+  const [pushOzon, setPushOzon] = useState(true);
+  const [pushWb, setPushWb] = useState(true);
+  const [pushYm, setPushYm] = useState(true);
   const [pickedCategoryIds, setPickedCategoryIds] = useState(() => new Set());
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [excludedProducts, setExcludedProducts] = useState([]);
@@ -141,6 +158,9 @@ export function PricesPushSettingsPanel({
       setScope(normalizeScopeFromApi(data?.scope));
       setPushFbs(data?.pushFbs !== false);
       setPushFbo(data?.pushFbo !== false);
+      setPushOzon(data?.pushOzon !== false);
+      setPushWb(data?.pushWb !== false);
+      setPushYm(data?.pushYm !== false);
       setPickedCategoryIds(new Set((data?.categoryIds || []).map(String)));
       setOrgToggles(data?.organizations || []);
 
@@ -305,6 +325,9 @@ export function PricesPushSettingsPanel({
         scope,
         pushFbs,
         pushFbo,
+        pushOzon,
+        pushWb,
+        pushYm,
         pickedCategoryIds,
         selectedProducts,
         showFbsOption,
@@ -332,6 +355,7 @@ export function PricesPushSettingsPanel({
 
   const hasScheme =
     (showFbsOption ? pushFbs === true : false) || (showFboOption ? pushFbo === true : false);
+  const hasMarketplace = pushOzon === true || pushWb === true || pushYm === true;
 
   const scopeValid =
     scope === SCOPES.all ||
@@ -341,15 +365,19 @@ export function PricesPushSettingsPanel({
       pickedCategoryIds.size > 0 &&
       selectedProducts.length > 0);
 
-  // Обе схемы выкл. — валидный режим «не отправлять»; область тогда не обязательна.
-  const canSaveScope = hasScheme ? scopeValid : true;
+  // Обе схемы или все МП выкл. — валидный режим «не отправлять»; область тогда не обязательна.
+  const canSaveScope = hasScheme && hasMarketplace ? scopeValid : true;
 
-  const canPushNow = canSaveScope && hasScheme && hasEnabledOrg && typeof onPushNow === 'function';
+  const canPushNow =
+    canSaveScope && hasScheme && hasMarketplace && hasEnabledOrg && typeof onPushNow === 'function';
 
   const pushDisabledReason = (() => {
     if (!hasEnabledOrg) return 'Включите отправку хотя бы для одной организации.';
     if (!hasScheme) {
       return 'FBS и FBO выключены — цены на маркетплейсы не отправляются. Включите хотя бы одну схему или оставьте так, если пуш не нужен.';
+    }
+    if (!hasMarketplace) {
+      return 'Все маркетплейсы выключены — цены некуда отправлять. Включите Ozon, Wildberries или Яндекс.Маркет.';
     }
     if (scope === SCOPES.categories && pickedCategoryIds.size === 0) {
       return 'Выберите хотя бы одну категорию.';
@@ -371,6 +399,9 @@ export function PricesPushSettingsPanel({
       scope,
       pushFbs,
       pushFbo,
+      pushOzon,
+      pushWb,
+      pushYm,
       pickedCategoryIds,
       selectedProducts,
       showFbsOption,
@@ -406,6 +437,9 @@ export function PricesPushSettingsPanel({
           scope,
           pushFbs,
           pushFbo,
+          pushOzon,
+          pushWb,
+          pushYm,
           pickedCategoryIds,
           selectedProducts,
           showFbsOption,
@@ -417,6 +451,9 @@ export function PricesPushSettingsPanel({
       scope,
       pushFbs,
       pushFbo,
+      pushOzon,
+      pushWb,
+      pushYm,
       pickedCategoryIds,
       selectedProducts,
       excludedProducts,
@@ -598,6 +635,60 @@ export function PricesPushSettingsPanel({
           Если выключено у организации — цены этой организации на МП не меняются. Чтобы полностью
           отключить пуш по схемам FBS/FBO, выключите оба переключателя ниже.
         </p>
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <strong className="small d-block mb-2">Маркетплейсы</strong>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="prices-push-mp-ozon"
+              checked={pushOzon === true}
+              onChange={(e) => setPushOzon(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="prices-push-mp-ozon">
+              Ozon
+            </label>
+          </div>
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="prices-push-mp-wb"
+              checked={pushWb === true}
+              onChange={(e) => setPushWb(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="prices-push-mp-wb">
+              Wildberries
+            </label>
+          </div>
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="prices-push-mp-ym"
+              checked={pushYm === true}
+              onChange={(e) => setPushYm(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="prices-push-mp-ym">
+              Яндекс.Маркет
+            </label>
+          </div>
+        </div>
+        <p className="text-muted small mt-2 mb-0">
+          Можно отключить отдельные маркетплейсы: цены уйдут только на включённые (вручную и по
+          расписанию).
+        </p>
+        {!hasMarketplace && (
+          <p className="small mt-2 mb-0" style={{ color: 'var(--warning, #eab308)' }}>
+            Отправка выключена: ни один маркетплейс не выбран.
+          </p>
+        )}
       </div>
 
       {(showFbsOption || showFboOption) && (
@@ -823,9 +914,11 @@ export function PricesPushSettingsPanel({
           {canSaveScope ? currentScopeSummary : 'настройте область отправки выше'}
         </p>
         <p className="text-muted small mb-2">
-          {hasScheme
-            ? 'По расписанию цены отправляются автоматически. Нажмите кнопку ниже, чтобы отправить сейчас по выбранным настройкам.'
-            : 'Схемы FBS/FBO выключены — автоматическая и ручная отправка цен на МП не выполняются. Включите схему или сохраните настройки как есть.'}
+          {hasScheme && hasMarketplace
+            ? 'По расписанию цены отправляются автоматически на выбранные маркетплейсы. Нажмите кнопку ниже, чтобы отправить сейчас.'
+            : !hasMarketplace
+              ? 'Маркетплейсы выключены — автоматическая и ручная отправка не выполняются. Включите хотя бы один МП или сохраните настройки как есть.'
+              : 'Схемы FBS/FBO выключены — автоматическая и ручная отправка цен на МП не выполняются. Включите схему или сохраните настройки как есть.'}
         </p>
         <Button
           type="button"

@@ -14,7 +14,13 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
-import { filtersFromPricePushSettings, parsePricePushSettings, resolvePushFloorForMarketplace, isProductInPricePushScope } from '../utils/pricePushSettings.js';
+import {
+  filtersFromPricePushSettings,
+  parsePricePushSettings,
+  resolvePushFloorForMarketplace,
+  isProductInPricePushScope,
+  resolvePushMarketplacesAllowList,
+} from '../utils/pricePushSettings.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { refreshComputedAttributeValues } from './computedAttributes.service.js';
 
@@ -835,6 +841,20 @@ export async function pushForProduct(productId, opts = {}) {
     };
   }
 
+  const allowList = resolvePushMarketplacesAllowList(
+    pushSchemes,
+    Array.isArray(opts.marketplaces) ? opts.marketplaces : null
+  );
+  if (!allowList.length) {
+    return {
+      skipped: true,
+      reason: 'marketplaces_disabled',
+      productId: Number(productId),
+    };
+  }
+  const allow = new Set(allowList);
+  const allowed = (mp) => allow.has(mp);
+
   // Область из «Цены → Настройки»: schedule после пересчёта / push-one
   // раньше игнорировали список товаров и пушили любой SKU с auto_push org.
   if (Number.isFinite(Number(profileIdForSettings)) && Number(profileIdForSettings) > 0) {
@@ -886,10 +906,6 @@ export async function pushForProduct(productId, opts = {}) {
     });
   }
 
-  const allow = Array.isArray(opts.marketplaces)
-    ? new Set(opts.marketplaces.map((mp) => String(mp || '').toLowerCase()).filter(Boolean))
-    : null;
-  const allowed = (mp) => !allow || allow.has(mp);
   const results = [];
 
   if (ctx.floors.ozon != null && allowed('ozon')) {

@@ -4,6 +4,9 @@ import {
   parsePricePushSettings,
   PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS,
   hasPricePushSchemeEnabled,
+  hasPricePushMarketplaceEnabled,
+  enabledPushMarketplaces,
+  resolvePushMarketplacesAllowList,
   isProductInPricePushScope,
   resolvePushFloorForMarketplace,
 } from '../src/utils/pricePushSettings.js';
@@ -13,6 +16,34 @@ describe('pricePushSettings', () => {
     const s = parsePricePushSettings({});
     expect(s.pushFbs).toBe(true);
     expect(s.pushFbo).toBe(true);
+    expect(s.pushOzon).toBe(true);
+    expect(s.pushWb).toBe(true);
+    expect(s.pushYm).toBe(true);
+  });
+
+  it('parses marketplace flags and marketplaces array', () => {
+    expect(enabledPushMarketplaces({ pushOzon: true, pushWb: false, pushYm: true })).toEqual([
+      'ozon',
+      'ym',
+    ]);
+    expect(parsePricePushSettings({ marketplaces: ['wb', 'wildberries'] })).toMatchObject({
+      pushOzon: false,
+      pushWb: true,
+      pushYm: false,
+    });
+    expect(hasPricePushMarketplaceEnabled({ pushOzon: false, pushWb: false, pushYm: false })).toBe(
+      false
+    );
+  });
+
+  it('resolvePushMarketplacesAllowList intersects request with settings', () => {
+    const settings = { pushOzon: true, pushWb: false, pushYm: true };
+    expect(resolvePushMarketplacesAllowList(settings, null)).toEqual(['ozon', 'ym']);
+    expect(resolvePushMarketplacesAllowList(settings, ['wb', 'ozon'])).toEqual(['ozon']);
+    expect(resolvePushMarketplacesAllowList(settings, ['wb'])).toEqual([]);
+    expect(resolvePushMarketplacesAllowList({ pushOzon: false, pushWb: false, pushYm: false }, [
+      'ozon',
+    ])).toEqual([]);
   });
 
   it('allows both FBS and FBO schemes disabled (do not push prices)', () => {

@@ -15,12 +15,39 @@ export const PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS = 'categories_and_products
 /** @deprecated Сохранено для старых настроек; в UI не используется. */
 export const PRICE_PUSH_SCOPE_PRODUCTS = 'products';
 
+/** Ключи МП в настройках / пуше (как в product_marketplace_prices.marketplace). */
+export const PRICE_PUSH_MARKETPLACE_OZON = 'ozon';
+export const PRICE_PUSH_MARKETPLACE_WB = 'wb';
+export const PRICE_PUSH_MARKETPLACE_YM = 'ym';
+
+export const PRICE_PUSH_MARKETPLACES = Object.freeze([
+  PRICE_PUSH_MARKETPLACE_OZON,
+  PRICE_PUSH_MARKETPLACE_WB,
+  PRICE_PUSH_MARKETPLACE_YM,
+]);
+
 const SCOPES = new Set([
   PRICE_PUSH_SCOPE_ALL,
   PRICE_PUSH_SCOPE_CATEGORIES,
   PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS,
   PRICE_PUSH_SCOPE_PRODUCTS,
 ]);
+
+const MP_ALIASES = Object.freeze({
+  ozon: PRICE_PUSH_MARKETPLACE_OZON,
+  wb: PRICE_PUSH_MARKETPLACE_WB,
+  wildberries: PRICE_PUSH_MARKETPLACE_WB,
+  ym: PRICE_PUSH_MARKETPLACE_YM,
+  yandex: PRICE_PUSH_MARKETPLACE_YM,
+  yandexmarket: PRICE_PUSH_MARKETPLACE_YM,
+});
+
+function normalizeMarketplaceKey(raw) {
+  const key = String(raw || '')
+    .trim()
+    .toLowerCase();
+  return MP_ALIASES[key] || null;
+}
 
 function parseObject(raw) {
   if (raw == null) return {};
@@ -61,6 +88,27 @@ function floorRub(minPrice) {
   return Math.max(1, Math.ceil(n));
 }
 
+function parseMarketplaceFlags(src) {
+  // Явный список marketplaces: ['ozon','wb'] — остальные выкл.; пустой массив = все выкл.
+  if (Array.isArray(src.marketplaces) || Array.isArray(src.pushMarketplaces)) {
+    const enabled = new Set(
+      (src.marketplaces ?? src.pushMarketplaces)
+        .map(normalizeMarketplaceKey)
+        .filter(Boolean)
+    );
+    return {
+      pushOzon: enabled.has(PRICE_PUSH_MARKETPLACE_OZON),
+      pushWb: enabled.has(PRICE_PUSH_MARKETPLACE_WB),
+      pushYm: enabled.has(PRICE_PUSH_MARKETPLACE_YM),
+    };
+  }
+  return {
+    pushOzon: parseBoolFlag(src.pushOzon ?? src.push_ozon, true),
+    pushWb: parseBoolFlag(src.pushWb ?? src.push_wb, true),
+    pushYm: parseBoolFlag(src.pushYm ?? src.push_ym, true),
+  };
+}
+
 export function parsePricePushSettings(raw) {
   const src = parseObject(raw);
   const scopeRaw = String(src.scope || PRICE_PUSH_SCOPE_ALL).trim();
@@ -68,6 +116,7 @@ export function parsePricePushSettings(raw) {
   // Обе схемы могут быть выключены — «не отправлять цены на МП» по схемам.
   const pushFbs = parseBoolFlag(src.pushFbs ?? src.push_fbs, true);
   const pushFbo = parseBoolFlag(src.pushFbo ?? src.push_fbo, true);
+  const mpFlags = parseMarketplaceFlags(src);
   return {
     scope,
     categoryIds: parseCategoryIdList(src.categoryIds),
@@ -75,6 +124,9 @@ export function parsePricePushSettings(raw) {
     excludeProductIds: parsePositiveIntList(src.excludeProductIds ?? src.exclude_product_ids),
     pushFbs,
     pushFbo,
+    pushOzon: mpFlags.pushOzon,
+    pushWb: mpFlags.pushWb,
+    pushYm: mpFlags.pushYm,
     minMarkupRules: parseMinMarkupRules(src.minMarkupRules ?? src.min_markup_rules),
     highDrrPercent: clampHighDrrPercent(
       src.highDrrPercent ?? src.high_drr_percent,
@@ -108,6 +160,22 @@ export function mergePricePushSettings(current, incoming) {
   }
   if (patch.pushFbo !== undefined || patch.push_fbo !== undefined) {
     next.pushFbo = parseBoolFlag(patch.pushFbo ?? patch.push_fbo, next.pushFbo);
+  }
+  if (Array.isArray(patch.marketplaces) || Array.isArray(patch.pushMarketplaces)) {
+    const flags = parseMarketplaceFlags(patch);
+    next.pushOzon = flags.pushOzon;
+    next.pushWb = flags.pushWb;
+    next.pushYm = flags.pushYm;
+  } else {
+    if (patch.pushOzon !== undefined || patch.push_ozon !== undefined) {
+      next.pushOzon = parseBoolFlag(patch.pushOzon ?? patch.push_ozon, next.pushOzon);
+    }
+    if (patch.pushWb !== undefined || patch.push_wb !== undefined) {
+      next.pushWb = parseBoolFlag(patch.pushWb ?? patch.push_wb, next.pushWb);
+    }
+    if (patch.pushYm !== undefined || patch.push_ym !== undefined) {
+      next.pushYm = parseBoolFlag(patch.pushYm ?? patch.push_ym, next.pushYm);
+    }
   }
   if (patch.minMarkupRules !== undefined || patch.min_markup_rules !== undefined) {
     next.minMarkupRules = parseMinMarkupRules(patch.minMarkupRules ?? patch.min_markup_rules);
@@ -257,6 +325,49 @@ export function describePricePushSchemes(settings) {
 export function hasPricePushSchemeEnabled(settings) {
   const s = parsePricePushSettings(settings);
   return s.pushFbs === true || s.pushFbo === true;
+}
+
+/** Список включённых МП для пуша: ozon / wb / ym. */
+export function enabledPushMarketplaces(settings) {
+  const s = parsePricePushSettings(settings);
+  const out = [];
+  if (s.pushOzon) out.push(PRICE_PUSH_MARKETPLACE_OZON);
+  if (s.pushWb) out.push(PRICE_PUSH_MARKETPLACE_WB);
+  if (s.pushYm) out.push(PRICE_PUSH_MARKETPLACE_YM);
+  return out;
+}
+
+/** Есть ли хотя бы один маркетплейс для отправки. */
+export function hasPricePushMarketplaceEnabled(settings) {
+  return enabledPushMarketplaces(settings).length > 0;
+}
+
+/**
+ * Пересечение явного списка МП (опционально) с настройками профиля.
+ * @returns {string[]|null} null = без ограничения (все включённые в настройках);
+ *   [] = ничего не пушить.
+ */
+export function resolvePushMarketplacesAllowList(settings, requestedMarketplaces = null) {
+  const enabled = enabledPushMarketplaces(settings);
+  if (!enabled.length) return [];
+  if (!Array.isArray(requestedMarketplaces)) return enabled;
+  const want = new Set(
+    requestedMarketplaces.map(normalizeMarketplaceKey).filter(Boolean)
+  );
+  if (!want.size) return [];
+  return enabled.filter((mp) => want.has(mp));
+}
+
+export function describePricePushMarketplaces(settings) {
+  const list = enabledPushMarketplaces(settings);
+  if (!list.length) return 'не отправлять (все МП выкл.)';
+  const labels = {
+    [PRICE_PUSH_MARKETPLACE_OZON]: 'Ozon',
+    [PRICE_PUSH_MARKETPLACE_WB]: 'WB',
+    [PRICE_PUSH_MARKETPLACE_YM]: 'Яндекс',
+  };
+  if (list.length === PRICE_PUSH_MARKETPLACES.length) return 'все МП';
+  return list.map((mp) => labels[mp] || mp).join(', ');
 }
 
 /**

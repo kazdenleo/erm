@@ -22,7 +22,11 @@ import {
   pushWithFilters,
 } from '../services/marketplaceMinPricePush.service.js';
 import pricePushSettingsService from '../services/pricePushSettings.service.js';
-import { describePricePushScope, describePricePushSchemes } from '../utils/pricePushSettings.js';
+import {
+  describePricePushScope,
+  describePricePushSchemes,
+  describePricePushMarketplaces,
+} from '../utils/pricePushSettings.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
 
 function formatPushSkipReason(reason) {
@@ -33,6 +37,10 @@ function formatPushSkipReason(reason) {
       return 'Уже выполняется другая отправка цен. Подождите и попробуйте снова';
     case 'org_price_push_disabled':
       return 'У организации выключена отправка цен на маркетплейсы. Включите в разделе «Цены» → «Настройки».';
+    case 'schemes_disabled':
+      return 'FBS и FBO выключены — цены на маркетплейсы не отправляются. Включите схему в «Цены» → «Настройки».';
+    case 'marketplaces_disabled':
+      return 'Все маркетплейсы выключены в настройках отправки цен. Включите Ozon, Wildberries или Яндекс.Маркет.';
     case 'no_organization':
       return 'У товара не указана организация';
     case 'no_stored_min_prices':
@@ -578,7 +586,7 @@ class PricesController {
           });
         }
         const filters = await pricePushSettingsService.buildPushFiltersForProfile(profileId);
-        const scopeHint = `${describePricePushScope(saved)}, ${describePricePushSchemes(saved)}`;
+        const scopeHint = `${describePricePushScope(saved)}, ${describePricePushSchemes(saved)}, ${describePricePushMarketplaces(saved)}`;
 
         pushWithFilters(filters)
           .then((data) => {
