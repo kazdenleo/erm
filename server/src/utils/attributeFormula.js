@@ -28,10 +28,30 @@ export const PRODUCT_FORMULA_FIELDS = [
     label: 'Мин. наценка, ₽',
     aliases: ['min_price', 'minprice', 'мин_наценка'],
   },
-  { key: 'weight', label: 'Вес, г', aliases: ['weight', 'вес'] },
-  { key: 'length', label: 'Длина упаковки', aliases: ['length', 'длина'] },
-  { key: 'width', label: 'Ширина упаковки', aliases: ['width', 'ширина'] },
-  { key: 'height', label: 'Высота упаковки', aliases: ['height', 'высота'] },
+  {
+    key: 'product_length',
+    label: 'Длина товара',
+    aliases: ['product_length', 'productlength', 'длина_товара', 'длинатовара'],
+  },
+  {
+    key: 'product_width',
+    label: 'Ширина товара',
+    aliases: ['product_width', 'productwidth', 'ширина_товара', 'ширинатовара'],
+  },
+  {
+    key: 'product_height',
+    label: 'Высота товара',
+    aliases: ['product_height', 'productheight', 'высота_товара', 'высотатовара'],
+  },
+  {
+    key: 'product_weight',
+    label: 'Вес товара',
+    aliases: ['product_weight', 'productweight', 'вес_товара', 'вестовара'],
+  },
+  { key: 'weight', label: 'Вес упаковки', aliases: ['weight', 'вес', 'вес_упаковки'] },
+  { key: 'length', label: 'Длина упаковки', aliases: ['length', 'длина', 'длина_упаковки'] },
+  { key: 'width', label: 'Ширина упаковки', aliases: ['width', 'ширина', 'ширина_упаковки'] },
+  { key: 'height', label: 'Высота упаковки', aliases: ['height', 'высота', 'высота_упаковки'] },
   { key: 'volume', label: 'Объём, л', aliases: ['volume', 'объём', 'объем'] },
 ];
 
@@ -91,6 +111,18 @@ function readProductField(product, fieldKey) {
   }
   if (fieldKey === 'min_price') {
     return toFiniteNumber(product.min_price ?? product.minPrice);
+  }
+  if (fieldKey === 'product_length') {
+    return toFiniteNumber(product.product_length ?? product.productLength);
+  }
+  if (fieldKey === 'product_width') {
+    return toFiniteNumber(product.product_width ?? product.productWidth);
+  }
+  if (fieldKey === 'product_height') {
+    return toFiniteNumber(product.product_height ?? product.productHeight);
+  }
+  if (fieldKey === 'product_weight') {
+    return toFiniteNumber(product.product_weight ?? product.productWeight);
   }
   if (fieldKey === 'weight') return toFiniteNumber(product.weight);
   if (fieldKey === 'length') return toFiniteNumber(product.length);
@@ -384,6 +416,10 @@ export function validateFormula(formula) {
         cost: 1,
         additional_expenses: 1,
         min_price: 1,
+        product_length: 1,
+        product_width: 1,
+        product_height: 1,
+        product_weight: 1,
         weight: 1,
         length: 1,
         width: 1,

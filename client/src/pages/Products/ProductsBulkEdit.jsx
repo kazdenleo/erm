@@ -68,6 +68,7 @@ import {
   isWbCountryCharcName,
   isYmParamDuplicatingDedicatedField,
   normalizeCategoryDedicatedCharcLinks,
+  overlayCategoryDedicatedMpLinks,
   DEDICATED_ADDED_KEYS_FIELD,
   DEDICATED_MAIN_MAP_KEYS,
   DEDICATED_PACK_DIM_KEYS,
@@ -3865,9 +3866,24 @@ function emptyBulkMpFieldLinks(erpAttrColDefs = []) {
   return links;
 }
 
-/** Связи Main↔МП в сессии массового редактирования — всегда выкл. при загрузке (не из карточки товара). */
-function bulkSessionMpFieldLinks(erpAttrColDefs = []) {
-  return emptyBulkMpFieldLinks(erpAttrColDefs);
+/**
+ * Как в карточке товара: эффективные связи из сопоставлений категории
+ * (артикул→партномер и т.п.), а не пустая сессия.
+ */
+function bulkSessionMpFieldLinks(product, categories = [], erpAttrColDefs = []) {
+  const base = emptyBulkMpFieldLinks(erpAttrColDefs);
+  const catId = String(product?.categoryId ?? product?.category_id ?? '').trim();
+  const cat =
+    catId && Array.isArray(categories)
+      ? categories.find((c) => String(c.id) === catId)
+      : null;
+  if (!cat) return base;
+  const overlaid = overlayCategoryDedicatedMpLinks(
+    product?.mp_field_links,
+    cat.mp_field_links,
+    cat.attribute_mp_links
+  );
+  return normalizeMpFieldLinks({ ...base, ...overlaid });
 }
 
 function rowToFormulaProduct(row) {
@@ -3877,6 +3893,10 @@ function rowToFormulaProduct(row) {
     additionalExpenses: row?.additionalExpenses,
     min_price: row?.minPrice,
     minPrice: row?.minPrice,
+    product_length: row?.product_length,
+    product_width: row?.product_width,
+    product_height: row?.product_height,
+    product_weight: row?.product_weight,
     weight: row?.weight,
     length: row?.length,
     width: row?.width,
@@ -4047,7 +4067,7 @@ function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrCo
 }
 
 function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
-  const links = normalizeMpFieldLinks(p?.mp_field_links);
+  const links = normalizeMpFieldLinks(row?.mp_field_links ?? p?.mp_field_links);
   const nameText = str(p?.name || p?.mp_ozon_name).trim();
   const descText = str(p?.description || p?.mp_ozon_description).trim();
   let next = row;
@@ -4082,8 +4102,9 @@ function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
   return next;
 }
 
-/** Пустые ячейки МП заполняем из сохранённых связей карточки (не из сессии тумблеров). */
+/** Пустые ячейки МП заполняем по эффективным связям строки (категория + сессия). */
 function seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs) {
+  const linksSource = row?.mp_field_links ?? p?.mp_field_links;
   let next = seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs);
   next = hydrateMpAttrCellsFromBaseline(next, mpAttrColDefs);
   next = applyLinkedCountryToDictAttrColumns(
@@ -4091,20 +4112,19 @@ function seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs) {
     next.country_of_origin,
     mpAttrColDefs,
     {},
-    { linksSource: p?.mp_field_links, onlyIfEmpty: true }
+    { linksSource, onlyIfEmpty: true }
   );
   next = applyLinkedBrandToOzonAttrColumns(next, next.brand, mpAttrColDefs, {}, {
-    linksSource: p?.mp_field_links,
+    linksSource,
     onlyIfEmpty: true,
   });
-  const savedLinks = p?.mp_field_links;
   for (const erpCol of erpAttrColDefs || []) {
     const erpVal = str(next[erpCol.key]).trim();
     if (!erpVal) continue;
     for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
       try {
         next = copyErpAttrToLinkedMp(next, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs, {
-          linksSource: savedLinks,
+          linksSource,
           onlyIfEmpty: true,
         });
       } catch {
@@ -4183,7 +4203,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
-    mp_field_links: bulkSessionMpFieldLinks(erpAttrColDefs),
+    mp_field_links: bulkSessionMpFieldLinks(p, categories, erpAttrColDefs),
     ...ozPack,
     ...wbPack,
     ...ymPack,
@@ -4222,16 +4242,19 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
         row[c.key] = str(p.mp_ozon_name || p.name);
       } else if (isOzonAnnotationAttr(meta) || String(attrId) === String(OZON_ANNOTATION_ATTR_ID)) {
         row[c.key] = str(p.mp_ozon_description || p.description);
-      } else       if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) {
+      } else if (
+        (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) &&
+        isMpFieldLinked(normalizeMpFieldLinks(row.mp_field_links), 'sku', 'ozon')
+      ) {
         row[c.key] = str(p.sku);
       } else if (
         (isOzonManufacturerCountryAttr(meta) || String(attrId) === String(OZON_MANUFACTURER_COUNTRY_ATTR_ID)) &&
-        isMpFieldLinked(normalizeMpFieldLinks(p.mp_field_links), 'country', 'ozon')
+        isMpFieldLinked(normalizeMpFieldLinks(row.mp_field_links), 'country', 'ozon')
       ) {
         row[c.key] = str(p.country_of_origin);
       } else if (
         (isOzonBrandAttr(meta) || String(attrId) === String(OZON_BRAND_ATTR_ID)) &&
-        isMpFieldLinked(normalizeMpFieldLinks(p.mp_field_links), 'brand', 'ozon')
+        isMpFieldLinked(normalizeMpFieldLinks(row.mp_field_links), 'brand', 'ozon')
       ) {
         row[c.key] = str(p.brand ?? p.brand_name ?? '');
       }
@@ -4255,18 +4278,37 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (v) row._erpAttrBaseline[aid] = v;
     else delete row._erpAttrBaseline[aid];
   }
+  const sessionLinks = normalizeMpFieldLinks(row.mp_field_links);
   for (const erpCol of erpAttrColDefs) {
     const erpVal = str(row[erpCol.key]).trim();
     if (!erpVal) continue;
     for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
       try {
         row = copyErpAttrToLinkedMp(row, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs, {
-          linksSource: p?.mp_field_links,
+          linksSource: sessionLinks,
           onlyIfEmpty: true,
         });
       } catch {
         /* ignore bad mapping for one cell */
       }
+    }
+  }
+  // Подставить Main→МП по включённым связям категории (артикул→партномер и т.д.)
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    if (isMpFieldLinked(sessionLinks, 'sku', mp)) {
+      row = copyMainSkuToMp(row, mp, erpAttrColDefs, mpAttrColDefs);
+    }
+    if (isMpFieldLinked(sessionLinks, 'name', mp)) {
+      row = copyMainNameToMp(row, mp, mpAttrColDefs);
+    }
+    if (isMpFieldLinked(sessionLinks, 'description', mp)) {
+      row = copyMainDescToMp(row, mp, mpAttrColDefs);
+    }
+    if (isMpFieldLinked(sessionLinks, 'brand', mp)) {
+      row = copyMainBrandToMp(row, mp);
+    }
+    if (isMpFieldLinked(sessionLinks, 'country', mp)) {
+      row = copyMainCountryToMp(row, mp);
     }
   }
   row = applyLinkedOzonNameAndAnnotationColumns(row, mpAttrColDefs, lengthUnit, weightUnit);
@@ -7318,9 +7360,17 @@ export function ProductsBulkEdit() {
     setBulkFormulaMessage('');
   }, [bulkFormulaPick, bulkFormulaOp, bulkFormulaOperand]);
 
+  /** Как у ИИ: галочки → только выделенные; иначе все отфильтрованные на странице. */
+  const bulkFillTargetRows = useMemo(() => {
+    if (selectedRowIds.size > 0) {
+      return rows.filter((r) => selectedRowIds.has(str(r.id)));
+    }
+    return tableRows;
+  }, [selectedRowIds, rows, tableRows]);
+
   const bulkFormulaPreview = useMemo(() => {
     if (bulkFillMode !== 'formula' || !String(bulkFormula || '').trim()) return null;
-    const sample = tableRows[0];
+    const sample = bulkFillTargetRows[0];
     if (!sample) return { ok: false, error: 'Нет строк для предпросмотра' };
     const result = evaluateBulkFillFormula(
       bulkFormula,
@@ -7333,7 +7383,7 @@ export function ProductsBulkEdit() {
   }, [
     bulkFillMode,
     bulkFormula,
-    tableRows,
+    bulkFillTargetRows,
     erpAttrColumnDefs,
     allProductAttributes,
   ]);
@@ -7525,7 +7575,16 @@ export function ProductsBulkEdit() {
     const col = bulkModal.column;
     if (!col) return;
     const key = col.key;
-    const targetIds = new Set(tableRows.map((r) => r.id));
+    const targetRows = bulkFillTargetRows;
+    const targetIds = new Set(targetRows.map((r) => r.id));
+    if (!targetIds.size) {
+      window.alert(
+        selectedRowIds.size > 0
+          ? 'Нет выделенных строк для заполнения'
+          : 'Нет отфильтрованных строк для заполнения'
+      );
+      return;
+    }
     const ctx = {
       erpAttrColumnDefs,
       mpAttrColumnDefs,
@@ -7543,7 +7602,7 @@ export function ProductsBulkEdit() {
       }
       const updates = new Map();
       let skipped = 0;
-      for (const r of tableRows) {
+      for (const r of targetRows) {
         const result = evaluateBulkFillFormula(
           formula,
           r,
@@ -8991,6 +9050,8 @@ export function ProductsBulkEdit() {
   );
 
   const bulkModalCol = bulkModal.column;
+  const bulkFillSelectedOnly = selectedRowIds.size > 0;
+  const bulkFillTargetCount = bulkFillTargetRows.length;
   const textPopupRow = textPopup.open
     ? rows.find((r) => str(r.id) === str(textPopup.rowId))
     : null;
@@ -10335,13 +10396,20 @@ export function ProductsBulkEdit() {
         {bulkModalCol ? (
           <div>
             <p className="text-muted small">
-              {localSearchQuery ? (
+              {bulkFillSelectedOnly ? (
                 <>
-                  Будет применено к строкам, найденным поиском ({tableRows.length} из {rows.length} товаров).
+                  Галочки есть — применится только к <strong>выделенным</strong> ({bulkFillTargetCount}
+                  ).
+                </>
+              ) : localSearchQuery ? (
+                <>
+                  Галочек нет — ко всем строкам, найденным поиском ({bulkFillTargetCount} из{' '}
+                  {rows.length}).
                 </>
               ) : (
                 <>
-                  Будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
+                  Галочек нет — ко <strong>всем отфильтрованным</strong> на странице (
+                  {bulkFillTargetCount}).
                 </>
               )}
             </p>
@@ -10640,13 +10708,16 @@ export function ProductsBulkEdit() {
                 size="small"
                 onClick={applyBulk}
                 disabled={
+                  bulkFillTargetCount === 0 ||
                   (bulkModalCol.input === 'select_type' && bulkDraft === '') ||
                   (bulkFillMode === 'formula' &&
                     isBulkFillFormulaCapable(bulkModalCol) &&
                     !String(bulkFormula || '').trim())
                 }
               >
-                Применить ко всем строкам
+                {bulkFillSelectedOnly
+                  ? `Применить к выделенным (${bulkFillTargetCount})`
+                  : `Применить к отфильтрованным (${bulkFillTargetCount})`}
               </Button>
             </div>
           </div>
