@@ -5359,7 +5359,7 @@ function bulkPopupGroupLimitInfo(
     maxLength:
       first?.kind === 'chars'
         ? first.max
-        : primaryInfo?.maxLength ?? items.find((i) => i.kind === 'chars')?.max || null,
+        : (primaryInfo?.maxLength ?? items.find((i) => i.kind === 'chars')?.max ?? null),
     mpLabel: first?.mpLabel || primaryInfo?.mpLabel || '',
     over: overItems.length > 0,
     items,
