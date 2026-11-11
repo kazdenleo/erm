@@ -161,6 +161,7 @@ import {
   expandPushMarketplaces,
   formatLimitCountLabel,
   formatLimitHitTitle,
+  textCharLength,
 } from '../../utils/marketplaceFieldLimits.js';
 import { MarketplaceFieldLimitHint } from '../../components/common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
 import './ProductsBulkEdit.css';
@@ -5297,6 +5298,77 @@ function popupShowsRelatedFields(col, erpAttrCols = [], allColumns = []) {
   return erpColShowsRelatedFields(findErpColByLinkFieldKey(erpAttrCols, linkKey));
 }
 
+/**
+ * Лимиты для кнопки ячейки: учитываем все поля попапа (Основное + Ozon/WB/YM),
+ * иначе отдельное имя WB может превышать лимит, а ячейка «Название» не горит.
+ */
+function bulkPopupGroupLimitInfo(
+  row,
+  col,
+  limitsByMp,
+  {
+    mpAttrColumnDefs = [],
+    erpAttrColumnDefs = [],
+    displayColumns = [],
+    lengthUnit,
+    weightUnit,
+    primaryValue,
+  } = {}
+) {
+  const primaryInfo = bulkCellLimitInfo(row, col, limitsByMp, primaryValue);
+  const group = collectPopupRelatedColumns(
+    col,
+    mpAttrColumnDefs,
+    erpAttrColumnDefs,
+    displayColumns
+  );
+  if (!group.length || (group.length === 1 && group[0]?.key === col?.key)) {
+    return primaryInfo;
+  }
+
+  const items = [...(primaryInfo?.items || [])];
+  const seen = new Set(items.map((i) => `${i.mp}::${i.field}::${i.kind}`));
+  for (const c of group) {
+    if (!c?.key || c.key === col?.key) continue;
+    const cellLinked = isBulkLinkedMpReadonly(row, c.key, erpAttrColumnDefs, mpAttrColumnDefs);
+    let v = cellLinked
+      ? bulkLinkedMirrorValue(
+          row,
+          c.key,
+          erpAttrColumnDefs,
+          mpAttrColumnDefs,
+          lengthUnit,
+          weightUnit
+        )
+      : row[c.key];
+    v = resolveBulkOzonCardTextCell(row, c, v);
+    v = formatBulkArticleListCell(c, v);
+    const info = bulkCellLimitInfo(row, c, limitsByMp, v);
+    for (const it of info?.items || []) {
+      const key = `${it.mp}::${it.field}::${it.kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(it);
+    }
+  }
+
+  const overItems = items.filter((i) => i.over);
+  const first = overItems[0] || primaryInfo || items[0] || null;
+  return {
+    length: primaryInfo?.length ?? textCharLength(primaryValue),
+    maxLength:
+      first?.kind === 'chars'
+        ? first.max
+        : primaryInfo?.maxLength ?? items.find((i) => i.kind === 'chars')?.max || null,
+    mpLabel: first?.mpLabel || primaryInfo?.mpLabel || '',
+    over: overItems.length > 0,
+    items,
+    kind: first?.kind || primaryInfo?.kind,
+    max: first?.max ?? primaryInfo?.max,
+    unitLabel: first?.unitLabel || primaryInfo?.unitLabel,
+  };
+}
+
 function collectPopupRelatedColumns(col, mpAttrCols = [], erpAttrCols = [], allColumns = []) {
   const linkKey = popupLinkFieldKey(col, erpAttrCols);
   if (!linkKey || !popupShowsRelatedFields(col, erpAttrCols, allColumns)) {
@@ -8269,7 +8341,14 @@ export function ProductsBulkEdit() {
     v = formatBulkArticleListCell(col, v);
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
     const limitInfo = isPopupTextColumn(col, erpAttrColumnDefs)
-      ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
+      ? bulkPopupGroupLimitInfo(row, col, limitsForRow(row), {
+          mpAttrColumnDefs,
+          erpAttrColumnDefs,
+          displayColumns,
+          lengthUnit,
+          weightUnit,
+          primaryValue: v,
+        })
       : null;
     const erpAid = col.erpAttr?.id != null ? String(col.erpAttr.id) : '';
     const toolChanged = !!(
