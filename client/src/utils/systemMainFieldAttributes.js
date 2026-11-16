@@ -27,7 +27,7 @@ export const SYSTEM_MAIN_FIELD_SEED = [
   { system_key: 'description', name: 'Описание', type: 'editable', show_related_fields: true },
   { system_key: 'brand', name: 'Бренд', type: 'text', show_related_fields: false },
   { system_key: 'country', name: 'Страна производителя', type: 'text', show_related_fields: false },
-  { system_key: 'tn_ved', name: 'ТН ВЭД', type: 'text', show_related_fields: false },
+  { system_key: 'tn_ved', name: 'ТН ВЭД', type: 'tn_ved', show_related_fields: false },
   { system_key: 'product_length', name: 'Длина товара', type: 'number', show_related_fields: false },
   { system_key: 'product_width', name: 'Ширина товара', type: 'number', show_related_fields: false },
   { system_key: 'product_height', name: 'Высота товара', type: 'number', show_related_fields: false },

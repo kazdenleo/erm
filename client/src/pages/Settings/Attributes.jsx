@@ -36,14 +36,17 @@ const TYPE_LABELS = {
   number: 'Число',
   date: 'Дата',
   dictionary: 'Словарь',
+  tn_ved: 'Справочник',
   computed: 'Вычисляемое поле',
   editable: 'Редактируемое поле',
 };
 
-const TYPE_OPTIONS_CUSTOM = Object.entries(TYPE_LABELS);
+const TYPE_OPTIONS_CUSTOM = Object.entries(TYPE_LABELS).filter(([value]) => value !== 'tn_ved');
 const TYPE_OPTIONS_MAIN = Object.entries(TYPE_LABELS).filter(
-  ([value]) => value !== 'dictionary' && value !== 'checkbox' && value !== 'date'
+  ([value]) =>
+    value !== 'dictionary' && value !== 'checkbox' && value !== 'date' && value !== 'tn_ved'
 );
+const TYPE_OPTIONS_TN_VED = [['tn_ved', TYPE_LABELS.tn_ved]];
 
 function linksOfCategoryForAttr(cat, attr) {
   if (isSystemMainFieldAttr(attr)) {
@@ -96,8 +99,11 @@ function AttrLinksCell({ stats }) {
 
 function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const linksPanelRef = useRef(null);
+  const isTnVedField = String(attribute?.system_key || '') === 'tn_ved';
   const [name, setName] = useState(attribute?.name || '');
-  const [type, setType] = useState(attribute?.type || 'text');
+  const [type, setType] = useState(
+    isTnVedField ? 'tn_ved' : attribute?.type || 'text'
+  );
   const [formula, setFormula] = useState(attribute?.formula || '');
   const [showRelatedFields, setShowRelatedFields] = useState(
     !!(attribute?.show_related_fields ?? attribute?.showRelatedFields)
@@ -105,9 +111,13 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const isSystem = isSystemCardAttr(attribute);
   const isMainField = isSystemMainFieldAttr(attribute);
   const priceLocked = isSystemPriceAttr(attribute);
-  const typeLocked = priceLocked;
+  const typeLocked = priceLocked || isTnVedField;
   const nameLocked = isSystem;
-  const typeOptions = isMainField || priceLocked ? TYPE_OPTIONS_MAIN : TYPE_OPTIONS_CUSTOM;
+  const typeOptions = isTnVedField
+    ? TYPE_OPTIONS_TN_VED
+    : isMainField || priceLocked
+      ? TYPE_OPTIONS_MAIN
+      : TYPE_OPTIONS_CUSTOM;
   const sortDict = (arr) => [...arr].sort((a, b) => String(a).localeCompare(String(b), 'ru'));
   const [dictionaryValues, setDictionaryValues] = useState(
     attribute?.dictionary_values && Array.isArray(attribute.dictionary_values)
@@ -152,11 +162,12 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       }
     }
     setError('');
+    const nextType = isTnVedField ? 'tn_ved' : type;
     const payload = {
-      type,
-      dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
-      formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
-      show_related_fields: isEditableAttrType(type) ? !!showRelatedFields : false,
+      type: nextType,
+      dictionary_values: nextType === 'dictionary' ? sortDict(dictionaryValues) : undefined,
+      formula: isComputedAttrType(nextType) ? String(formula || '').trim() : '',
+      show_related_fields: isEditableAttrType(nextType) ? !!showRelatedFields : false,
     };
     if (!nameLocked) payload.name = name.trim();
     setSaving(true);
@@ -194,11 +205,9 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
         {isMainField ? (
           <p className="form-hint">
             Поле вкладки «Основное» карточки товара (ключ: <code>{attribute.system_key}</code>).
-            Значение хранится в карточке
-            {String(attribute.system_key || '') === 'tn_ved'
-              ? ' (выбор из справочника ТН ВЭД в карточке товара)'
-              : ''}
-            ; здесь настраивается тип отображения и связь с характеристиками МП.
+            {isTnVedField
+              ? ' Значение выбирается из классификатора ТН ВЭД ЕАЭС в карточке товара (не из словаря атрибута). Здесь настраивается связь с характеристиками МП.'
+              : ' Значение хранится в карточке; здесь настраивается тип отображения и связь с характеристиками МП.'}
           </p>
         ) : null}
         {priceLocked ? (

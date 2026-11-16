@@ -11,7 +11,7 @@ CREATE INDEX IF NOT EXISTS idx_products_tn_ved_code
   WHERE tn_ved_code IS NOT NULL AND btrim(tn_ved_code) <> '';
 
 INSERT INTO product_attributes (name, type, dictionary_values, formula, system_key, show_related_fields)
-SELECT 'ТН ВЭД', 'text', '[]'::jsonb, NULL, 'tn_ved', false
+SELECT 'ТН ВЭД', 'tn_ved', '[]'::jsonb, NULL, 'tn_ved', false
 WHERE NOT EXISTS (
   SELECT 1 FROM product_attributes pa WHERE pa.system_key = 'tn_ved'
 );

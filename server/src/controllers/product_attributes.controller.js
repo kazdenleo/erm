@@ -28,6 +28,7 @@ const VALID_TYPES = [
   'number',
   'date',
   'dictionary',
+  'tn_ved',
   COMPUTED_ATTR_TYPE,
   EDITABLE_ATTR_TYPE,
 ];
@@ -184,6 +185,18 @@ class ProductAttributesController {
           return res.status(400).json({
             ok: false,
             message: 'Для системных полей карточки тип «Словарь» не используется',
+          });
+        }
+        if (systemKey === 'tn_ved' && type !== 'tn_ved') {
+          return res.status(400).json({
+            ok: false,
+            message: 'Поле ТН ВЭД должно оставаться типом «Справочник» (классификатор tn_ved_codes)',
+          });
+        }
+        if (type === 'tn_ved' && systemKey !== 'tn_ved') {
+          return res.status(400).json({
+            ok: false,
+            message: 'Тип «Справочник» доступен только для системного поля ТН ВЭД',
           });
         }
         updates.push(`type = $${idx++}`);
