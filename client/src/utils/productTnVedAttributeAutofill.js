@@ -83,6 +83,9 @@ export function ozonStoredTnVedSearchCode(raw, categoryCode) {
 }
 
 export function categoryTnVedDigits(product, categories = []) {
+  const fromProduct = String(product?.tn_ved_code || product?.tnVedCode || '').replace(/\D/g, '');
+  if (fromProduct) return fromProduct;
+
   const list = Array.isArray(categories) ? categories : [];
   const byId = new Map(list.map((c) => [String(c.id), c]));
   const cid = String(product?.user_category_id ?? product?.categoryId ?? '').trim();
@@ -95,12 +98,7 @@ export function categoryTnVedDigits(product, categories = []) {
     const parentId = cat.parent_id ?? cat.parentId;
     cat = parentId != null && String(parentId).trim() !== '' ? byId.get(String(parentId)) : null;
   }
-  const raw =
-    product?.category_tn_ved_code ||
-    product?.tn_ved_code ||
-    product?.tnVedCode ||
-    '';
-  return String(raw || '').replace(/\D/g, '');
+  return String(product?.category_tn_ved_code || '').replace(/\D/g, '');
 }
 
 /**

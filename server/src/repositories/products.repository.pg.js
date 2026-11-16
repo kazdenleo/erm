@@ -3107,8 +3107,8 @@ class ProductsRepositoryPG {
           mp_ozon_name, mp_ozon_description, mp_ozon_brand,
           mp_wb_vendor_code, mp_wb_name, mp_wb_description, mp_wb_brand,
           mp_ym_name, mp_ym_description,
-          mp_field_links, okpd2_code, box_barcode, units_per_box
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb, $36, $37, $38)
+          mp_field_links, okpd2_code, tn_ved_code, box_barcode, units_per_box
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb, $36, $37, $38, $39)
         RETURNING *
       `, [
         profileIdRaw,
@@ -3156,6 +3156,12 @@ class ProductsRepositoryPG {
             : {}
         ),
         mpStr(productData.okpd2_code),
+        (() => {
+          const raw = productData.tn_ved_code ?? productData.tnVedCode;
+          if (raw == null || raw === '') return null;
+          const digits = String(raw).replace(/\D/g, '');
+          return digits || null;
+        })(),
         mpStr(productData.box_barcode ?? productData.boxBarcode),
         (() => {
           const raw = productData.units_per_box ?? productData.unitsPerBox;
@@ -3477,6 +3483,7 @@ class ProductsRepositoryPG {
         'weight', 'length', 'width', 'height', 'volume',
         'product_weight', 'product_length', 'product_width', 'product_height',
         'quantity', 'unit', 'description', 'product_type', 'organization_id', 'country_of_origin', 'okpd2_code',
+        'tn_ved_code',
         'box_barcode', 'units_per_box',
         'mp_ozon_name', 'mp_ozon_description', 'mp_ozon_brand',
         'mp_wb_vendor_code', 'mp_wb_name', 'mp_wb_description', 'mp_wb_brand',
@@ -3545,6 +3552,17 @@ class ProductsRepositoryPG {
 
       if (updates.hasOwnProperty('boxBarcode') && !updates.hasOwnProperty('box_barcode')) {
         updates.box_barcode = updates.boxBarcode;
+      }
+      if (updates.hasOwnProperty('tnVedCode') && !updates.hasOwnProperty('tn_ved_code')) {
+        updates.tn_ved_code = updates.tnVedCode;
+      }
+      if (updates.hasOwnProperty('tn_ved_code')) {
+        const raw = updates.tn_ved_code;
+        if (raw == null || raw === '') updates.tn_ved_code = null;
+        else {
+          const digits = String(raw).replace(/\D/g, '');
+          updates.tn_ved_code = digits || null;
+        }
       }
       if (updates.hasOwnProperty('unitsPerBox') && !updates.hasOwnProperty('units_per_box')) {
         updates.units_per_box = updates.unitsPerBox;

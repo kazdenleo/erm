@@ -224,9 +224,16 @@ class TnVedProductApplyService {
     if (!productData || typeof productData !== 'object') return productData;
     const categoryId =
       opts.categoryId ?? productData.categoryId ?? productData.user_category_id;
-    const code =
-      (await this.resolveCategoryCode(categoryId)) ||
+    let code =
+      normalizeTnVedDigits(productData.tn_ved_code ?? productData.tnVedCode) ||
       normalizeTnVedDigits(opts.code);
+    if (!code) {
+      // Переходный fallback: код ещё мог жить только на категории.
+      code = await this.resolveCategoryCode(categoryId);
+      if (code && !(productData.tn_ved_code || productData.tnVedCode)) {
+        productData.tn_ved_code = code;
+      }
+    }
     if (!code) return productData;
 
     const targets = await this._resolveTargets(categoryId, opts);
@@ -514,7 +521,7 @@ class TnVedProductApplyService {
   }
 
   /**
-   * В ответе API подставляет код ТН ВЭД категории в пустые ERP-атрибуты.
+   * В ответе API подставляет код ТН ВЭД товара (fallback — категория) в пустые ERP-атрибуты.
    */
   async fillEmptyErpAttributesOnProducts(products) {
     const list = Array.isArray(products) ? products.filter(Boolean) : [];
@@ -536,18 +543,28 @@ class TnVedProductApplyService {
     );
     const byCat = new Map();
     for (const row of r.rows || []) {
-      const code = normalizeTnVedDigits(row.tn_ved_code);
-      if (!code || !isTnVedAttributeName(row.name) || row.attribute_id == null) continue;
+      if (!isTnVedAttributeName(row.name) || row.attribute_id == null) continue;
       const cid = String(row.category_id);
-      if (!byCat.has(cid)) byCat.set(cid, { code, attrIds: [] });
+      if (!byCat.has(cid)) {
+        byCat.set(cid, {
+          categoryCode: normalizeTnVedDigits(row.tn_ved_code) || '',
+          attrIds: [],
+        });
+      }
       byCat.get(cid).attrIds.push(String(row.attribute_id));
     }
 
     for (const p of list) {
       const cid = String(p.user_category_id ?? p.categoryId ?? '').trim();
       const spec = byCat.get(cid);
-      if (!spec) continue;
-      const next = fillEmptyErpTnVedAttributeValues(p.attribute_values, spec.attrIds, spec.code);
+      if (!spec?.attrIds?.length) continue;
+      const code =
+        normalizeTnVedDigits(p.tn_ved_code ?? p.tnVedCode) ||
+        normalizeTnVedDigits(p.category_tn_ved_code) ||
+        spec.categoryCode ||
+        '';
+      if (!code) continue;
+      const next = fillEmptyErpTnVedAttributeValues(p.attribute_values, spec.attrIds, code);
       if (next !== p.attribute_values) p.attribute_values = next;
     }
     return list;

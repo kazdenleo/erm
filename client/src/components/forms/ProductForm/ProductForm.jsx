@@ -63,6 +63,7 @@ import {
 import { resolveApiBaseUrl } from '../../../services/api.js';
 import { createAsyncQueue } from '../../../utils/asyncQueue.js';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
+import { TnVedCodePicker } from '../../common/TnVedCodePicker/TnVedCodePicker.jsx';
 import { certificatesApi } from '../../../services/certificates.api.js';
 import { brandsApi } from '../../../services/brands.api.js';
 import {
@@ -1096,6 +1097,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     supplierId: '',
     brand: '',
   country_of_origin: '',
+  tn_ved_code: '',
   okpd2_code: '',
   box_barcode: '',
   units_per_box: '',
@@ -2102,6 +2104,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               : '',
         brand: currentProduct.brand || '',
         country_of_origin: currentProduct.country_of_origin || '',
+        tn_ved_code: currentProduct.tn_ved_code || currentProduct.tnVedCode || '',
         okpd2_code: currentProduct.okpd2_code || '',
         box_barcode: currentProduct.box_barcode || currentProduct.boxBarcode || '',
         units_per_box:
@@ -2531,11 +2534,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [categories, formData.categoryId]);
 
   useEffect(() => {
+    // Пока категория не подтянулась — не затираем связи, уже отданные API.
+    if (!selectedUserCategory) return;
     setFormData((prev) => {
       const nextLinks = overlayCategoryDedicatedMpLinks(
         prev.mp_field_links,
-        selectedUserCategory?.mp_field_links,
-        selectedUserCategory?.attribute_mp_links
+        selectedUserCategory.mp_field_links,
+        selectedUserCategory.attribute_mp_links
       );
       if (JSON.stringify(nextLinks) === JSON.stringify(normalizeMpFieldLinks(prev.mp_field_links))) {
         return prev;
@@ -2729,10 +2734,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return categories.find((c) => String(c.id) === cid) ?? null;
   }, [formData.categoryId, categoryDetails, categories]);
 
-  const tnVedCode = useMemo(() => {
-    const cat = categoryResolvedForMappings || {};
-    return String(cat.tn_ved_code || cat.tnVedCode || '').replace(/\D/g, '');
-  }, [categoryResolvedForMappings]);
+  const tnVedCode = useMemo(
+    () => String(formData.tn_ved_code || '').replace(/\D/g, ''),
+    [formData.tn_ved_code]
+  );
 
   const categoryOkpd2Code = String(categoryResolvedForMappings?.okpd2_code || '');
 
@@ -2861,6 +2866,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const s = String(raw).trim().replace(/\s+/g, '');
     return /^\d+$/.test(s) ? s : '';
   }, [categoryResolvedForMappings]);
+
+  const tnVedMarketplaceContext = useMemo(() => {
+    const wbId = Number(wbSubjectId) || null;
+    const ymIdRaw = ymMarketCategoryId ? Number(ymMarketCategoryId) : null;
+    const ymCategoryId = Number.isFinite(ymIdRaw) && ymIdRaw > 0 ? ymIdRaw : null;
+    const descId = ozonDescIdForApi || null;
+    const typeId = ozonTypeIdForApi > 0 ? ozonTypeIdForApi : null;
+    if (!formData.categoryId && !wbId && !(descId && typeId) && !ymCategoryId) return null;
+    return {
+      userCategoryId: formData.categoryId || null,
+      wbSubjectId: wbId,
+      ozonDescId: descId,
+      ozonTypeId: typeId,
+      ymCategoryId,
+      organizationId: formData.organizationId || null,
+    };
+  }, [
+    formData.categoryId,
+    formData.organizationId,
+    wbSubjectId,
+    ymMarketCategoryId,
+    ozonDescIdForApi,
+    ozonTypeIdForApi,
+  ]);
 
   // Загрузка схемы атрибутов Ozon — на вкладке Ozon или для связи атрибутов категории
   useEffect(() => {
@@ -7273,6 +7302,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : {}),
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
+      tn_ved_code: String(formData.tn_ved_code || '').replace(/\D/g, '') || null,
       okpd2_code: normalizeOkpd2Code(formData.okpd2_code) || null,
       box_packagings: (Array.isArray(formData.box_packagings) ? formData.box_packagings : [])
         .map((r) => ({
@@ -7381,10 +7411,25 @@ export const ProductForm = React.forwardRef(function ProductForm({
         formData.wb_draft && typeof formData.wb_draft === 'object' && !Array.isArray(formData.wb_draft)
           ? formData.wb_draft
           : {},
-      ym_draft:
-        formData.ym_draft && typeof formData.ym_draft === 'object' && !Array.isArray(formData.ym_draft)
-          ? formData.ym_draft
-          : {},
+      ym_draft: (() => {
+        const base =
+          formData.ym_draft && typeof formData.ym_draft === 'object' && !Array.isArray(formData.ym_draft)
+            ? { ...formData.ym_draft }
+            : {};
+        // Артикул производителя ЯМ при связи sku→ЯМ берём с «Основного»
+        if (
+          dedicatedMainFieldForMpTarget(
+            categoryDedicatedCharcLinks,
+            'ym',
+            { kind: 'offer', offerId: '__ym_vendor_code__' },
+            mpAttrLabelMaps
+          ) === 'sku' &&
+          isMpFieldLinked(formData.mp_field_links, 'sku', 'ym')
+        ) {
+          base.vendorCode = String(formData.sku || '');
+        }
+        return base;
+      })(),
       buyout_rate: formData.buyout_rate ? parseFloat(formData.buyout_rate) : 95,
       // На обновлении пустой ШК не отправляем — иначе сервер раньше затирал коды в БД.
       ...(filteredBarcodes.length || !currentProduct?.id ? { barcodes: filteredBarcodes } : {}),
@@ -8594,6 +8639,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
             title="Уходит в характеристику «ОКПД» на маркетплейсах при сохранении. Пустое поле нового товара заполнится кодом категории."
           />
           {errors.okpd2_code && <div className="error">{errors.okpd2_code}</div>}
+        </div>
+      </div>
+      <div className="row g-2 mb-2">
+        <div className="col-md-8">
+          <TnVedCodePicker
+            id="productTnVedCode"
+            value={formData.tn_ved_code || ''}
+            onChange={(code) => handleChange('tn_ved_code', code)}
+            marketplaceContext={tnVedMarketplaceContext}
+            hint="Код карточки товара: подставится в характеристики ТН ВЭД ERP/МП и уйдёт при отправке карточек. Выберите из классификатора ЕАЭС."
+            error={errors.tn_ved_code}
+          />
         </div>
       </div>
       </div>
@@ -10475,32 +10532,48 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   />
                 </div>
                 <div className="col-md-4">
-                  <label className="form-label" htmlFor="ym-tab-vendor-code">
-                    Артикул производителя (Яндекс)
-                    {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · можно связать с артикулом на Основном</span>
-                    ) : null}
-                  </label>
-                  <input
-                    id="ym-tab-vendor-code"
-                    type="text"
-                    className="form-control form-control-sm product-form-short"
-                    value={String(getMpDraft(formData, 'ym').vendorCode || '')}
-                    onChange={(e) =>
-                      setFormData((prev) => withMpDraftPatch(prev, 'ym', { vendorCode: e.target.value }))
-                    }
-                    placeholder="vendorCode в карточке Маркета"
-                  />
+                  {(() => {
+                    const ymMfrFromSku =
+                      dedicatedMainFieldForMpTarget(
+                        categoryDedicatedCharcLinks,
+                        'ym',
+                        { kind: 'offer', offerId: '__ym_vendor_code__' },
+                        mpAttrLabelMaps
+                      ) === 'sku' && isMpFieldLinked(formData.mp_field_links, 'sku', 'ym');
+                    const ymMfrValue = ymMfrFromSku
+                      ? String(formData.sku || '')
+                      : String(getMpDraft(formData, 'ym').vendorCode || '');
+                    return (
+                      <>
+                        <label
+                          className="form-label"
+                          htmlFor="ym-tab-vendor-code"
+                          style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}
+                        >
+                          Артикул производителя (Яндекс)
+                          {ymMfrFromSku ? <MpFromMainLinkIcon linked /> : null}
+                        </label>
+                        <input
+                          id="ym-tab-vendor-code"
+                          type="text"
+                          className="form-control form-control-sm product-form-short"
+                          value={ymMfrValue}
+                          readOnly={ymMfrFromSku}
+                          onChange={(e) => {
+                            if (ymMfrFromSku) return;
+                            setFormData((prev) => withMpDraftPatch(prev, 'ym', { vendorCode: e.target.value }));
+                          }}
+                          placeholder="vendorCode в карточке Маркета"
+                          title={
+                            ymMfrFromSku
+                              ? 'Значение с вкладки «Основное» (артикул)'
+                              : 'Артикул производителя — не ключ карточки'
+                          }
+                        />
+                      </>
+                    );
+                  })()}
                 </div>
-                {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') && (
-                  <div className="col-12">
-                    <div className="mp-linked-dims-preview">
-                      <span>
-                        <span className="text-muted">Артикул:</span> {formData.sku || '—'}
-                      </span>
-                    </div>
-                  </div>
-                )}
               </div>
           </div>
 

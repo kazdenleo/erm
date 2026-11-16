@@ -67,10 +67,9 @@ async function filterUsableAttributeIds(ids, profileId) {
   return nums.filter((id) => ok.has(id));
 }
 
-function readTnVedCodeFromBody(body) {
-  if (!body || typeof body !== 'object') return undefined;
-  if (body.tn_ved_code === undefined && body.tnVedCode === undefined) return undefined;
-  return normalizeCategoryTnVedCode(body.tn_ved_code ?? body.tnVedCode);
+/** ТН ВЭД перенесён на товар (products.tn_ved_code) — из тела категории больше не принимаем. */
+function readTnVedCodeFromBody(_body) {
+  return undefined;
 }
 
 /** Товары категории, связанные с офферами Я.Маркета (артикул ЯМ хранится в product_skus). */
@@ -467,7 +466,6 @@ class UserCategoriesController {
       if (okpd2Code === null) {
         return res.status(400).json({ ok: false, message: OKPD2_FORMAT_HINT });
       }
-      await tnVedDirectoryService.assertActiveCode(tnVedCode);
       await okpd2DirectoryService.assertKnownCode(okpd2Code);
       
       const result = await query(
@@ -484,7 +482,7 @@ class UserCategoriesController {
           certificate_valid_to || null,
           skipMpStock === true,
           JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)),
-          tnVedCode || null,
+          null,
           okpd2Code || null,
         ]
       );
@@ -501,7 +499,6 @@ class UserCategoriesController {
       category.attribute_mp_links = incomingLinks;
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
 
-      await applyTnVedToCategoryProductsSafe(category.id, tnVedCode, tid);
       void applyOkpd2ToCategoryProductsSafe(category.id, okpd2Code, tid, { force: true });
       
       return res.status(201).json({ ok: true, data: category });
@@ -534,7 +531,6 @@ class UserCategoriesController {
       if (Number(owner.rows[0].profile_id) !== Number(tid)) {
         return res.status(403).json({ ok: false, message: 'Нет доступа' });
       }
-      await tnVedDirectoryService.assertActiveCode(tnVedCode, { allowCode: owner.rows[0].tn_ved_code });
       const prevOkpd2Code = normalizeOkpd2Code(owner.rows[0].okpd2_code) || null;
       await okpd2DirectoryService.assertKnownCode(okpd2Code, { allowCode: prevOkpd2Code });
       
@@ -659,14 +655,6 @@ class UserCategoriesController {
       category.attribute_ids = attrMeta.ids;
       category.attribute_mp_links = attrMeta.map;
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
-
-      const codeToApply =
-        tnVedCode !== undefined ? tnVedCode : normalizeTnVedDigits(category.tn_ved_code);
-      if (codeToApply) {
-        const previousCode =
-          tnVedCode !== undefined ? normalizeTnVedDigits(owner.rows[0].tn_ved_code) : null;
-        await applyTnVedToCategoryProductsSafe(id, codeToApply, tid, previousCode);
-      }
 
       const okpd2ToApply = normalizeOkpd2Code(category.okpd2_code) || '';
       if (okpd2ToApply) {

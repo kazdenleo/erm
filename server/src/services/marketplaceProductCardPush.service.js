@@ -323,9 +323,10 @@ function tnVedDigitsFromOzonAttrValues(vals) {
 
 function productTnVedFallbackCode(product) {
   return (
-    normalizeTnVedDigits(product?.category_tn_ved_code) ||
     normalizeTnVedDigits(product?.tn_ved_code) ||
     normalizeTnVedDigits(product?.tnVedCode) ||
+    // Fallback на старый код категории (до миграции на поле товара).
+    normalizeTnVedDigits(product?.category_tn_ved_code) ||
     ''
   );
 }

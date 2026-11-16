@@ -32,7 +32,6 @@ import {
   withMpOfferFieldAttrs,
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
-import { TnVedCodePicker } from '../../common/TnVedCodePicker/TnVedCodePicker.jsx';
 import { Okpd2CodePicker } from '../../common/Okpd2CodePicker/Okpd2CodePicker.jsx';
 import { isSystemCardAttr } from '../../../utils/systemMainFieldAttributes.js';
 
@@ -229,7 +228,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
     description: '',
     parentId: '',
     skip_marketplace_stock_sync: false,
-    tn_ved_code: '',
     okpd2_code: '',
     wbCategoryId: '',
     ozonCategoryId: '',
@@ -249,32 +247,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const [errors, setErrors] = useState({});
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leavePromptSaving, setLeavePromptSaving] = useState(false);
-  const [tnVedPush, setTnVedPush] = useState({ loading: false, message: '', error: false });
-  const savedTnVedCode = String(category?.tn_ved_code || category?.tnVedCode || '').replace(/\D/g, '');
-  const formTnVedDigits = String(formData.tn_ved_code || '').replace(/\D/g, '');
-  const handlePushTnVed = async () => {
-    if (!category?.id) return;
-    setTnVedPush({ loading: true, message: '', error: false });
-    try {
-      const res = await userCategoriesApi.pushTnVed(category.id);
-      const n = Number(res?.data?.products) || 0;
-      setTnVedPush({
-        loading: false,
-        error: false,
-        message: res?.data?.running
-          ? 'Отправка уже идёт — дождитесь уведомления с итогом.'
-          : n
-            ? `Отправляем карточки (${n}) — займёт несколько минут, итог придёт уведомлением.`
-            : 'Нет товаров с этим кодом.',
-      });
-    } catch (e) {
-      setTnVedPush({
-        loading: false,
-        error: true,
-        message: e?.response?.data?.message || e?.message || 'Не удалось отправить',
-      });
-    }
-  };
   const [okpd2Push, setOkpd2Push] = useState({ loading: false, message: '', error: false });
   const savedOkpd2Code = String(category?.okpd2_code || '');
   const handlePushOkpd2 = async () => {
@@ -854,7 +826,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         description: category.description || '',
         parentId: category.parent_id || category.parentId || '',
         skip_marketplace_stock_sync: category.skip_marketplace_stock_sync === true,
-        tn_ved_code: category.tn_ved_code || category.tnVedCode || '',
         okpd2_code: category.okpd2_code || '',
         // Не сбрасываем wbCategoryId, ozonCategoryId, ymCategoryId здесь,
         // они устанавливаются в loadExistingMappings после загрузки категорий
@@ -876,7 +847,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         description: '',
         parentId: '',
         skip_marketplace_stock_sync: false,
-        tn_ved_code: '',
         okpd2_code: '',
         wbCategoryId: '',
         ozonCategoryId: '',
@@ -947,21 +917,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       cancelled = true;
     };
   }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId, selectedOrganizationId]);
-
-  const tnVedMarketplaceContext = useMemo(() => {
-    const { descId, typeId } = parseOzonCompositeId(formData.ozonCategoryId);
-    const wbSubjectId = Number(formData.wbCategoryId) || null;
-    const ymCategoryId = Number(formData.ymCategoryId) || null;
-    if (!category?.id && !wbSubjectId && !(descId && typeId) && !ymCategoryId) return null;
-    return {
-      userCategoryId: category?.id || null,
-      wbSubjectId,
-      ozonDescId: descId,
-      ozonTypeId: typeId,
-      ymCategoryId,
-      organizationId: selectedOrganizationId || null,
-    };
-  }, [category?.id, formData.wbCategoryId, formData.ozonCategoryId, formData.ymCategoryId, selectedOrganizationId]);
 
   const handleChange = (field, value) => {
     markDirty();
@@ -1034,7 +989,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
       mp_field_links: serializeCategoryDedicatedCharcLinks(dedicatedMpLinks, addedDedicatedKeys),
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
-      tn_ved_code: formData.tn_ved_code || null,
       okpd2_code: formData.okpd2_code || null,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
@@ -1172,36 +1126,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           Для дочерних категорий учитывается также настройка родительской категории.
           Импорт остатков с маркетплейсов и другие операции не затрагиваются.
         </p>
-      </div>
-
-      <div className="field">
-        <TnVedCodePicker
-          id="categoryTnVedCode"
-          value={formData.tn_ved_code || ''}
-          onChange={(code) => handleChange('tn_ved_code', code)}
-          marketplaceContext={tnVedMarketplaceContext}
-          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. При смене кода прежний код категории в карточках заменится на новый, и карточки уйдут на маркетплейсы. Под кодом — проверка, примут ли его маркетплейсы для выбранных категорий."
-          badgeActions={
-            savedTnVedCode && formTnVedDigits === savedTnVedCode ? (
-              <>
-                <button
-                  type="button"
-                  className="tnved-badge-action"
-                  onClick={handlePushTnVed}
-                  disabled={tnVedPush.loading}
-                  title="Отправить карточки товаров категории с этим кодом на Ozon, WB и Я.Маркет"
-                >
-                  {tnVedPush.loading ? 'Отправка…' : '↑ Отправить на маркетплейсы'}
-                </button>
-                {tnVedPush.message ? (
-                  <span className={`tnved-badge-note${tnVedPush.error ? ' tnved-badge-note--error' : ''}`}>
-                    {tnVedPush.message}
-                  </span>
-                ) : null}
-              </>
-            ) : null
-          }
-        />
       </div>
 
       <div className="field">

@@ -8,6 +8,7 @@ export const SYSTEM_MAIN_FIELD_KEYS = [
   'description',
   'brand',
   'country',
+  'tn_ved',
   'product_length',
   'product_width',
   'product_height',

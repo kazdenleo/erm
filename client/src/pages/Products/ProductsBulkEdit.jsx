@@ -1886,6 +1886,7 @@ const COLUMNS = [
   { key: 'minPrice', label: 'Мин. ц.', title: 'Мин. цена', input: 'number', minW: 72 },
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
   { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country', showLinkToggles: true },
+  { key: 'tn_ved_code', label: 'ТН ВЭД', title: 'Основное · Код ТН ВЭД ЕАЭС (10 цифр). Подставляется в характеристики ТН ВЭД и уходит при пуше карточек', input: 'text', minW: 100 },
   /* ——— Ozon ——— */
   { key: 'sku_ozon', label: 'offer_id', title: 'Ключ связи Ozon (offer_id). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — создастся дубль.', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
@@ -4204,7 +4205,17 @@ function finalizeBulkRowAfterCellChange(row, key, erpAttrColDefs = [], mpAttrCol
 }
 
 function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrColDefs = [], categories = []) {
-  const code = categoryTnVedDigits(product, categories);
+  const code =
+    String(row?.tn_ved_code || '').replace(/\D/g, '') ||
+    categoryTnVedDigits(
+      {
+        ...(product || {}),
+        tn_ved_code: product?.tn_ved_code ?? product?.tnVedCode ?? row?.tn_ved_code,
+        categoryId: row?.categoryId ?? product?.user_category_id ?? product?.categoryId,
+        user_category_id: product?.user_category_id ?? row?.categoryId,
+      },
+      categories
+    );
   if (!code) return row;
 
   const erpAttrs = (erpAttrColDefs || [])
@@ -4356,6 +4367,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
       p.buyout_rate != null && p.buyout_rate !== '' ? str(p.buyout_rate) : '95',
     description: str(p.description),
     country_of_origin: str(p.country_of_origin),
+    tn_ved_code: str(p.tn_ved_code ?? p.tnVedCode ?? ''),
     barcodes: formatBarcodesCell(p.barcodes),
     box_barcode: (() => {
       const packs = p.box_packagings ?? p.boxPackagings;
@@ -4579,6 +4591,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   if (!eq(original.description, current.description)) touch('description', normTextOrNull(current.description));
   if (!eq(original.country_of_origin, current.country_of_origin)) {
     touch('country_of_origin', normTextOrNull(current.country_of_origin));
+  }
+  if (!eq(original.tn_ved_code, current.tn_ved_code)) {
+    const digits = str(current.tn_ved_code).replace(/\D/g, '');
+    touch('tn_ved_code', digits || null);
   }
 
   if (linksSignature(original.mp_field_links) !== linksSignature(current.mp_field_links)) {
@@ -5789,6 +5805,19 @@ function applyOneBulkCellChange(
   } = {}
 ) {
   let next = withSyncedLinkedFields(row, key, value, erpAttrColumnDefs, mpAttrColumnDefs);
+  if (key === 'tn_ved_code') {
+    const digits = str(value).replace(/\D/g, '');
+    if (digits !== str(next.tn_ved_code)) {
+      next = { ...next, tn_ved_code: digits };
+    }
+    next = applyCategoryTnVedToBulkRow(
+      next,
+      { ...(next._productRef || {}), tn_ved_code: digits, categoryId: next.categoryId },
+      erpAttrColumnDefs,
+      mpAttrColumnDefs,
+      []
+    );
+  }
   const fieldKey = bulkLinkFieldForColumn(key);
   if (fieldKey === 'country') {
     next = applyLinkedCountryToDictAttrColumns(
