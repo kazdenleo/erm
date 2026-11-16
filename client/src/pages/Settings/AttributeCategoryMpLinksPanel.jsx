@@ -369,6 +369,8 @@ export const AttributeCategoryMpLinksPanel = forwardRef(function AttributeCatego
     /** Явное «Применить связь» — всегда пишет текущий набор. */
     applyForce: () => applyLinks({ silent: false, force: true }),
     isSaving: () => saving,
+    isMixed: () => mixed,
+    hasDraftLinks: () => attrMpLinksHasAny(linksRef.current),
   }));
 
   if (loading) {
@@ -448,12 +450,13 @@ export const AttributeCategoryMpLinksPanel = forwardRef(function AttributeCatego
         <p className="form-hint">
           Сейчас связь задана у {mappedCount} из {targetTotal || categories.length} категорий
           {attrMpLinksHasAny(links) ? ' (ниже — общий набор из уже настроенных)' : ''}.
-          «Сохранить» запишет набор ниже {scope === 'all' ? 'во все категории' : 'в отмеченные'}.
+          Пока не нажмёте «Применить связь» или «Сохранить», в остальных категориях связи не будет —
+          значки и подстановка на карточках/в массовом редактировании не появятся.
         </p>
       ) : (
         <p className="form-hint">
           Один набор характеристик OZ / WB / ЯМ для {scope === 'all' ? 'всех категорий' : 'отмеченных категорий'}.
-          Сохраняется кнопкой «Сохранить» внизу формы.
+          Сохраняется кнопкой «Сохранить» внизу формы или «Применить связь».
         </p>
       )}
       <AttributeMpLinkFields
@@ -469,12 +472,16 @@ export const AttributeCategoryMpLinksPanel = forwardRef(function AttributeCatego
       <div className="attribute-mp-apply">
         <Button
           type="button"
-          variant="secondary"
+          variant={mixed ? 'primary' : 'secondary'}
           size="small"
           disabled={saving}
           onClick={() => void applyLinks({ force: true })}
         >
-          {saving ? 'Сохранение…' : 'Применить связь'}
+          {saving
+            ? 'Сохранение…'
+            : mixed
+              ? `Применить связь ко всем (${targetTotal || categories.length})`
+              : 'Применить связь'}
         </Button>
         {status ? <span className="attribute-mp-apply-status">{status}</span> : null}
       </div>

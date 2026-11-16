@@ -15,6 +15,7 @@ export const MP_FIELD_LINK_KEYS = [
   'description',
   'brand',
   'country',
+  'tn_ved',
   'dimensions',
   'product_dimensions',
   'rich_content',
@@ -59,6 +60,7 @@ export const MP_FIELD_LINK_SUPPORT = {
   description: ['ozon', 'wb', 'ym'],
   brand: ['ozon', 'wb', 'ym'],
   country: ['ozon', 'wb', 'ym'],
+  tn_ved: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
   /** Размеры товара (без упаковки): product_length / width / height / weight */
   product_dimensions: ['ozon', 'wb', 'ym'],
@@ -109,6 +111,7 @@ export const MP_FIELD_LINK_TITLES = {
   description: 'Связать с описанием на «Основном» (не с другими МП)',
   brand: 'Связать с брендом на «Основном» (не с другими МП)',
   country: 'Связать со страной на «Основном» (не с другими МП)',
+  tn_ved: 'Связать с кодом ТН ВЭД на «Основном» (не с другими МП)',
   dimensions: 'Связать вес/габариты упаковки с «Основным» (не с другими МП; единицы пересчитываются)',
   product_dimensions: 'Связать размеры товара с «Основным» (не с другими МП)',
   product_length: 'Связать длину товара с «Основным»',
@@ -128,6 +131,7 @@ export const MP_FIELD_LINK_FIELD_LABELS = {
   description: 'Описание',
   brand: 'Бренд',
   country: 'Страна производителя',
+  tn_ved: 'ТН ВЭД',
   product_length: 'Длина товара',
   product_width: 'Ширина товара',
   product_height: 'Высота товара',
@@ -148,6 +152,7 @@ export const DEDICATED_MAIN_MAP_KEYS = [
   'description',
   'brand',
   'country',
+  'tn_ved',
   ...DEDICATED_PRODUCT_DIM_KEYS,
   ...DEDICATED_PACK_DIM_KEYS,
 ];
@@ -363,9 +368,14 @@ function mpsFromAttrMpLinksRaw(raw) {
 /**
  * Эффективные связи Main↔МП: только сопоставления категории (поля «Основное» + свои атрибуты).
  * С карточки товара сохраняется только rich_content.
+ * Если данные категории ещё не загружены (null/undefined) — не затираем уже
+ * посчитанные связи товара (серверный overlay / предыдущий шаг формы).
  */
 export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks, attributeMpLinksMap) {
   const product = normalizeMpFieldLinks(productLinks);
+  if (categoryLinks == null && attributeMpLinksMap == null) {
+    return product;
+  }
   const dedicated = normalizeCategoryDedicatedCharcLinks(categoryLinks);
   const out = emptyMpFieldLinks();
   out.rich_content = Array.isArray(product.rich_content) ? [...product.rich_content] : [];
@@ -1504,10 +1514,25 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
       next.ym_draft = { ...prevDraft, vendor: v };
     }
   }
-  // Артикул МП (vendorCode / offer_id) — ключ карточки. Не зеркалить Main→МП
+  // Артикул МП (offer_id / shopSku / WB vendorCode) — ключ карточки. Не зеркалить Main→МП
   // при массовом apply (загрузка / overlay категории): иначе после F5 снова старый
   // Main и «Сохранить» кажется сломанным. Синк только при явном onlyFields: ['sku']
   // (правка поля «Артикул» на вкладке Основное).
+  // ЯМ vendorCode (артикул производителя) — НЕ ключ карточки, можно зеркалить всегда при связи.
+  if (want('sku')) {
+    const v = String(prev.sku || '');
+    if (isMpFieldLinked(normalized, 'sku', 'ym')) {
+      const prevDraft =
+        next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+          ? next.ym_draft
+          : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+            ? prev.ym_draft
+            : {};
+      if (String(prevDraft.vendorCode ?? '') !== v) {
+        next.ym_draft = { ...prevDraft, vendorCode: v };
+      }
+    }
+  }
   if (want('sku') && onlyFields && onlyFields.includes('sku')) {
     const v = String(prev.sku || '');
     if (isMpFieldLinked(normalized, 'sku', 'wb')) next.mp_wb_vendor_code = v;
@@ -1616,6 +1641,7 @@ export function resolveLinkedDisplayValue(formData, links, fieldKey, mp) {
       if (mp === 'ym') return formData.sku_ym;
     }
     if (fieldKey === 'country') return '';
+    if (fieldKey === 'tn_ved') return '';
     return '';
   }
   if (fieldKey === 'name') return formData.name;
@@ -1623,5 +1649,6 @@ export function resolveLinkedDisplayValue(formData, links, fieldKey, mp) {
   if (fieldKey === 'brand') return formData.brand;
   if (fieldKey === 'sku') return formData.sku;
   if (fieldKey === 'country') return formData.country_of_origin;
+  if (fieldKey === 'tn_ved') return formData.tn_ved_code;
   return '';
 }

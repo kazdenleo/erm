@@ -9,6 +9,7 @@ export const MP_FIELD_LINK_KEYS = [
   'description',
   'brand',
   'country',
+  'tn_ved',
   'dimensions',
   'product_dimensions',
   'rich_content',
@@ -52,6 +53,7 @@ export const MP_FIELD_LINK_SUPPORT = {
   description: ['ozon', 'wb', 'ym'],
   brand: ['ozon', 'wb', 'ym'],
   country: ['ozon', 'wb', 'ym'],
+  tn_ved: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
   product_dimensions: ['ozon', 'wb', 'ym'],
   product_length: ['ozon', 'wb', 'ym'],
@@ -90,6 +92,7 @@ export const DEDICATED_MAIN_MAP_KEYS = [
   'description',
   'brand',
   'country',
+  'tn_ved',
   ...DEDICATED_PRODUCT_DIM_KEYS,
   ...DEDICATED_PACK_DIM_KEYS,
 ];
@@ -292,9 +295,15 @@ function mpsFromAttrMpLinksRaw(raw) {
   });
 }
 
-/** Эффективные связи: сопоставления категории; с карточки — только rich_content. */
+/**
+ * Эффективные связи: сопоставления категории; с карточки — только rich_content.
+ * null/undefined категории не затирают уже посчитанные связи товара.
+ */
 export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks, attributeMpLinksMap) {
   const product = normalizeMpFieldLinks(productLinks);
+  if (categoryLinks == null && attributeMpLinksMap == null) {
+    return product;
+  }
   const dedicated = normalizeCategoryDedicatedCharcLinks(categoryLinks);
   const out = emptyMpFieldLinks();
   out.rich_content = Array.isArray(product.rich_content) ? [...product.rich_content] : [];
@@ -797,6 +806,9 @@ export function resolveCardTextForPush(product, mp, fieldKey) {
       return trimOrNull(list);
     }
     return trimOrNull(draft.country);
+  }
+  if (fieldKey === 'tn_ved') {
+    return trimOrNull(product.tn_ved_code ?? product.tnVedCode);
   }
   return null;
 }

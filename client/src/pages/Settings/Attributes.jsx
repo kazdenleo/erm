@@ -162,7 +162,14 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
     setSaving(true);
     try {
       if (canEditMpLinks && linksPanelRef.current?.apply) {
-        await linksPanelRef.current.apply();
+        // apply() при mixed+заполненном наборе сам пишет во все/выбранные;
+        // applyForce — если панель явно в смешанном состоянии с уже показанным набором.
+        const panel = linksPanelRef.current;
+        if (panel.isMixed?.() && panel.hasDraftLinks?.() && panel.applyForce) {
+          await panel.applyForce();
+        } else {
+          await panel.apply();
+        }
       }
       await onSubmit(payload);
     } catch (err) {
@@ -187,7 +194,11 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
         {isMainField ? (
           <p className="form-hint">
             Поле вкладки «Основное» карточки товара (ключ: <code>{attribute.system_key}</code>).
-            Значение хранится в карточке, здесь настраивается только тип отображения.
+            Значение хранится в карточке
+            {String(attribute.system_key || '') === 'tn_ved'
+              ? ' (выбор из справочника ТН ВЭД в карточке товара)'
+              : ''}
+            ; здесь настраивается тип отображения и связь с характеристиками МП.
           </p>
         ) : null}
         {priceLocked ? (
