@@ -647,10 +647,20 @@ export const productsApi = {
     return response.data;
   },
 
-  /** Создать товары из собранного контента обогащения */
+  /** Создать товары из собранного контента обогащения (существующие — дозаполнить + proposals) */
   enrichCreate: async (items) => {
     const response = await api.post(
       '/products/enrichment/create',
+      { items },
+      { timeout: 600000 }
+    );
+    return response.data;
+  },
+
+  /** Применить выбранные предложения по уже существующим товарам */
+  enrichApplyProposals: async (items) => {
+    const response = await api.post(
+      '/products/enrichment/apply-proposals',
       { items },
       { timeout: 600000 }
     );

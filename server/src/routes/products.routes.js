@@ -55,6 +55,10 @@ router.post(
   wrapAsync(productEnrichmentController.createFromEnrichment.bind(productEnrichmentController))
 );
 router.post(
+  '/enrichment/apply-proposals',
+  wrapAsync(productEnrichmentController.applyEnrichmentProposals.bind(productEnrichmentController))
+);
+router.post(
   '/enrichment/catalog-bundle',
   uploadCatalogBundleZip.single('file'),
   wrapAsync(productEnrichmentController.catalogBundlePreview.bind(productEnrichmentController))

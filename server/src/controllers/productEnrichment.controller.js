@@ -111,6 +111,36 @@ class ProductEnrichmentController {
     }
   }
 
+  async applyEnrichmentProposals(req, res, next) {
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (!items.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Передайте items с принятыми предложениями',
+          message: 'Передайте items с принятыми предложениями',
+        });
+      }
+      const data = await productEnrichmentService.applyEnrichmentProposals(items, { profileId });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error(
+        '[productEnrichment] applyEnrichmentProposals:',
+        error?.message || error,
+        error?.stack
+      );
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
   async catalogBundlePreview(req, res, next) {
     try {
       const profileId = await resolveEffectiveProfileId(req, req.user);

@@ -114,6 +114,14 @@ function rowKey(row, idx) {
   return `${row.index ?? idx}-${row.sku || ''}-${row.brand || ''}`;
 }
 
+function isEnrichmentRowFinished(r) {
+  return r?.createStatus === 'ok' || r?.createStatus === 'merged';
+}
+
+function isEnrichmentRowSelectable(r) {
+  return !isEnrichmentRowFinished(r);
+}
+
 function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
   const orgId = defaultOrganizationId ? String(defaultOrganizationId) : '';
   return (reportResults || [])
@@ -125,7 +133,7 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
       const exists = existingId != null;
       return {
         key: rowKey(r, idx),
-        selected: !exists,
+        selected: true,
         sourceIndex: r.index,
         brandName,
         sku: r.matchedNumber || r.sku || r.existingSku || '',
@@ -218,15 +226,23 @@ export function ProductEnrichment() {
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
   const [activeTab, setActiveTab] = useState('partsindex'); // partsindex | parser
+  const [proposalModal, setProposalModal] = useState({
+    open: false,
+    items: [], // [{ productId, sku, name, proposals: [{field,label,current,proposed,...}], selected: Set/field flags }]
+  });
+  const [applyingProposals, setApplyingProposals] = useState(false);
 
   const skuCount = skuList.length;
   const selectedCount = useMemo(
-    () => draftRows.filter((r) => r.selected && !r.productId).length,
+    () => draftRows.filter((r) => r.selected && isEnrichmentRowSelectable(r)).length,
+    [draftRows]
+  );
+  const selectableRows = useMemo(
+    () => draftRows.filter((r) => isEnrichmentRowSelectable(r)),
     [draftRows]
   );
   const allSelectableSelected =
-    draftRows.filter((r) => !r.productId).length > 0 &&
-    draftRows.filter((r) => !r.productId).every((r) => r.selected);
+    selectableRows.length > 0 && selectableRows.every((r) => r.selected);
 
   const reloadStatus = useCallback(async () => {
     try {
@@ -404,7 +420,7 @@ export function ProductEnrichment() {
   const toggleSelectAll = () => {
     const next = !allSelectableSelected;
     setDraftRows((prev) =>
-      prev.map((r) => (r.productId ? r : { ...r, selected: next }))
+      prev.map((r) => (isEnrichmentRowSelectable(r) ? { ...r, selected: next } : r))
     );
   };
 
@@ -473,15 +489,17 @@ export function ProductEnrichment() {
   };
 
   const createSelected = async () => {
-    const toCreate = draftRows.filter((r) => r.selected && !r.productId);
+    const toCreate = draftRows.filter((r) => r.selected && isEnrichmentRowSelectable(r));
     if (!toCreate.length) {
       setCreateError('Выберите хотя бы один товар');
       return;
     }
-    const missing = toCreate.filter((r) => !r.categoryId || !r.organizationId);
+    const missing = toCreate.filter(
+      (r) => !r.exists && (!r.categoryId || !r.organizationId)
+    );
     if (missing.length) {
       setCreateError(
-        `Укажите категорию и организацию для всех выбранных товаров (без них: ${missing.length})`
+        `Укажите категорию и организацию для новых товаров (без них: ${missing.length})`
       );
       return;
     }
@@ -508,14 +526,25 @@ export function ProductEnrichment() {
       }));
       const res = await productsApi.enrichCreate(items);
       const data = res?.data ?? res;
-      const bySku = new Map(
-        (data?.results || []).map((x) => [String(x.sku || '').toUpperCase(), x])
-      );
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const bySku = new Map(results.map((x) => [String(x.sku || '').toUpperCase(), x]));
       setDraftRows((prev) =>
         prev.map((row) => {
-          if (!row.selected || row.productId) return row;
+          if (!row.selected || !isEnrichmentRowSelectable(row)) return row;
           const hit = bySku.get(String(row.sku || '').toUpperCase());
           if (!hit) return row;
+          if (hit.ok && hit.merged) {
+            return {
+              ...row,
+              selected: false,
+              productId: hit.productId || row.productId,
+              createStatus: 'merged',
+              createError: hit.message || hit.imageWarning || null,
+              exists: true,
+              proposals: Array.isArray(hit.proposals) ? hit.proposals : [],
+              filled: hit.filled || [],
+            };
+          }
           if (hit.ok) {
             return {
               ...row,
@@ -544,14 +573,85 @@ export function ProductEnrichment() {
         })
       );
       setCreateMessage(
-        `Создано: ${data?.ok ?? 0} из ${data?.total ?? toCreate.length}` +
-          (data?.skipped ? `, уже есть: ${data.skipped}` : '') +
+        `Готово: создано ${data?.created ?? 0}, дополнено ${data?.merged ?? 0}` +
+          (data?.proposalCount ? `, предложений: ${data.proposalCount}` : '') +
           (data?.failed ? `, ошибок: ${data.failed}` : '')
       );
+      const proposalItems = results
+        .filter(
+          (x) =>
+            x.ok &&
+            x.merged &&
+            x.productId &&
+            Array.isArray(x.proposals) &&
+            x.proposals.length > 0
+        )
+        .map((x) => ({
+          productId: x.productId,
+          sku: x.sku,
+          name: x.name,
+          proposals: x.proposals.map((p) => ({ ...p, accept: true })),
+        }));
+      if (proposalItems.length) {
+        setProposalModal({ open: true, items: proposalItems });
+      }
     } catch (err) {
       setCreateError(err?.response?.data?.message || err?.message || 'Ошибка создания товаров');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const toggleProposalAccept = (productId, field, accept) => {
+    setProposalModal((prev) => ({
+      ...prev,
+      items: (prev.items || []).map((it) =>
+        Number(it.productId) !== Number(productId)
+          ? it
+          : {
+              ...it,
+              proposals: (it.proposals || []).map((p) =>
+                p.field === field ? { ...p, accept } : p
+              ),
+            }
+      ),
+    }));
+  };
+
+  const applySelectedProposals = async () => {
+    const payload = (proposalModal.items || [])
+      .map((it) => ({
+        productId: it.productId,
+        accepted: (it.proposals || [])
+          .filter((p) => p.accept)
+          .map((p) => ({
+            field: p.field,
+            proposed: p.proposed,
+            imageUrls: p.imageUrls,
+            attributeId: p.attributeId,
+          })),
+      }))
+      .filter((it) => it.accepted.length > 0);
+    if (!payload.length) {
+      setProposalModal({ open: false, items: [] });
+      return;
+    }
+    setApplyingProposals(true);
+    try {
+      const res = await productsApi.enrichApplyProposals(payload);
+      const data = res?.data ?? res;
+      setCreateMessage(
+        (createMessage ? `${createMessage}. ` : '') +
+          `Применено предложений по товарам: ${data?.ok ?? 0}` +
+          (data?.failed ? `, ошибок: ${data.failed}` : '')
+      );
+      setProposalModal({ open: false, items: [] });
+    } catch (err) {
+      setCreateError(
+        err?.response?.data?.message || err?.message || 'Не удалось применить предложения'
+      );
+    } finally {
+      setApplyingProposals(false);
     }
   };
 
@@ -886,7 +986,9 @@ export function ProductEnrichment() {
                     onClick={createSelected}
                     disabled={creating || selectedCount === 0}
                   >
-                    {creating ? 'Создание…' : `Добавить (${selectedCount})`}
+                    {creating
+                      ? 'Обработка…'
+                      : `Добавить / дополнить (${selectedCount})`}
                   </Button>
                 </div>
                 {createMessage && <div className="small mb-2">{createMessage}</div>}
@@ -972,20 +1074,22 @@ export function ProductEnrichment() {
                           <tr
                             key={row.key}
                             className={
-                              row.exists || row.createStatus === 'exists'
-                                ? 'is-skipped'
-                                : row.productId
-                                  ? 'is-created'
-                                  : row.createStatus === 'error'
-                                    ? 'is-error'
-                                    : ''
+                              row.createStatus === 'merged'
+                                ? 'is-merged'
+                                : row.exists || row.createStatus === 'exists'
+                                  ? 'is-skipped'
+                                  : row.createStatus === 'ok'
+                                    ? 'is-created'
+                                    : row.createStatus === 'error'
+                                      ? 'is-error'
+                                      : ''
                             }
                           >
                             <td>
                               <input
                                 type="checkbox"
                                 checked={!!row.selected}
-                                disabled={!!row.productId || !!row.exists}
+                                disabled={!isEnrichmentRowSelectable(row)}
                                 onChange={(e) =>
                                   updateRow(row.key, { selected: e.target.checked })
                                 }
@@ -1013,7 +1117,24 @@ export function ProductEnrichment() {
                             </td>
                             <td>
                               <div className="small fw-semibold">{row.sku || '—'}</div>
-                              {row.exists || row.createStatus === 'exists' ? (
+                              {row.createStatus === 'merged' ? (
+                                <div className="text-success small">
+                                  {row.productId ? (
+                                    <button
+                                      type="button"
+                                      className="btn btn-link btn-sm p-0 align-baseline"
+                                      onClick={() => navigate(`/products/${row.productId}`)}
+                                    >
+                                      дополнено #{row.productId}
+                                    </button>
+                                  ) : (
+                                    'дополнено'
+                                  )}
+                                  {row.createError ? (
+                                    <div className="text-muted">{row.createError}</div>
+                                  ) : null}
+                                </div>
+                              ) : row.exists || row.createStatus === 'exists' ? (
                                 <div className="text-muted small">
                                   {row.productId ? (
                                     <button
@@ -1026,8 +1147,9 @@ export function ProductEnrichment() {
                                   ) : (
                                     row.createError || 'уже есть в каталоге'
                                   )}
+                                  <div className="text-muted">можно выбрать и дополнить</div>
                                 </div>
-                              ) : row.productId ? (
+                              ) : row.createStatus === 'ok' && row.productId ? (
                                 <div className="text-success small">#{row.productId}</div>
                               ) : row.createStatus === 'error' ? (
                                 <div className="text-danger small">
@@ -1289,6 +1411,87 @@ export function ProductEnrichment() {
               disabled={categoryCreating || !String(newCategoryName || '').trim()}
             >
               {categoryCreating ? 'Создание…' : 'Создать'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={proposalModal.open}
+        onClose={() => {
+          if (!applyingProposals) setProposalModal({ open: false, items: [] });
+        }}
+        title="Предложения по уже заполненным полям"
+        size="large"
+      >
+        <div>
+          <p className="text-muted small mb-3">
+            Пустые поля уже дополнены. Ниже — отличия от текущих значений в каталоге. Отметьте, что
+            заменить.
+          </p>
+          <div className="product-enrichment-proposals">
+            {(proposalModal.items || []).map((it) => (
+              <div key={String(it.productId)} className="product-enrichment-proposal-card">
+                <div className="fw-semibold mb-2">
+                  {it.sku || '—'}
+                  {it.name ? ` · ${it.name}` : ''}
+                  <span className="text-muted small ms-2">#{it.productId}</span>
+                </div>
+                <table className="table table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 36 }} />
+                      <th>Поле</th>
+                      <th>Сейчас</th>
+                      <th>Из источника</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(it.proposals || []).map((p) => (
+                      <tr key={`${it.productId}-${p.field}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={!!p.accept}
+                            disabled={applyingProposals}
+                            onChange={(e) =>
+                              toggleProposalAccept(it.productId, p.field, e.target.checked)
+                            }
+                            aria-label={`Принять ${p.label || p.field}`}
+                          />
+                        </td>
+                        <td>{p.label || p.field}</td>
+                        <td>
+                          <div className="product-enrichment-proposal-val">{p.current || '—'}</div>
+                        </td>
+                        <td>
+                          <div className="product-enrichment-proposal-val">{p.proposed || '—'}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+          <div className="d-flex justify-content-end gap-2 mt-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={applyingProposals}
+              onClick={() => setProposalModal({ open: false, items: [] })}
+            >
+              Пропустить
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              disabled={applyingProposals}
+              onClick={applySelectedProposals}
+            >
+              {applyingProposals ? 'Применение…' : 'Применить выбранные'}
             </Button>
           </div>
         </div>

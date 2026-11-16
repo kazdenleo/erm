@@ -196,7 +196,35 @@
 }
 
 .product-enrichment-table tr.is-skipped {
-  opacity: 0.72;
+  opacity: 0.85;
+}
+
+.product-enrichment-table tr.is-merged {
+  background: rgba(25, 135, 84, 0.06);
+}
+
+.product-enrichment-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+
+.product-enrichment-proposal-card {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.product-enrichment-proposal-val {
+  max-width: 280px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  max-height: 6.5em;
+  overflow: auto;
 }
 
 .product-enrichment-settings {

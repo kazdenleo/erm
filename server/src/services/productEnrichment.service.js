@@ -142,6 +142,183 @@ function mergeEnrichmentAttributeValues(ids, analogs, applicability, existing = 
   return out;
 }
 
+function valuesDiffer(a, b) {
+  return String(a ?? '').trim() !== String(b ?? '').trim();
+}
+
+function dimIsEmpty(v) {
+  return isBlank(v) || Number(v) === 0 || Number.isNaN(Number(v));
+}
+
+function normalizeCollectedContent(raw = {}) {
+  const analogs = Array.isArray(raw.analogs)
+    ? raw.analogs
+    : Array.isArray(raw.content?.analogs)
+      ? raw.content.analogs
+      : [];
+  const applicability = Array.isArray(raw.applicability)
+    ? raw.applicability
+    : Array.isArray(raw.content?.applicability)
+      ? raw.content.applicability
+      : [];
+  const barcodes = Array.isArray(raw.barcodes)
+    ? raw.barcodes
+    : Array.isArray(raw.content?.barcodes)
+      ? raw.content.barcodes
+      : [];
+  const imageUrls = uniqImageUrls(raw.imageUrls || raw.images || raw.content?.images || []);
+  const numOrNull = (v) => {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    name: String(raw.name || raw.content?.name || '').trim(),
+    description:
+      raw.description != null
+        ? String(raw.description)
+        : raw.content?.description != null
+          ? String(raw.content.description)
+          : '',
+    weight: numOrNull(raw.weight ?? raw.content?.weight),
+    length: numOrNull(raw.length ?? raw.content?.length),
+    width: numOrNull(raw.width ?? raw.content?.width),
+    height: numOrNull(raw.height ?? raw.content?.height),
+    barcodes,
+    analogs,
+    applicability,
+    imageUrls,
+  };
+}
+
+/**
+ * Сравнить собранный контент с товаром: пустые → patch, занятые и другие → proposals.
+ */
+function buildCollectedMergePlan(product, content, attrIds = {}) {
+  const patch = {};
+  const proposals = [];
+  const filled = [];
+  const considerText = (field, label, incoming, current) => {
+    const next = incoming == null ? '' : String(incoming).trim();
+    if (!next) return;
+    if (isBlank(current)) {
+      patch[field] = next;
+      filled.push(field);
+    } else if (valuesDiffer(current, next)) {
+      proposals.push({
+        field,
+        label,
+        current: String(current).trim(),
+        proposed: next,
+      });
+    }
+  };
+  const considerDim = (field, label, incoming, current) => {
+    if (incoming == null) return;
+    const n = Number(incoming);
+    if (!Number.isFinite(n) || n === 0) return;
+    if (dimIsEmpty(current)) {
+      patch[field] = n;
+      filled.push(field);
+    } else if (Number(current) !== n) {
+      proposals.push({
+        field,
+        label,
+        current: String(current),
+        proposed: String(n),
+      });
+    }
+  };
+
+  considerText('name', 'Название', content.name, product.name);
+  considerText('description', 'Описание', content.description, product.description);
+  considerDim('weight', 'Вес, г', content.weight, product.weight);
+  considerDim('length', 'Длина, мм', content.length, product.length);
+  considerDim('width', 'Ширина, мм', content.width, product.width);
+  considerDim('height', 'Высота, мм', content.height, product.height);
+
+  const existingBc = barcodeStringsFromProduct(product.barcodes || []);
+  const toAddBc = (content.barcodes || [])
+    .map((b) => (typeof b === 'string' ? b : b?.barcode))
+    .map((s) => String(s || '').trim())
+    .filter((s) => s && !existingBc.includes(s));
+  let newBarcodes = null;
+  if (toAddBc.length) {
+    newBarcodes = normalizeBarcodeRows([
+      ...normalizeBarcodeRows(product.barcodes || []),
+      ...toAddBc.map((barcode) => ({ barcode, marketplaces: [] })),
+    ]);
+    filled.push('barcodes');
+  }
+
+  const existingImages = Array.isArray(product.images) ? product.images : [];
+  const imageUrls = Array.isArray(content.imageUrls) ? content.imageUrls : [];
+  let imageMode = 'none';
+  if (imageUrls.length) {
+    if (!existingImages.length) {
+      imageMode = 'fill';
+      filled.push('images');
+    } else {
+      proposals.push({
+        field: 'images',
+        label: 'Фото',
+        current: `${existingImages.length} шт.`,
+        proposed: `добавить до ${Math.min(imageUrls.length, 8)} из источника`,
+        imageUrls: imageUrls.slice(0, 8),
+      });
+    }
+  }
+
+  const existingAv =
+    product.attribute_values && typeof product.attribute_values === 'object'
+      ? { ...product.attribute_values }
+      : {};
+  const attrPatch = {};
+  const analogsVal = formatAnalogsAttrValue(content.analogs);
+  const appVal = formatApplicabilityAttrValue(content.applicability);
+  if (attrIds.analogsId && analogsVal) {
+    const cur = existingAv[attrIds.analogsId];
+    if (isBlank(cur)) {
+      attrPatch[attrIds.analogsId] = analogsVal;
+      filled.push('analogs');
+    } else if (valuesDiffer(cur, analogsVal)) {
+      proposals.push({
+        field: 'analogs',
+        label: 'Аналоги',
+        current: String(cur).trim(),
+        proposed: analogsVal,
+        attributeId: attrIds.analogsId,
+      });
+    }
+  }
+  if (attrIds.applicabilityId && appVal) {
+    const cur = existingAv[attrIds.applicabilityId];
+    if (isBlank(cur)) {
+      attrPatch[attrIds.applicabilityId] = appVal;
+      filled.push('applicability');
+    } else if (valuesDiffer(cur, appVal)) {
+      proposals.push({
+        field: 'applicability',
+        label: 'Применимость',
+        current: String(cur).trim(),
+        proposed: appVal,
+        attributeId: attrIds.applicabilityId,
+      });
+    }
+  }
+
+  return {
+    patch,
+    proposals,
+    filled,
+    newBarcodes,
+    imageMode,
+    imageUrls,
+    attrPatch,
+    existingAv,
+  };
+}
+
 function stripHtmlLoose(s) {
   return String(s || '')
     .replace(/<[^>]+>/g, ' ')
@@ -1471,38 +1648,85 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
         : raw.organization_id != null && raw.organization_id !== ''
           ? raw.organization_id
           : null;
-    if (categoryId == null || organizationId == null) {
-      row.error = 'Нужны категория и организация';
-      results.push(row);
-      continue;
-    }
 
     try {
       const existing = await productsRepo().findBySku(sku, { profileId: opts.profileId });
       if (existing?.id != null) {
-        row.ok = false;
-        row.skipped = true;
+        const content = normalizeCollectedContent(raw);
+        const plan = buildCollectedMergePlan(existing, content, attrIds);
+        const updates = { ...plan.patch };
+        if (plan.newBarcodes) updates.barcodes = plan.newBarcodes;
+        if (Object.keys(plan.attrPatch).length) {
+          updates.attribute_values = { ...plan.existingAv, ...plan.attrPatch };
+          const catId = existing.categoryId ?? existing.user_category_id ?? categoryId;
+          await ensureCategoryHasAttributes(catId, [attrIds.analogsId, attrIds.applicabilityId]);
+        }
+
+        let imagesAdded = 0;
+        if (plan.imageMode === 'fill' && plan.imageUrls.length) {
+          const downloaded = [];
+          const seenHashes = new Set();
+          for (let imgIdx = 0; imgIdx < Math.min(plan.imageUrls.length, 8); imgIdx++) {
+            try {
+              const rec = await downloadImageToProductFolder(existing.id, plan.imageUrls[imgIdx], {
+                primary: downloaded.length === 0,
+                marketplaces: { ozon: true, wb: true, ym: true },
+              });
+              if (!rec) continue;
+              const hash = String(rec.content_hash || rec.contentHash || '').toLowerCase();
+              if (hash && seenHashes.has(hash)) continue;
+              if (hash) seenHashes.add(hash);
+              downloaded.push(rec);
+            } catch (imgErr) {
+              row.imageWarning = row.imageWarning
+                ? `${row.imageWarning}; ${imgErr?.message || imgErr}`
+                : String(imgErr?.message || imgErr);
+            }
+          }
+          if (downloaded.length) {
+            downloaded.forEach((d, i) => {
+              d.primary = i === 0;
+            });
+            updates.images = downloaded;
+            imagesAdded = downloaded.length;
+          }
+        }
+
+        let updated = existing;
+        if (Object.keys(updates).length) {
+          updated = await productsRepo().update(existing.id, updates);
+        }
+
+        row.ok = true;
+        row.merged = true;
         row.exists = true;
         row.productId = existing.id;
-        row.name = existing.name || name;
-        row.error = `Уже есть в каталоге (#${existing.id})${existing.name ? `: ${existing.name}` : ''}`;
+        row.name = updated?.name || existing.name || name;
+        row.filled = plan.filled;
+        row.proposals = plan.proposals;
+        row.imagesAdded = imagesAdded;
+        row.message =
+          (plan.filled.length
+            ? `Дополнено пустых: ${plan.filled.join(', ')}`
+            : 'Пустых полей не было') +
+          (plan.proposals.length ? `; предложений: ${plan.proposals.length}` : '');
         results.push(row);
         continue;
       }
 
-      const analogs = Array.isArray(raw.analogs)
-        ? raw.analogs
-        : Array.isArray(raw.content?.analogs)
-          ? raw.content.analogs
-          : [];
-      const applicability = Array.isArray(raw.applicability)
-        ? raw.applicability
-        : Array.isArray(raw.content?.applicability)
-          ? raw.content.applicability
-          : [];
-      const attrIdsForRow = attrIds;
-      const attributeValues = mergeEnrichmentAttributeValues(attrIdsForRow, analogs, applicability);
-      await ensureCategoryHasAttributes(categoryId, [attrIdsForRow.analogsId, attrIdsForRow.applicabilityId]);
+      if (categoryId == null || organizationId == null) {
+        row.error = 'Нужны категория и организация';
+        results.push(row);
+        continue;
+      }
+
+      const content = normalizeCollectedContent(raw);
+      const attributeValues = mergeEnrichmentAttributeValues(
+        attrIds,
+        content.analogs,
+        content.applicability
+      );
+      await ensureCategoryHasAttributes(categoryId, [attrIds.analogsId, attrIds.applicabilityId]);
 
       const payload = {
         profileId: opts.profileId,
@@ -1517,14 +1741,14 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
               : undefined,
         categoryId,
         organizationId,
-        description: raw.description != null ? String(raw.description) : null,
-        weight: raw.weight != null && raw.weight !== '' ? Number(raw.weight) : null,
-        length: raw.length != null && raw.length !== '' ? Number(raw.length) : null,
-        width: raw.width != null && raw.width !== '' ? Number(raw.width) : null,
-        height: raw.height != null && raw.height !== '' ? Number(raw.height) : null,
-        barcodes: Array.isArray(raw.barcodes)
-          ? raw.barcodes.map((b) => (typeof b === 'string' ? { barcode: b, marketplaces: [] } : b))
-          : [],
+        description: content.description || null,
+        weight: content.weight,
+        length: content.length,
+        width: content.width,
+        height: content.height,
+        barcodes: content.barcodes.map((b) =>
+          typeof b === 'string' ? { barcode: b, marketplaces: [] } : b
+        ),
       };
       if (Object.keys(attributeValues).length) {
         payload.attribute_values = attributeValues;
@@ -1536,7 +1760,7 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
       const product = await productsService.create(payload);
       const productId = product?.id;
       let imagesAdded = 0;
-      const imageUrls = uniqImageUrls(raw.imageUrls || raw.images || []).slice(0, 8);
+      const imageUrls = content.imageUrls.slice(0, 8);
 
       if (productId != null && imageUrls.length) {
         const downloaded = [];
@@ -1568,6 +1792,7 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
       }
 
       row.ok = true;
+      row.created = true;
       row.productId = productId;
       row.imagesAdded = imagesAdded;
       row.name = product?.name || name;
@@ -1593,8 +1818,161 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
   return {
     total: results.length,
     ok: results.filter((r) => r.ok).length,
+    created: results.filter((r) => r.created).length,
+    merged: results.filter((r) => r.merged).length,
     skipped: results.filter((r) => r.skipped).length,
     failed: results.filter((r) => !r.ok && !r.skipped).length,
+    proposalCount: results.reduce(
+      (n, r) => n + (Array.isArray(r.proposals) ? r.proposals.length : 0),
+      0
+    ),
+    results,
+  };
+}
+
+/**
+ * Применить выбранные предложения по уже существующим товарам (после merge).
+ * @param {Array<{ productId: number|string, accepted: Array<{ field: string, proposed?: string, imageUrls?: string[], attributeId?: string }> }>} items
+ */
+export async function applyEnrichmentProposals(items, opts = {}) {
+  await ensureEnrichmentAllowed(opts.profileId);
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    const e = new Error('Нет предложений для применения');
+    e.statusCode = 400;
+    throw e;
+  }
+  if (list.length > 200) {
+    const e = new Error('За один раз не больше 200 товаров');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const attrIds = await findEnrichmentAttributeIds();
+  const results = [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i] || {};
+    const productId = raw.productId != null ? Number(raw.productId) : NaN;
+    const accepted = Array.isArray(raw.accepted) ? raw.accepted : [];
+    const row = { index: i + 1, productId, ok: false };
+    if (!Number.isFinite(productId) || productId <= 0) {
+      row.error = 'Нужен productId';
+      results.push(row);
+      continue;
+    }
+    if (!accepted.length) {
+      row.ok = true;
+      row.applied = [];
+      results.push(row);
+      continue;
+    }
+    try {
+      const product = await productsRepo().findById(productId);
+      if (!product?.id) {
+        row.error = 'Товар не найден';
+        results.push(row);
+        continue;
+      }
+      if (
+        opts.profileId != null &&
+        product.profile_id != null &&
+        Number(product.profile_id) !== Number(opts.profileId)
+      ) {
+        row.error = 'Нет доступа к товару';
+        results.push(row);
+        continue;
+      }
+
+      const updates = {};
+      const applied = [];
+      const existingAv =
+        product.attribute_values && typeof product.attribute_values === 'object'
+          ? { ...product.attribute_values }
+          : {};
+      let attrChanged = false;
+
+      for (const item of accepted) {
+        const field = String(item?.field || '').trim();
+        if (!field) continue;
+        if (field === 'images') {
+          const urls = uniqImageUrls(item.imageUrls || []).slice(0, 8);
+          if (!urls.length) continue;
+          const existingImages = Array.isArray(product.images) ? [...product.images] : [];
+          const downloaded = [];
+          const seenHashes = new Set(
+            existingImages
+              .map((img) => String(img?.content_hash || img?.contentHash || '').toLowerCase())
+              .filter(Boolean)
+          );
+          for (const url of urls) {
+            if (existingImages.length + downloaded.length >= 12) break;
+            try {
+              const rec = await downloadImageToProductFolder(productId, url, {
+                primary: existingImages.length + downloaded.length === 0,
+                marketplaces: { ozon: true, wb: true, ym: true },
+              });
+              if (!rec) continue;
+              const hash = String(rec.content_hash || rec.contentHash || '').toLowerCase();
+              if (hash && seenHashes.has(hash)) continue;
+              if (hash) seenHashes.add(hash);
+              downloaded.push(rec);
+            } catch (_) {
+              /* skip bad image */
+            }
+          }
+          if (downloaded.length) {
+            updates.images = [...existingImages, ...downloaded].map((d, idx) => ({
+              ...d,
+              primary: idx === 0,
+            }));
+            applied.push('images');
+          }
+          continue;
+        }
+        if (field === 'analogs' || field === 'applicability') {
+          const aid =
+            item.attributeId ||
+            (field === 'analogs' ? attrIds.analogsId : attrIds.applicabilityId);
+          if (!aid || item.proposed == null) continue;
+          existingAv[String(aid)] = String(item.proposed);
+          attrChanged = true;
+          applied.push(field);
+          continue;
+        }
+        if (['name', 'description'].includes(field) && item.proposed != null) {
+          updates[field] = String(item.proposed);
+          applied.push(field);
+          continue;
+        }
+        if (['weight', 'length', 'width', 'height'].includes(field) && item.proposed != null) {
+          const n = Number(item.proposed);
+          if (Number.isFinite(n)) {
+            updates[field] = n;
+            applied.push(field);
+          }
+        }
+      }
+
+      if (attrChanged) {
+        updates.attribute_values = existingAv;
+        const catId = product.categoryId ?? product.user_category_id;
+        await ensureCategoryHasAttributes(catId, [attrIds.analogsId, attrIds.applicabilityId]);
+      }
+      if (Object.keys(updates).length) {
+        await productsRepo().update(productId, updates);
+      }
+      row.ok = true;
+      row.applied = applied;
+    } catch (err) {
+      row.error = err?.message || String(err);
+    }
+    results.push(row);
+  }
+
+  return {
+    total: results.length,
+    ok: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
     results,
   };
 }
@@ -1603,5 +1981,6 @@ export default {
   enrichProductById,
   enrichProductsByBrandSkuList,
   createProductsFromEnrichmentItems,
+  applyEnrichmentProposals,
   getEnrichmentStatusForProfile,
 };
