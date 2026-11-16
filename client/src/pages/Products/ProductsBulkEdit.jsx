@@ -150,6 +150,7 @@ import {
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { integrationsApi } from '../../services/integrations.api.js';
 import { WbBrandSuggest } from '../../components/common/WbBrandSuggest/WbBrandSuggest.jsx';
+import { BulkTnVedSuggest } from '../../components/common/BulkTnVedSuggest/BulkTnVedSuggest.jsx';
 import {
   FILTER_CATEGORY_NONE,
   fetchHasUncategorizedProducts,
@@ -1886,7 +1887,13 @@ const COLUMNS = [
   { key: 'minPrice', label: 'Мин. ц.', title: 'Мин. цена', input: 'number', minW: 72 },
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
   { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country', showLinkToggles: true },
-  { key: 'tn_ved_code', label: 'ТН ВЭД', title: 'Основное · Код ТН ВЭД ЕАЭС (10 цифр). Подставляется в характеристики ТН ВЭД и уходит при пуше карточек', input: 'text', minW: 100 },
+  {
+    key: 'tn_ved_code',
+    label: 'ТН ВЭД',
+    title: 'Основное · Код ТН ВЭД ЕАЭС из классификатора. Подставляется в характеристики ТН ВЭД и уходит при пуше карточек',
+    input: 'tn_ved',
+    minW: 140,
+  },
   /* ——— Ozon ——— */
   { key: 'sku_ozon', label: 'offer_id', title: 'Ключ связи Ozon (offer_id). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — создастся дубль.', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
@@ -8946,6 +8953,18 @@ export function ProductsBulkEdit() {
       );
     }
 
+    if (col.input === 'tn_ved' || col.key === 'tn_ved_code') {
+      return (
+        <BulkTnVedSuggest
+          className={common.className}
+          value={str(v)}
+          onChange={(next) => updateCell(row.id, col.key, next)}
+          title={common.title}
+          disabled={linked}
+        />
+      );
+    }
+
     if (col.input === 'checkbox') {
       const checked = v === 'true' || v === true;
       return (
@@ -10809,6 +10828,13 @@ export function ProductsBulkEdit() {
                   </option>
                 ))}
               </select>
+            ) : bulkModalCol.input === 'tn_ved' || bulkModalCol.key === 'tn_ved_code' ? (
+              <BulkTnVedSuggest
+                className="form-control products-bulk-modal-field"
+                value={bulkDraft}
+                onChange={setBulkDraft}
+                title={bulkModalCol.title || bulkModalCol.label}
+              />
             ) : bulkModalCol.input === 'date' ? (
               <input
                 className="form-control products-bulk-modal-field"

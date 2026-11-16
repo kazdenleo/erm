@@ -1,0 +1,80 @@
+.bulk-tnved-suggest {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.bulk-tnved-suggest > input {
+  width: 100%;
+  padding-right: 22px;
+}
+
+.bulk-tnved-suggest__clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.bulk-tnved-suggest__clear:hover {
+  color: #111827;
+}
+
+.bulk-tnved-suggest__menu {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2px);
+  max-height: 220px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+}
+
+.bulk-tnved-suggest__muted {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.bulk-tnved-suggest__opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.bulk-tnved-suggest__opt:hover,
+.bulk-tnved-suggest__opt.is-active {
+  background: #eff6ff;
+}
+
+.bulk-tnved-suggest__opt strong {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bulk-tnved-suggest__opt span {
+  font-size: 11px;
+  color: #4b5563;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

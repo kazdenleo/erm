@@ -693,6 +693,16 @@ body.products-bulk-col-resizing * {
   overflow: hidden;
 }
 
+/* Выпадающий справочник ТН ВЭД не должен обрезаться ячейкой */
+.products-bulk-table td:has(.bulk-tnved-suggest) {
+  overflow: visible;
+  z-index: 2;
+}
+
+.products-bulk-table td:has(.bulk-tnved-suggest:focus-within) {
+  z-index: 5;
+}
+
 .products-bulk-barcode-cell .products-bulk-barcode-input {
   padding-right: 22px;
 }
@@ -1333,4 +1343,121 @@ body.products-bulk-col-resizing * {
 .products-bulk-fill-formula__chip:hover {
   border-color: #93c5fd;
   background: #eff6ff;
+}
+
+/* Отчёт отправки/загрузки с МП: сводка + группы по маркетплейсу + раскрываемые ошибки */
+.products-bulk-mp-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.products-bulk-mp-status--plain {
+  white-space: pre-wrap;
+}
+
+.products-bulk-mp-status__summary {
+  color: #374151;
+  font-weight: 500;
+}
+
+.products-bulk-mp-status__mp {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+  padding: 0;
+  overflow: hidden;
+}
+
+.products-bulk-mp-status__mp-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px;
+  user-select: none;
+}
+
+.products-bulk-mp-status__mp-summary::-webkit-details-marker {
+  display: none;
+}
+
+.products-bulk-mp-status__mp-summary::before {
+  content: '▸';
+  color: #9ca3af;
+  font-size: 11px;
+  width: 12px;
+  flex: 0 0 auto;
+}
+
+.products-bulk-mp-status__mp[open] > .products-bulk-mp-status__mp-summary::before {
+  content: '▾';
+}
+
+.products-bulk-mp-status__mp-name {
+  font-weight: 600;
+  color: #111827;
+}
+
+.products-bulk-mp-status__mp-count {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.products-bulk-mp-status__mp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.products-bulk-mp-status__err {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.products-bulk-mp-status__err-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 10px 7px 28px;
+  position: relative;
+  color: #1f2937;
+  font-size: 12.5px;
+  user-select: none;
+}
+
+.products-bulk-mp-status__err-summary::-webkit-details-marker {
+  display: none;
+}
+
+.products-bulk-mp-status__err-summary::before {
+  content: '▸';
+  position: absolute;
+  left: 10px;
+  top: 7px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.products-bulk-mp-status__err[open] > .products-bulk-mp-status__err-summary::before {
+  content: '▾';
+}
+
+.products-bulk-mp-status__err-detail {
+  margin: 0;
+  padding: 0 10px 10px 28px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #4b5563;
+  max-height: 220px;
+  overflow: auto;
 }
