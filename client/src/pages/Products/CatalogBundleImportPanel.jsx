@@ -540,16 +540,24 @@ export function CatalogBundleImportPanel() {
       if (cols.length) nextFields[t.id] = cols;
     }
     setFieldMappings(nextFields);
-    const nextRows = (data?.rows || []).map((r) => ({
-      ...r,
-      key: rowKey(r),
-      selected: true,
-      productId: null,
-      skipped: false,
-      createStatus: '',
-      createError: '',
-      imagesAdded: null,
-    }));
+    const nextRows = (data?.rows || []).map((r) => {
+      const existingId = r.existingProductId != null ? r.existingProductId : null;
+      const exists = !!r.exists || existingId != null;
+      return {
+        ...r,
+        key: rowKey(r),
+        selected: !exists,
+        productId: existingId,
+        skipped: exists,
+        exists,
+        createStatus: exists ? 'skipped' : '',
+        createError: exists
+          ? `Уже в каталоге (#${existingId})` +
+            (r.existingProductName ? `: ${r.existingProductName}` : '')
+          : '',
+        imagesAdded: null,
+      };
+    });
     setRows(nextRows);
     setDefaults((d) => ({
       ...d,

@@ -1075,6 +1075,47 @@ async function finalizePreviewSession({ sessionId, profileId, extractRoot, colum
     };
   });
 
+  // Уже в ERP по артикулу — сразу помечаем, дубли не предлагаем создавать.
+  try {
+    const skus = [
+      ...new Set(previewRows.map((r) => String(r.sku || '').trim()).filter(Boolean)),
+    ];
+    if (skus.length) {
+      const lowers = skus.map((s) => s.toLowerCase());
+      const params = [lowers];
+      let profileClause = '';
+      if (profileId != null && profileId !== '') {
+        profileClause = ' AND p.profile_id = $2::bigint';
+        params.push(profileId);
+      }
+      const existingRes = await query(
+        `SELECT p.id, p.sku, p.name
+         FROM products p
+         WHERE LOWER(TRIM(p.sku)) = ANY($1::text[])${profileClause}`,
+        params
+      );
+      const bySku = new Map();
+      for (const p of existingRes.rows || []) {
+        const key = skuKey(p?.sku);
+        if (!key || bySku.has(key)) continue;
+        bySku.set(key, p);
+      }
+      for (const row of previewRows) {
+        const hit = row.sku ? bySku.get(skuKey(row.sku)) : null;
+        if (!hit?.id) continue;
+        row.existingProductId = hit.id;
+        row.existingProductName = hit.name || null;
+        row.exists = true;
+        row.warnings = [
+          ...(row.warnings || []),
+          `Уже в каталоге (#${hit.id})` + (hit.name ? `: ${hit.name}` : ''),
+        ];
+      }
+    }
+  } catch (_) {
+    /* превью без lookup допустимо */
+  }
+
   const meta = {
     sessionId,
     profileId: Number(profileId),
