@@ -2694,7 +2694,14 @@ async function pushYandexCard(product, categoryMm, ctx) {
     if (!offer.marketCategoryId) missing.push('категория Яндекс.Маркета (сопоставление ERP-категории)');
     if (!vendor) missing.push('бренд');
     if (!description) missing.push('описание');
-    if (!picUrls.length) missing.push('изображения');
+    if (!picUrls.length) {
+      const hasLocalImages = Array.isArray(product?.images) && product.images.length > 0;
+      missing.push(
+        hasLocalImages
+          ? 'изображения (в ERP есть, но нет публичного HTTP-URL — проверьте PUBLIC_API_BASE_URL)'
+          : 'изображения'
+      );
+    }
     if (missing.length) {
       return {
         marketplace: 'ym',

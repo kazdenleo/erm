@@ -190,9 +190,16 @@ function ensurePrimary(images) {
 }
 
 function publicApiBase() {
-  return String(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || '')
+  const fromEnv = String(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || '')
     .trim()
     .replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+  // Fallback: иначе относительные /uploads/... отбрасываются при push (ЯМ/Ozon требуют http).
+  const domain = String(process.env.LEGAL_DOMAIN || process.env.APP_DOMAIN || 'dttrade.ru')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/$/, '');
+  return domain ? `https://${domain}` : '';
 }
 
 /** Абсолютный URL для отдачи на МП (они качают по HTTP). */
