@@ -7014,9 +7014,12 @@ export function ProductsBulkEdit() {
           if (gen !== loadGenRef.current) return;
           setOzonBulkDictOptions(dictOut);
 
-          // После загрузки справочников — дописать связанные страну/бренд в dict-колонки Ozon
-          setRows((prev) =>
-            prev.map((r) => {
+          // После загрузки справочников — дописать связанные страну/бренд в dict-колонки Ozon.
+          // Важно: синхронизировать originals, иначе гидратация помечает все строки «грязными»
+          // и при смене фильтра они уезжают во «вне списка», а «Сохранить» шлёт десятки лишних.
+          setRows((prev) => {
+            const beforeById = new Map(prev.map((r) => [str(r.id), r]));
+            const hydrated = prev.map((r) => {
               let next = hydrateMpAttrCellsFromBaseline(r, mpCols);
               const countryText = str(next.country_of_origin).trim();
               if (countryText) {
@@ -7031,8 +7034,24 @@ export function ProductsBulkEdit() {
               }
               next = applyLinkedOzonNameAndAnnotationColumns(next, mpCols, lengthUnit);
               return next;
-            })
-          );
+            });
+            setOriginals((prevOrig) => {
+              const nextOrig = { ...prevOrig };
+              for (const r of hydrated) {
+                const id = r.id;
+                const before = beforeById.get(str(id));
+                const o = prevOrig[id];
+                if (!before || !o) continue;
+                const dirtyBefore =
+                  Object.keys(
+                    buildUpdatePayload(o, before, mpCols, lengthUnit, weightUnit, erpCols)
+                  ).length > 0;
+                if (!dirtyBefore) nextOrig[id] = cloneRow(r);
+              }
+              return nextOrig;
+            });
+            return hydrated;
+          });
         })();
       });
     } catch (e) {
@@ -8265,7 +8284,22 @@ export function ProductsBulkEdit() {
   const handleSave = async (opts = {}) => {
     const suppressPushOffer = opts?.suppressPushOffer === true;
     const shownRowIds = new Set(rows.map((r) => str(r.id)));
-    const offListEdits = [...offListEditsRef.current.entries()].filter(([id]) => !shownRowIds.has(id));
+    let offListEdits = [...offListEditsRef.current.entries()].filter(([id]) => !shownRowIds.has(id));
+    // По умолчанию сохраняем только текущий список (фильтр/страница).
+    // Вне списка — только после явного подтверждения, иначе «4 на экране» уезжает в 80+ сохранений.
+    let includeOffList = opts?.includeOffList;
+    if (includeOffList == null && offListEdits.length > 0 && !opts?.skipOffListConfirm) {
+      includeOffList = window.confirm(
+        `Сейчас на экране: ${rows.length}. Вне списка ещё правки: ${offListEdits.length}.\n\n` +
+          `OK — сохранить и правки вне списка.\n` +
+          `Отмена — сохранить только товары текущего списка.`
+      );
+    }
+    if (includeOffList === false) offListEdits = [];
+    else if (includeOffList !== true && offListEdits.length > 0 && opts?.skipOffListConfirm) {
+      // leave/push без диалога — как раньше, сохраняем всё, чтобы не потерять правки
+      includeOffList = true;
+    }
     if (!opts?.skipLimitConfirm) {
       const limitViolations = [
         ...rows.flatMap((r) => collectBulkRowLimitViolations(r, limitsForRow(r), { mpAttrColumnDefs })),
@@ -8320,7 +8354,12 @@ export function ProductsBulkEdit() {
         workItems.push({ type: 'update', row: e.current, payload, offList: true });
       }
 
-      const offPage = Array.isArray(offPageAiRef.current) ? offPageAiRef.current : [];
+      const offPage =
+        includeOffList === false
+          ? []
+          : Array.isArray(offPageAiRef.current)
+            ? offPageAiRef.current
+            : [];
       for (const it of offPage) {
         const id = str(it?.productId);
         if (!id || rows.some((r) => str(r.id) === id)) continue;
