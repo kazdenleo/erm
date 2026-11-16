@@ -344,6 +344,7 @@ async function resolveOzonTnVedDictionaryAttrs(item, schemaList, descId, typeId,
   const apiOpts = {
     profileId: ctx.profileId ?? ctx.profile_id ?? null,
     organizationId: ctx.organizationId ?? ctx.organization_id ?? null,
+    priority: 'high',
   };
   const fallbackCode = productTnVedFallbackCode(product);
 
@@ -430,6 +431,7 @@ export async function resolveOzonBareDictionaryValues(item, schemaList, descId, 
   const apiOpts = {
     profileId: ctx.profileId ?? ctx.profile_id ?? null,
     organizationId: ctx.organizationId ?? ctx.organization_id ?? null,
+    priority: 'high',
   };
   const attrs = [...item.attributes];
   for (let i = 0; i < attrs.length; i += 1) {
@@ -1156,15 +1158,27 @@ function mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId } = {}) {
  * Ждём результат /v1/product/import/info после /v3/product/import.
  * Без опроса кабинет показывает ошибки, а ERP — «успех».
  */
-async function pollOzonProductImportInfo(taskId, apiOpts, { offerId, maxAttempts = 20, pollIntervalMs = 1500 } = {}) {
+async function pollOzonProductImportInfo(taskId, apiOpts, { offerId, maxAttempts = 12, pollIntervalMs = 1200 } = {}) {
   let lastItem = null;
+  const deadline = Date.now() + 45_000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (Date.now() > deadline) break;
     if (attempt > 0) await sleep(pollIntervalMs);
-    const data = await integrationsService._ozonApiPost(
-      '/v1/product/import/info',
-      { task_id: Number(taskId) || taskId },
-      apiOpts
-    );
+    let data;
+    try {
+      data = await integrationsService._ozonApiPost(
+        '/v1/product/import/info',
+        { task_id: Number(taskId) || taskId },
+        apiOpts
+      );
+    } catch (e) {
+      logger.warn('[CardPush] Ozon import/info poll attempt failed', {
+        taskId,
+        attempt,
+        error: e?.message || String(e),
+      });
+      continue;
+    }
     const items = data?.result?.items ?? data?.items ?? [];
     if (!Array.isArray(items) || items.length === 0) continue;
     const want = offerId != null ? String(offerId).trim() : '';
@@ -1402,9 +1416,11 @@ async function pushOzonCard(product, categoryMm, ctx) {
     return { marketplace: 'ozon', ok: false, error: 'Кабинет Ozon не настроен для организации' };
   }
 
+  // high: не ждём окно синка FBS / хвост stock — иначе «Отправка…» в UI висит минутами.
   const apiOpts = {
     profileId: ctx.profileId ?? null,
     ozonOverride,
+    priority: 'high',
   };
 
   const erpPrices = await loadErpCardPrices(product.id, 'ozon');
@@ -2909,6 +2925,23 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
  * @param {{ productIds: Array<number|string>, marketplaces: string|string[] }} payload
  * @param {{ profileId?: number|string|null }} [opts]
  */
+const BULK_PUSH_PER_MP_TIMEOUT_MS = Math.max(
+  30_000,
+  parseInt(process.env.MARKETPLACE_CARD_PUSH_MP_TIMEOUT_MS || '120000', 10) || 120_000
+);
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label}: превышено время ожидания (${Math.round(ms / 1000)} с)`);
+      err.code = 'PUSH_TIMEOUT';
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export async function pushProductCardsBulk(payload, opts = {}) {
   const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
   if (ids.length === 0) {
@@ -2919,9 +2952,17 @@ export async function pushProductCardsBulk(payload, opts = {}) {
   const mpRaw = payload.marketplaces ?? payload.marketplace ?? 'all';
   const mps = Array.isArray(mpRaw) ? mpRaw.flatMap((m) => normalizeMp(m)) : normalizeMp(mpRaw);
   const uniqueMps = [...new Set(mps)];
+  const bulkStarted = Date.now();
+  logger.info('[MP Card Push] bulk start', {
+    count: ids.length,
+    marketplaces: uniqueMps,
+    profileId: opts.profileId ?? null,
+  });
 
   const items = [];
-  for (const productId of ids) {
+  for (let i = 0; i < ids.length; i += 1) {
+    const productId = ids[i];
+    const productStarted = Date.now();
     try {
       const product = await productsService.getByIdWithDetails(productId);
       if (!product) {
@@ -2957,17 +2998,46 @@ export async function pushProductCardsBulk(payload, opts = {}) {
         continue;
       }
       for (const mp of uniqueMps) {
+        const mpStarted = Date.now();
         try {
-          const res = await pushProductToMp(product, mp, opts);
+          const res = await withTimeout(
+            pushProductToMp(product, mp, opts),
+            BULK_PUSH_PER_MP_TIMEOUT_MS,
+            `Отправка на ${mp}`
+          );
           if (res?.barcodeSent) {
             await persistBarcodeSentToMp(product, res.barcodeSent, mp, ctx);
           }
           results.push(res);
+          logger.info('[MP Card Push] product mp done', {
+            productId: product.id,
+            sku: product.sku,
+            marketplace: mp,
+            ok: !!res?.ok,
+            ms: Date.now() - mpStarted,
+            index: i + 1,
+            total: ids.length,
+          });
         } catch (e) {
+          logger.warn('[MP Card Push] product mp failed', {
+            productId: product.id,
+            sku: product.sku,
+            marketplace: mp,
+            error: e?.message || String(e),
+            ms: Date.now() - mpStarted,
+          });
           results.push({ marketplace: mp, ok: false, error: e?.message || String(e) });
         }
       }
       items.push({ productId: product.id, ok: results.every((r) => r.ok), results });
+      logger.info('[MP Card Push] product done', {
+        productId: product.id,
+        sku: product.sku,
+        ok: results.every((r) => r.ok),
+        ms: Date.now() - productStarted,
+        index: i + 1,
+        total: ids.length,
+      });
     } catch (e) {
       items.push({
         productId,
@@ -2981,6 +3051,12 @@ export async function pushProductCardsBulk(payload, opts = {}) {
     }
   }
   const success = items.filter((i) => i.ok).length;
+  logger.info('[MP Card Push] bulk done', {
+    total: items.length,
+    success,
+    failed: items.length - success,
+    ms: Date.now() - bulkStarted,
+  });
   return {
     total: items.length,
     success,

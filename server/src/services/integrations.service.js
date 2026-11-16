@@ -3837,6 +3837,9 @@ class IntegrationsService {
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
     const url = this._ozonSellerUrl(path);
+    const timeoutMs = Math.max(5000, Number(opts?.timeoutMs) || 30000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
       response = await fetch(url, {
@@ -3848,10 +3851,12 @@ class IntegrationsService {
           'Api-Key': String(api_key)
         },
         body: JSON.stringify(body),
-        timeout: 30000
+        signal: controller.signal,
       });
     } catch (fetchErr) {
       throw this._ozonFetchNetworkError(fetchErr);
+    } finally {
+      clearTimeout(timer);
     }
     return this._ozonParseResponse(response);
   }
@@ -3873,6 +3878,9 @@ class IntegrationsService {
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
     const url = this._ozonSellerUrl(path);
+    const timeoutMs = Math.max(5000, Number(opts?.timeoutMs) || 30000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
       response = await fetch(url, {
@@ -3882,10 +3890,12 @@ class IntegrationsService {
           'Client-Id': String(client_id),
           'Api-Key': String(api_key),
         },
-        timeout: 30000,
+        signal: controller.signal,
       });
     } catch (fetchErr) {
       throw this._ozonFetchNetworkError(fetchErr);
+    } finally {
+      clearTimeout(timer);
     }
     return this._ozonParseResponse(response);
   }
@@ -4129,6 +4139,7 @@ class IntegrationsService {
     const data = await this._ozonApiPost('/v1/description-category/attribute/values', body, {
       profileId: options.profileId ?? null,
       organizationId: options.organizationId ?? null,
+      priority: options.priority || 'normal',
     });
     const result = {
       result: Array.isArray(data.result) ? data.result : [],
@@ -4222,6 +4233,7 @@ class IntegrationsService {
     const data = await this._ozonApiPost('/v1/description-category/attribute/values/search', body, {
       profileId: options.profileId ?? options.profile_id ?? null,
       organizationId: options.organizationId ?? options.organization_id ?? null,
+      priority: options.priority || 'normal',
     });
     const list = data.result ?? data ?? [];
     return Array.isArray(list) ? list : [];

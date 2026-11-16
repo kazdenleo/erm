@@ -1247,8 +1247,12 @@ export async function createFromSession(opts = {}) {
       if (existing) {
         row.ok = false;
         row.skipped = true;
+        row.exists = true;
         row.productId = existing.id;
-        row.error = 'Товар с таким артикулом уже существует';
+        row.name = existing.name || name;
+        row.error =
+          `Уже есть в каталоге (#${existing.id})` +
+          (existing.name ? `: ${existing.name}` : '');
         results.push(row);
         continue;
       }

@@ -15,17 +15,23 @@ const MARKETPLACE_CARD_BULK_CHUNK = 25;
  * POST /products/push-card|pull-card с разбиением productIds на чанки.
  * @param {string} url
  * @param {{ productIds?: Array<number|string>, marketplaces?: string|string[], marketplace?: string }} payload
- * @param {{ onChunkProgress?: (info: { chunkIndex: number, chunkTotal: number, doneIds: number, totalIds: number }) => void }} [opts]
+ * @param {{
+ *   onChunkProgress?: (info: { chunkIndex: number, chunkTotal: number, doneIds: number, totalIds: number }) => void,
+ *   chunkSize?: number,
+ *   timeoutMs?: number,
+ * }} [opts]
  */
 async function postMarketplaceCardBulk(url, payload = {}, opts = {}) {
   const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
+  const timeoutMs = Math.max(30_000, Number(opts.timeoutMs) || MARKETPLACE_CARD_BULK_TIMEOUT_MS);
+  const chunkSize = Math.max(1, Number(opts.chunkSize) || MARKETPLACE_CARD_BULK_CHUNK);
   if (ids.length === 0) {
-    const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
+    const response = await api.post(url, payload, { timeout: timeoutMs });
     return response.data;
   }
   const chunks = [];
-  for (let i = 0; i < ids.length; i += MARKETPLACE_CARD_BULK_CHUNK) {
-    chunks.push(ids.slice(i, i + MARKETPLACE_CARD_BULK_CHUNK));
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    chunks.push(ids.slice(i, i + chunkSize));
   }
   const onChunkProgress =
     typeof opts.onChunkProgress === 'function' ? opts.onChunkProgress : null;
@@ -36,7 +42,7 @@ async function postMarketplaceCardBulk(url, payload = {}, opts = {}) {
       doneIds: 0,
       totalIds: ids.length,
     });
-    const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
+    const response = await api.post(url, payload, { timeout: timeoutMs });
     onChunkProgress?.({
       chunkIndex: 1,
       chunkTotal: 1,
@@ -58,17 +64,40 @@ async function postMarketplaceCardBulk(url, payload = {}, opts = {}) {
       doneIds,
       totalIds: ids.length,
     });
-    const response = await api.post(
-      url,
-      { ...payload, productIds: chunk },
-      { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS }
-    );
-    const body = response.data;
-    const data = body?.data ?? body;
-    if (Array.isArray(data?.items)) allItems.push(...data.items);
-    success += Number(data?.success) || 0;
-    failed += Number(data?.failed) || 0;
-    skipped += Number(data?.skipped) || 0;
+    try {
+      const response = await api.post(
+        url,
+        { ...payload, productIds: chunk },
+        { timeout: timeoutMs }
+      );
+      const body = response.data;
+      const data = body?.data ?? body;
+      if (Array.isArray(data?.items)) allItems.push(...data.items);
+      success += Number(data?.success) || 0;
+      failed += Number(data?.failed) || 0;
+      skipped += Number(data?.skipped) || 0;
+    } catch (chunkErr) {
+      const msg =
+        chunkErr?.response?.data?.message ||
+        chunkErr?.message ||
+        (chunkErr?.code === 'ECONNABORTED'
+          ? 'Превышено время ожидания ответа сервера'
+          : 'Ошибка отправки');
+      for (const productId of chunk) {
+        allItems.push({
+          productId,
+          ok: false,
+          results: [
+            {
+              marketplace: 'all',
+              ok: false,
+              error: msg,
+            },
+          ],
+        });
+      }
+      failed += chunk.length;
+    }
     doneIds += chunk.length;
   }
   onChunkProgress?.({

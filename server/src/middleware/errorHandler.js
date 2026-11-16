@@ -122,6 +122,8 @@ export function errorHandler(err, req, res, next) {
   const response = {
     success: false,
     message,
+    ...(err.code && { code: err.code }),
+    ...(err.existingProduct && { existingProduct: err.existingProduct }),
     ...(details && { details }),
     ...(process.env.NODE_ENV === 'development' && {
       stack: err.stack,

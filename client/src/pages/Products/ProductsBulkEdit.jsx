@@ -329,7 +329,16 @@ const BULK_PACK_COLS = {
 
 function bulkLinkFieldForColumn(colKey) {
   const k = String(colKey || '');
-  if (k === 'sku' || k === 'sku_ozon' || k === 'mp_wb_vendor_code' || k === 'sku_ym') return 'sku';
+  // ym_vendor_code — артикул производителя ЯМ (не ключ карточки), тоже зеркало sku
+  if (
+    k === 'sku' ||
+    k === 'sku_ozon' ||
+    k === 'mp_wb_vendor_code' ||
+    k === 'sku_ym' ||
+    k === 'ym_vendor_code'
+  ) {
+    return 'sku';
+  }
   if (k === 'name' || k === 'mp_ozon_name' || k === 'mp_wb_name' || k === 'mp_ym_name') return 'name';
   if (
     k === 'description' ||
@@ -853,7 +862,16 @@ function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) 
   const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
   if (dedicatedOfferId) {
     const mp = bulkMpCodeForColumn(colKey);
-    return bulkMpColumnLinkActive(row?.mp_field_links, { key: colKey, mpBucket: mp }, erpAttrCols);
+    const fieldKey = bulkLinkFieldForColumn(colKey);
+    if (fieldKey && mp && isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp)) {
+      return true;
+    }
+    return bulkMpColumnLinkActive(row?.mp_field_links, {
+      key: colKey,
+      mpBucket: mp,
+      mpOfferField: { mp, offerId: dedicatedOfferId },
+      linkFieldKey: fieldKey || undefined,
+    }, erpAttrCols);
   }
   const fieldKey = bulkLinkFieldForColumn(colKey);
   const mp = bulkMpCodeForColumn(colKey);
@@ -1019,7 +1037,16 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
   if (dedicatedOfferId) {
     const mp = bulkMpCodeForColumn(colKey);
     const links = normalizeMpFieldLinks(row.mp_field_links);
-    const pseudoCol = { key: colKey, mpBucket: mp };
+    const fieldKey = bulkLinkFieldForColumn(colKey);
+    if (fieldKey && mp && isMpFieldLinked(links, fieldKey, mp)) {
+      return bulkMirrorFromLinkKey(row, fieldKey, colKey, erpAttrCols, lengthUnit, weightUnit);
+    }
+    const pseudoCol = {
+      key: colKey,
+      mpBucket: mp,
+      mpOfferField: { mp, offerId: dedicatedOfferId },
+      linkFieldKey: fieldKey || undefined,
+    };
     for (const linkKey of bulkMpColumnLinkKeys(pseudoCol, erpAttrCols)) {
       if (!mp || !isMpFieldLinked(links, linkKey, mp)) continue;
       return bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit);
@@ -1039,6 +1066,11 @@ function copyMainSkuToMp(row, mp, erpAttrCols = [], mpAttrColDefs = []) {
   let next = row;
   const col = BULK_SKU_COLS[mp];
   if (col) next = { ...next, [col]: sku };
+  // ЯМ: артикул производителя (vendorCode) — не ключ карточки, всегда зеркалим при связи sku
+  if (mp === 'ym') {
+    next = applyMpOfferFieldToForm(rowAsOfferFieldForm(next), '__ym_vendor_code__', sku);
+    if (str(next.ym_vendor_code) !== sku) next = { ...next, ym_vendor_code: sku };
+  }
   let syncedOzonMfr = false;
   let syncedOzonSeller = false;
   for (const c of mpAttrColDefs || []) {
@@ -1057,7 +1089,10 @@ function copyMainSkuToMp(row, mp, erpAttrCols = [], mpAttrColDefs = []) {
     const skuOffer =
       c.mpOfferField?.offerId === '__ozon_offer_id__' ||
       c.mpOfferField?.offerId === '__ozon_vendor_code__' ||
-      (mp === 'ozon' && (c.key === 'sku_ozon' || BULK_DEDICATED_OFFER_FIELD_BY_COL[c.key] === '__ozon_offer_id__'));
+      c.mpOfferField?.offerId === '__ym_vendor_code__' ||
+      c.mpOfferField?.offerId === '__ym_shop_sku__' ||
+      (mp === 'ozon' && (c.key === 'sku_ozon' || BULK_DEDICATED_OFFER_FIELD_BY_COL[c.key] === '__ozon_offer_id__')) ||
+      (mp === 'ym' && (c.key === 'sku_ym' || c.key === 'ym_vendor_code'));
     if (linkKey !== 'sku' && !skuMirrorAttr && !skuOffer && !mpColOwnedBySku(c)) continue;
     if (c.mpOfferField?.offerId) {
       next = applyMpOfferFieldToForm(rowAsOfferFieldForm(next), c.mpOfferField.offerId, sku);
@@ -1069,6 +1104,8 @@ function copyMainSkuToMp(row, mp, erpAttrCols = [], mpAttrColDefs = []) {
       if (str(next[c.key]) !== sku) next = { ...next, [c.key]: sku };
       if (mp === 'ozon' && isOzonManufacturerArticleAttr(meta)) syncedOzonMfr = true;
       if (mp === 'ozon' && isOzonSellerCodeAttr(meta)) syncedOzonSeller = true;
+    } else if (c.key === 'ym_vendor_code' && str(next[c.key]) !== sku) {
+      next = { ...next, ym_vendor_code: sku };
     }
   }
   if (syncedOzonMfr) {
@@ -1876,7 +1913,7 @@ const COLUMNS = [
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Ключ связи Яндекс.Маркет (shopSku / offerId). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — создастся дубль.', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
-  { key: 'ym_vendor_code', label: 'Арт. произв.', title: 'Яндекс.Маркет · Артикул производителя (vendorCode)', input: 'text', minW: 110, mpBucket: 'ym' },
+  { key: 'ym_vendor_code', label: 'Арт. произв.', title: 'Яндекс.Маркет · Артикул производителя (vendorCode). Связь с артикулом на «Основном»', input: 'text', minW: 110, mpBucket: 'ym', linkFieldKey: 'sku' },
   { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'length' },
   { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'width' },
   { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'height' },
@@ -1912,6 +1949,119 @@ function withDisplayUnitLabels(cols, lengthUnit) {
 function str(v) {
   if (v == null) return '';
   return String(v);
+}
+
+const MP_BULK_STATUS_LABELS = {
+  ozon: 'Ozon',
+  wb: 'Wildberries',
+  ym: 'Яндекс.Маркет',
+};
+
+/** Короткий заголовок для раскрываемой ошибки отправки/загрузки с МП. */
+function shortMpBulkErrorTitle(error, { sku, productId } = {}) {
+  const raw = String(error || 'ошибка').replace(/\s+/g, ' ').trim();
+  let title = raw;
+  const crit = raw.match(
+    /Критичные ошибки[^:]*:\s*(.+?)(?=\s*(?:Некритичные|\[error_|attribute_id=|$))/i
+  );
+  if (crit?.[1]) title = crit[1].trim();
+  else {
+    const firstLine = String(error || '')
+      .split(/\n/)
+      .map((l) => l.trim())
+      .find(Boolean);
+    if (firstLine) title = firstLine;
+  }
+  if (title.length > 110) title = `${title.slice(0, 107)}…`;
+  const who = sku ? String(sku) : productId != null ? `#${productId}` : '';
+  return who ? `${who}: ${title}` : title;
+}
+
+/**
+ * Структурированный отчёт по items push/pull: сводка + группы по МП + раскрываемые ошибки.
+ * @returns {{ summary: string, groups: Array<{ mp: string, label: string, items: Array }> } | null}
+ */
+function buildMpBulkStatusReport(summary, items, { rowsById } = {}) {
+  const failed = Array.isArray(items) ? items.filter((it) => !it?.ok) : [];
+  if (!failed.length) return null;
+  const buckets = new Map();
+  for (const it of failed) {
+    const pid = it?.productId;
+    const row = rowsById?.get?.(str(pid));
+    const sku = row?.sku != null && String(row.sku).trim() !== '' ? String(row.sku).trim() : null;
+    const results = Array.isArray(it?.results) ? it.results : [];
+    const failedResults = results.filter((r) => r && r.ok === false);
+    const list = failedResults.length
+      ? failedResults
+      : [{ marketplace: 'ozon', ok: false, error: 'ошибка' }];
+    for (const r of list) {
+      const mpRaw = String(r.marketplace || '').toLowerCase();
+      const mp = mpRaw === 'wildberries' ? 'wb' : mpRaw === 'yandex' || mpRaw === 'yandex_market' ? 'ym' : mpRaw || 'other';
+      if (!buckets.has(mp)) buckets.set(mp, []);
+      const error = String(r.error || 'ошибка');
+      buckets.get(mp).push({
+        productId: pid,
+        sku,
+        error,
+        title: shortMpBulkErrorTitle(error, { sku, productId: pid }),
+      });
+    }
+  }
+  const order = ['ozon', 'wb', 'ym'];
+  const groups = [
+    ...order.filter((mp) => buckets.has(mp)),
+    ...[...buckets.keys()].filter((mp) => !order.includes(mp)),
+  ].map((mp) => ({
+    mp,
+    label: MP_BULK_STATUS_LABELS[mp] || mp,
+    items: buckets.get(mp) || [],
+  }));
+  return { summary: String(summary || ''), groups };
+}
+
+function BulkMpStatusMessage({ message }) {
+  if (message == null || message === '') return null;
+  if (typeof message === 'string') {
+    return (
+      <div className="products-bulk-mp-status products-bulk-mp-status--plain text-muted small w-100 mt-1">
+        {message}
+      </div>
+    );
+  }
+  const groups = Array.isArray(message.groups) ? message.groups : [];
+  return (
+    <div className="products-bulk-mp-status w-100 mt-1" role="status">
+      {message.summary ? (
+        <div className="products-bulk-mp-status__summary">{message.summary}</div>
+      ) : null}
+      {groups.map((g) => (
+        <details
+          key={g.mp}
+          className="products-bulk-mp-status__mp"
+          open={groups.length === 1}
+        >
+          <summary className="products-bulk-mp-status__mp-summary">
+            <span className="products-bulk-mp-status__mp-name">{g.label}</span>
+            <span className="products-bulk-mp-status__mp-count">
+              {g.items.length}{' '}
+              {g.items.length === 1 ? 'ошибка' : g.items.length < 5 ? 'ошибки' : 'ошибок'}
+            </span>
+          </summary>
+          <div className="products-bulk-mp-status__mp-body">
+            {g.items.map((it, idx) => (
+              <details
+                key={`${g.mp}-${it.productId ?? 'x'}-${idx}`}
+                className="products-bulk-mp-status__err"
+              >
+                <summary className="products-bulk-mp-status__err-summary">{it.title}</summary>
+                <pre className="products-bulk-mp-status__err-detail">{it.error}</pre>
+              </details>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
 }
 
 /** Нормализация JSON-атрибутов маркетплейса в плоский объект */
@@ -2584,7 +2734,16 @@ async function fetchMpAttributeLabelMaps(
       else mergeYmAttrSchema(body, maps.ym);
     });
   }
-  await enrichOzonMapsFromLiveCards(products, maps, fallbackOrg);
+  // Live Ozon product-info может висеть минутами (очередь/429) и блокировать всю таблицу.
+  // Не ждём дольше нескольких секунд — схема из ERP-категории уже в maps.
+  try {
+    await Promise.race([
+      enrichOzonMapsFromLiveCards(products, maps, fallbackOrg),
+      new Promise((resolve) => setTimeout(resolve, 4500)),
+    ]);
+  } catch (_) {
+    /* схема категории достаточна для отрисовки строк */
+  }
   return maps;
 }
 
@@ -2604,26 +2763,42 @@ async function enrichOzonMapsFromLiveCards(products, maps, fallbackOrganizationI
     if (seenOrgOffer.has(key)) continue;
     seenOrgOffer.add(key);
     samples.push({ org, productId: productId > 0 ? productId : null, offerId: offerId || null });
-    if (samples.length >= 3) break;
+    if (samples.length >= 2) break;
   }
+  const withTimeout = (promise, ms) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        const t = setTimeout(() => reject(new Error('timeout')), ms);
+        if (typeof promise?.finally === 'function') {
+          promise.finally(() => clearTimeout(t)).catch(() => {});
+        }
+      }),
+    ]);
   for (const sample of samples) {
     let data = null;
     try {
       if (sample.productId) {
-        data = await integrationsApi.getOzonProductInfo({
-          organizationId: sample.org,
-          product_id: sample.productId,
-        });
+        data = await withTimeout(
+          integrationsApi.getOzonProductInfo({
+            organizationId: sample.org,
+            product_id: sample.productId,
+          }),
+          2500
+        );
       }
     } catch (_) {
-      /* offer_id */
+      /* offer_id / timeout */
     }
     if (!data && sample.offerId) {
       try {
-        data = await integrationsApi.getOzonProductInfo({
-          organizationId: sample.org,
-          offer_id: sample.offerId,
-        });
+        data = await withTimeout(
+          integrationsApi.getOzonProductInfo({
+            organizationId: sample.org,
+            offer_id: sample.offerId,
+          }),
+          2500
+        );
       } catch (_) {
         continue;
       }
@@ -2648,7 +2823,10 @@ async function enrichOzonMapsFromLiveCards(products, maps, fallbackOrganizationI
     );
     if (already) continue;
     try {
-      const list = await integrationsApi.getOzonCategoryAttributes(pair.descId, pair.typeId);
+      const list = await withTimeout(
+        integrationsApi.getOzonCategoryAttributes(pair.descId, pair.typeId),
+        2500
+      );
       mergeOzonAttrSchema(
         Array.isArray(list) ? list : [],
         maps.ozon,
@@ -3868,16 +4046,22 @@ function emptyBulkMpFieldLinks(erpAttrColDefs = []) {
 
 /**
  * Как в карточке товара: эффективные связи из сопоставлений категории
- * (артикул→партномер и т.п.), а не пустая сессия.
+ * (артикул→партномер и т.п.). Если категории ещё нет в кэше — берём
+ * уже посчитанные сервером связи из product.mp_field_links.
  */
 function bulkSessionMpFieldLinks(product, categories = [], erpAttrColDefs = []) {
   const base = emptyBulkMpFieldLinks(erpAttrColDefs);
-  const catId = String(product?.categoryId ?? product?.category_id ?? '').trim();
+  const fromProduct = normalizeMpFieldLinks(product?.mp_field_links);
+  const catId = String(
+    product?.categoryId ?? product?.category_id ?? product?.user_category_id ?? ''
+  ).trim();
   const cat =
     catId && Array.isArray(categories)
       ? categories.find((c) => String(c.id) === catId)
       : null;
-  if (!cat) return base;
+  if (!cat) {
+    return normalizeMpFieldLinks({ ...base, ...fromProduct });
+  }
   const overlaid = overlayCategoryDedicatedMpLinks(
     product?.mp_field_links,
     cat.mp_field_links,
@@ -8232,7 +8416,13 @@ export function ProductsBulkEdit() {
                 ok += 1;
               }
             } catch (e) {
-              const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
+              const data = e?.response?.data;
+              let msg = data?.message || data?.error || e?.message || 'Ошибка';
+              if (data?.code === 'SKU_EXISTS' && data?.existingProduct?.id) {
+                msg =
+                  (data.message || 'Товар с таким артикулом уже есть') +
+                  ` — открыть #${data.existingProduct.id}`;
+              }
               errors.push({ id: r.id, sku: r.sku, msg });
             } finally {
               doneCount += 1;
@@ -8439,27 +8629,29 @@ export function ProductsBulkEdit() {
     }
     setPushOfferOpen(false);
     setPushMpLoading(marketplaces);
-    setPushMpMessage(null);
+    setPushMpMessage(`Отправка на МП: 0/${productIds.length}…`);
     setPullMpMessage(null);
     try {
-      const body = await productsApi.pushCardBulk({ productIds, marketplaces });
-      const data = body?.data ?? body;
-      const failedItems = Array.isArray(data?.items)
-        ? data.items.filter((it) => !it?.ok).slice(0, 5)
-        : [];
-      const failHint =
-        failedItems.length > 0
-          ? ` Примеры ошибок: ${failedItems
-              .map((it) => {
-                const err =
-                  (it.results || []).find((r) => !r.ok)?.error || 'ошибка';
-                return `#${it.productId}: ${err}`;
-              })
-              .join('; ')}`
-          : '';
-      setPushMpMessage(
-        `Отправка на МП (выделенные): успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
+      const body = await productsApi.pushCardBulk(
+        { productIds, marketplaces },
+        {
+          // По одному товару: виден прогресс, один зависший МП не держит весь батч 10 минут.
+          chunkSize: 1,
+          timeoutMs: 180000,
+          onChunkProgress: ({ doneIds, totalIds, chunkIndex, chunkTotal }) => {
+            setPushMpMessage(
+              `Отправка на МП: ${doneIds}/${totalIds}` +
+                (chunkTotal > 1 ? ` (карточка ${Math.min(chunkIndex, chunkTotal)}/${chunkTotal})` : '') +
+                '…'
+            );
+          },
+        }
       );
+      const data = body?.data ?? body;
+      const summary = `Отправка на МП (выделенные): успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.`;
+      const rowsById = new Map(rows.map((r) => [str(r.id), r]));
+      const report = buildMpBulkStatusReport(summary, data?.items, { rowsById });
+      setPushMpMessage(report || summary);
       const failedIdSet = new Set(
         (Array.isArray(data?.items) ? data.items : [])
           .filter((it) => !it?.ok)
@@ -8563,19 +8755,6 @@ export function ProductsBulkEdit() {
         }
       );
       const data = body?.data ?? body;
-      const failedItems = Array.isArray(data?.items)
-        ? data.items.filter((it) => !it?.ok).slice(0, 5)
-        : [];
-      const failHint =
-        failedItems.length > 0
-          ? ` Примеры: ${failedItems
-              .map((it) => {
-                const err =
-                  (it.results || []).find((r) => !r.ok)?.error || 'ошибка';
-                return `#${it.productId}: ${err}`;
-              })
-              .join('; ')}`
-          : '';
       const skippedN = Number(data?.skipped) || 0;
       const failedN = Number(data?.failed) || 0;
       const parts = [
@@ -8583,7 +8762,10 @@ export function ProductsBulkEdit() {
       ];
       if (skippedN > 0) parts.push(`без привязки к МП (пропуск): ${skippedN}`);
       if (failedN > 0) parts.push(`ошибок: ${failedN}`);
-      setPullMpMessage(`Обновление из МП (выделенные): ${parts.join(', ')}.${failHint}`);
+      const summary = `Обновление из МП (выделенные): ${parts.join(', ')}.`;
+      const rowsById = new Map(rows.map((r) => [str(r.id), r]));
+      const report = buildMpBulkStatusReport(summary, data?.items, { rowsById });
+      setPullMpMessage(report || summary);
       await loadProducts();
     } catch (e) {
       setPullMpMessage(
@@ -9675,12 +9857,8 @@ export function ProductsBulkEdit() {
                       {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
                     </Button>
                   </div>
-                  {pushMpMessage ? (
-                    <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>
-                  ) : null}
-                  {pullMpMessage ? (
-                    <div className="text-muted small w-100 mt-1">{pullMpMessage}</div>
-                  ) : null}
+                  <BulkMpStatusMessage message={pushMpMessage} />
+                  <BulkMpStatusMessage message={pullMpMessage} />
                   </>
                   ) : null}
                   </div>

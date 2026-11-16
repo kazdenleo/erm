@@ -634,6 +634,14 @@ class ProductsController {
       if (error?.statusCode === 403 && error?.code === 'PLAN_LIMIT') {
         return res.status(403).json({ ok: false, code: error.code, message: error.message });
       }
+      if (error?.statusCode === 409 && error?.code === 'SKU_EXISTS') {
+        return res.status(409).json({
+          ok: false,
+          code: 'SKU_EXISTS',
+          message: error.message,
+          existingProduct: error.existingProduct || null,
+        });
+      }
       console.error('[Products Controller] Create error:', error?.message, error?.code, error?.stack);
       next(error);
     }

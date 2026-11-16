@@ -131,8 +131,20 @@ export function ProductCard() {
       }
       return created;
     } catch (err) {
+      const data = err.response?.data;
+      if (data?.code === 'SKU_EXISTS' && data?.existingProduct?.id) {
+        const ep = data.existingProduct;
+        const openExisting = window.confirm(
+          (data.message || 'Товар с таким артикулом уже есть в каталоге.') +
+            `\n\nОткрыть существующий товар #${ep.id}?`
+        );
+        if (openExisting) {
+          navigate(`/products/${ep.id}`, { replace: true });
+        }
+        throw err;
+      }
       const message =
-        err.response?.data?.details
+        data?.details
           ?.map((d) => {
             const path = Array.isArray(d.path) ? d.path.join('.') : '';
             const msg = d.message || '';
@@ -140,7 +152,7 @@ export function ProductCard() {
           })
           .filter(Boolean)
           .join('; ') ||
-        err.response?.data?.message ||
+        data?.message ||
         err.message ||
         'Неизвестная ошибка';
       alert('Ошибка сохранения товара: ' + message);

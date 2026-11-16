@@ -121,13 +121,15 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
     .map((r, idx) => {
       const c = r.content || {};
       const brandName = r.matchedBrand || r.brand || '';
+      const existingId = r.existingProductId != null ? r.existingProductId : null;
+      const exists = existingId != null;
       return {
         key: rowKey(r, idx),
-        selected: true,
+        selected: !exists,
         sourceIndex: r.index,
         brandName,
-        sku: r.matchedNumber || r.sku || '',
-        name: c.name || r.name || '',
+        sku: r.matchedNumber || r.sku || r.existingSku || '',
+        name: c.name || r.name || r.existingProductName || '',
         description: c.description || '',
         weight: c.weight ?? null,
         length: c.length ?? null,
@@ -153,9 +155,13 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
         brandId: findBrandIdByName(brands, brandName),
         categoryId: '',
         organizationId: orgId,
-        createStatus: null,
-        createError: null,
-        productId: null,
+        createStatus: exists ? 'exists' : null,
+        createError: exists
+          ? `Уже в каталоге (#${existingId})` +
+            (r.existingProductName ? `: ${r.existingProductName}` : '')
+          : null,
+        productId: existingId,
+        exists,
       };
     });
 }
@@ -517,6 +523,17 @@ export function ProductEnrichment() {
               productId: hit.productId,
               createStatus: 'ok',
               createError: hit.imageWarning || null,
+              exists: false,
+            };
+          }
+          if (hit.skipped || hit.exists) {
+            return {
+              ...row,
+              selected: false,
+              productId: hit.productId || row.productId,
+              createStatus: 'exists',
+              createError: hit.error || 'Уже есть в каталоге',
+              exists: true,
             };
           }
           return {
@@ -528,6 +545,7 @@ export function ProductEnrichment() {
       );
       setCreateMessage(
         `Создано: ${data?.ok ?? 0} из ${data?.total ?? toCreate.length}` +
+          (data?.skipped ? `, уже есть: ${data.skipped}` : '') +
           (data?.failed ? `, ошибок: ${data.failed}` : '')
       );
     } catch (err) {
@@ -954,18 +972,20 @@ export function ProductEnrichment() {
                           <tr
                             key={row.key}
                             className={
-                              row.productId
-                                ? 'is-created'
-                                : row.createStatus === 'error'
-                                  ? 'is-error'
-                                  : ''
+                              row.exists || row.createStatus === 'exists'
+                                ? 'is-skipped'
+                                : row.productId
+                                  ? 'is-created'
+                                  : row.createStatus === 'error'
+                                    ? 'is-error'
+                                    : ''
                             }
                           >
                             <td>
                               <input
                                 type="checkbox"
                                 checked={!!row.selected}
-                                disabled={!!row.productId}
+                                disabled={!!row.productId || !!row.exists}
                                 onChange={(e) =>
                                   updateRow(row.key, { selected: e.target.checked })
                                 }
@@ -993,7 +1013,21 @@ export function ProductEnrichment() {
                             </td>
                             <td>
                               <div className="small fw-semibold">{row.sku || '—'}</div>
-                              {row.productId ? (
+                              {row.exists || row.createStatus === 'exists' ? (
+                                <div className="text-muted small">
+                                  {row.productId ? (
+                                    <button
+                                      type="button"
+                                      className="btn btn-link btn-sm p-0 align-baseline"
+                                      onClick={() => navigate(`/products/${row.productId}`)}
+                                    >
+                                      уже есть #{row.productId}
+                                    </button>
+                                  ) : (
+                                    row.createError || 'уже есть в каталоге'
+                                  )}
+                                </div>
+                              ) : row.productId ? (
                                 <div className="text-success small">#{row.productId}</div>
                               ) : row.createStatus === 'error' ? (
                                 <div className="text-danger small">

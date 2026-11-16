@@ -1199,8 +1199,19 @@ class ProductsService {
     // Проверка на дубликаты артикула в пределах аккаунта (PostgreSQL: уникальность по profile_id + sku)
     const existing = await this.getBySku(productData.sku, { profileId: createProfileId });
     if (existing) {
-      const error = new Error('Товар с таким артикулом уже существует');
-      error.statusCode = 400;
+      const skuLabel = String(productData.sku || existing.sku || '').trim();
+      const error = new Error(
+        `Товар с артикулом «${skuLabel}» уже есть в каталоге` +
+          (existing.id != null ? ` (#${existing.id})` : '') +
+          (existing.name ? `: ${existing.name}` : '')
+      );
+      error.statusCode = 409;
+      error.code = 'SKU_EXISTS';
+      error.existingProduct = {
+        id: existing.id,
+        sku: existing.sku ?? skuLabel,
+        name: existing.name ?? null,
+      };
       throw error;
     }
     

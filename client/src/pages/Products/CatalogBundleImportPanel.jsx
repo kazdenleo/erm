@@ -923,7 +923,13 @@ export function CatalogBundleImportPanel() {
                     <td>
                       <div className="small fw-semibold">{row.sku || '—'}</div>
                       {row.productId ? (
-                        <div className="text-success small">#{row.productId}</div>
+                        <div className={row.skipped ? 'text-muted small' : 'text-success small'}>
+                          {row.skipped ? (
+                            <a href={`/products/${row.productId}`}>уже есть #{row.productId}</a>
+                          ) : (
+                            `#${row.productId}`
+                          )}
+                        </div>
                       ) : null}
                     </td>
                     <td>
@@ -943,7 +949,7 @@ export function CatalogBundleImportPanel() {
                       ) : null}
                       {row.createStatus === 'error' || row.skipped ? (
                         <div className={row.skipped ? 'text-muted' : 'text-danger'}>
-                          {row.createError || (row.skipped ? 'пропуск' : 'ошибка')}
+                          {row.createError || (row.skipped ? 'уже есть в каталоге' : 'ошибка')}
                         </div>
                       ) : row.productId ? (
                         <span className="text-success">создан</span>

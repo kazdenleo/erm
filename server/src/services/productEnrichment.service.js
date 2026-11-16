@@ -1380,6 +1380,29 @@ export async function enrichProductsByBrandSkuList(items, opts = {}) {
     row.name = content.name || null;
     row.content = jsonSafe(content);
 
+    // Уже есть в ERP по артикулу — не предлагаем создавать дубль.
+    try {
+      const skuForLookup = String(row.matchedNumber || sku || '').trim();
+      if (skuForLookup) {
+        const existing = await productsRepo().findBySku(skuForLookup, {
+          profileId: opts.profileId,
+        });
+        if (existing?.id != null) {
+          row.existingProductId = existing.id;
+          row.existingProductName = existing.name || null;
+          row.existingSku = existing.sku || skuForLookup;
+          warnings.push(
+            `В каталоге уже есть товар #${existing.id}` +
+              (existing.name ? ` «${existing.name}»` : '') +
+              ' — дубль не создаём'
+          );
+          row.warnings = warnings;
+        }
+      }
+    } catch (_) {
+      /* lookup необязателен для превью */
+    }
+
     if (!row.ok) {
       row.error = partsError || 'Не найдено в PartsIndex';
       row.status = 'error';
@@ -1455,6 +1478,18 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
     }
 
     try {
+      const existing = await productsRepo().findBySku(sku, { profileId: opts.profileId });
+      if (existing?.id != null) {
+        row.ok = false;
+        row.skipped = true;
+        row.exists = true;
+        row.productId = existing.id;
+        row.name = existing.name || name;
+        row.error = `Уже есть в каталоге (#${existing.id})${existing.name ? `: ${existing.name}` : ''}`;
+        results.push(row);
+        continue;
+      }
+
       const analogs = Array.isArray(raw.analogs)
         ? raw.analogs
         : Array.isArray(raw.content?.analogs)
@@ -1537,8 +1572,20 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
       row.imagesAdded = imagesAdded;
       row.name = product?.name || name;
     } catch (err) {
-      row.error = err?.message || String(err);
-      row.statusCode = err?.statusCode || null;
+      if (err?.code === 'SKU_EXISTS' || err?.statusCode === 409) {
+        row.ok = false;
+        row.skipped = true;
+        row.exists = true;
+        row.productId = err.existingProduct?.id ?? null;
+        row.name = err.existingProduct?.name || name;
+        row.error =
+          err.message ||
+          `Уже есть в каталоге` +
+            (err.existingProduct?.id != null ? ` (#${err.existingProduct.id})` : '');
+      } else {
+        row.error = err?.message || String(err);
+        row.statusCode = err?.statusCode || null;
+      }
     }
     results.push(row);
   }
@@ -1546,7 +1593,8 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
   return {
     total: results.length,
     ok: results.filter((r) => r.ok).length,
-    failed: results.filter((r) => !r.ok).length,
+    skipped: results.filter((r) => r.skipped).length,
+    failed: results.filter((r) => !r.ok && !r.skipped).length,
     results,
   };
 }

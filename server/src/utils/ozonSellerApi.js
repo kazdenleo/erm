@@ -145,6 +145,12 @@ async function withOzonSellerApiExecLock(fn) {
   }
 }
 
+/** Normal-очередь не должна висеть бесконечно, пока идёт sync FBS / high. */
+const OZON_NORMAL_QUEUE_MAX_WAIT_MS = Math.max(
+  5_000,
+  parseInt(process.env.OZON_NORMAL_QUEUE_MAX_WAIT_MS || '45000', 10) || 45_000
+);
+
 function enqueueOzonSellerApi(priority, fn) {
   const isHigh = priority === 'high';
   if (isHigh) ozonSellerApiHighPending += 1;
@@ -152,7 +158,11 @@ function enqueueOzonSellerApi(priority, fn) {
   const run = async () => {
     try {
       if (!isHigh) {
+        const waitStarted = Date.now();
         while (ozonSellerApiHighPending > 0 || ozonOrdersSyncWindowDepth > 0) {
+          if (Date.now() - waitStarted >= OZON_NORMAL_QUEUE_MAX_WAIT_MS) {
+            break;
+          }
           await sleep(50);
         }
       }
