@@ -952,17 +952,25 @@ export function CatalogBundleImportPanel() {
                           : '—'}
                     </td>
                     <td className="small">
-                      {row.warnings?.length ? (
-                        <span className="text-warning">{row.warnings.join('; ')}</span>
-                      ) : null}
-                      {row.createStatus === 'error' || row.skipped ? (
-                        <div className={row.skipped ? 'text-muted' : 'text-danger'}>
-                          {row.createError || (row.skipped ? 'уже есть в каталоге' : 'ошибка')}
+                      {row.skipped ? (
+                        <div className="text-muted">
+                          {row.createError || 'уже есть в каталоге'}
                         </div>
-                      ) : row.productId ? (
-                        <span className="text-success">создан</span>
                       ) : (
-                        <span className="text-muted">—</span>
+                        <>
+                          {row.warnings?.length ? (
+                            <span className="text-warning">{row.warnings.join('; ')}</span>
+                          ) : null}
+                          {row.createStatus === 'error' ? (
+                            <div className="text-danger">
+                              {row.createError || 'ошибка'}
+                            </div>
+                          ) : row.productId ? (
+                            <span className="text-success">создан</span>
+                          ) : row.warnings?.length ? null : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>
