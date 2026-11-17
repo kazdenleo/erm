@@ -43,9 +43,8 @@ export function categorizeOzonOperationKind(operationType) {
   const t = String(operationType || '').toLowerCase();
   if (t.includes('deliveredtocustomer')) return 'sale';
   if (t.includes('commission')) return 'commission';
-  // Выкуп у селлера — не продажа покупателю; в выручку ОПиУ не кладём.
-  if (t.includes('buyout') || t.includes('выкуп')) return 'other';
-
+  // Выкуп у селлера — не продажа и не удержание в ОПиУ.
+  if (t.includes('buyout') || t.includes('выкуп')) return 'buyout';
   if (t.includes('defectfine') || (t.includes('fine') && !t.includes('cancelled'))) return 'penalty';
   if (t.includes('return')) return 'return';
   if (t.includes('storage')) return 'storage';
