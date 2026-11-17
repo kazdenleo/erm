@@ -207,7 +207,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: min(60vh, 520px);
+  max-height: min(52vh, 440px);
   overflow: auto;
 }
 
@@ -219,12 +219,20 @@
 }
 
 .product-enrichment-proposal-val {
-  max-width: 280px;
+  max-width: 260px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
-  max-height: 6.5em;
+  max-height: 5.2em;
   overflow: auto;
+  line-height: 1.35;
+}
+
+.product-enrichment-proposal-val--changed {
+  background: #eceff1;
+  color: #546e7a;
+  border-radius: 4px;
+  padding: 4px 6px;
 }
 
 .product-enrichment-settings {
@@ -431,12 +439,19 @@
 }
 
 .product-enrichment-cell-scroll {
-  min-width: 160px;
-  max-width: 280px;
-  max-height: 220px;
+  min-width: 140px;
+  max-width: 240px;
+  max-height: 120px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.product-enrichment-table td.product-enrichment-cell--changed,
+.product-enrichment-table td.product-enrichment-cell--changed .product-enrichment-desc--cell,
+.product-enrichment-table td.product-enrichment-cell--changed .product-enrichment-name-cell {
+  background: #eceff1;
+  color: #546e7a;
 }
 
 .product-enrichment-cell-list {

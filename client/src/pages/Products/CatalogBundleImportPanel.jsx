@@ -53,6 +53,32 @@ function resolveRawMapped(raw, cols, { multiline = false } = {}) {
   return multiline ? parts.join('\n') : parts.join('. ');
 }
 
+/** Поле превью было дописано или предложено к замене. */
+function previewColumnChanged(row, col) {
+  if (!row || !col) return false;
+  const filled = Array.isArray(row.filled) ? row.filled : [];
+  const proposals = Array.isArray(row.proposals) ? row.proposals : [];
+  const keys = new Set([
+    ...filled,
+    ...proposals.map((p) => String(p.field || '')),
+    ...proposals
+      .filter((p) => p.attributeId != null)
+      .map((p) => `attr:${p.attributeId}`),
+  ]);
+  if (!keys.size) return false;
+  if (col.id === 'main:description') return keys.has('description');
+  if (col.id === 'main:applicability') return keys.has('applicability');
+  if (col.id === 'main:analogs') return keys.has('analogs');
+  if (col.id === 'main:country') {
+    return keys.has('country_of_origin') || keys.has('country');
+  }
+  if (String(col.id).startsWith('attr:')) {
+    const aid = String(col.id).slice(5);
+    return keys.has(`attr:${aid}`) || keys.has(aid);
+  }
+  return false;
+}
+
 function mappingFromFieldMappings(fieldMappings) {
   const mapping = {
     sku: [],
@@ -1187,11 +1213,26 @@ export function CatalogBundleImportPanel() {
                         <div className="text-success small">#{row.productId}</div>
                       ) : null}
                     </td>
-                    <td>
-                      <div className="product-enrichment-name-cell">{row.name || '—'}</div>
+                    <td
+                      className={
+                        Array.isArray(row.proposals) &&
+                        row.proposals.some((p) => p.field === 'name')
+                          ? 'product-enrichment-cell--changed'
+                          : undefined
+                      }
+                    >
+                      <div className="product-enrichment-name-cell product-enrichment-cell-scroll">
+                        {row.name || '—'}
+                      </div>
                     </td>
                     <td className="small">{row.brand || '—'}</td>
-                    <td className="small">
+                    <td
+                      className={
+                        Array.isArray(row.filled) && row.filled.includes('images')
+                          ? 'small product-enrichment-cell--changed'
+                          : 'small'
+                      }
+                    >
                       {row.imagesAdded != null
                         ? `${row.imagesAdded} прикреплено`
                         : row.imageCount
@@ -1202,8 +1243,16 @@ export function CatalogBundleImportPanel() {
                       const text = resolveRawMapped(row.raw, c.mapped, {
                         multiline: c.multiline,
                       });
+                      const changed = previewColumnChanged(row, c);
                       return (
-                        <td key={c.id} className="small product-enrichment-cell-scroll">
+                        <td
+                          key={c.id}
+                          className={
+                            'small product-enrichment-cell-scroll' +
+                            (changed ? ' product-enrichment-cell--changed' : '')
+                          }
+                          title={changed ? 'Поле дописано или предложено к замене' : undefined}
+                        >
                           {text ? (
                             <pre className="product-enrichment-desc product-enrichment-desc--cell">
                               {text}
@@ -1254,6 +1303,7 @@ export function CatalogBundleImportPanel() {
         }}
         title="Предложения по уже заполненным полям"
         size="large"
+        scrollable
       >
         <div>
           <p className="text-muted small mb-3">
@@ -1305,7 +1355,7 @@ export function CatalogBundleImportPanel() {
                             </div>
                           </td>
                           <td>
-                            <div className="product-enrichment-proposal-val">
+                            <div className="product-enrichment-proposal-val product-enrichment-proposal-val--changed">
                               {p.proposed || '—'}
                             </div>
                           </td>
