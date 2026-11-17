@@ -81,7 +81,8 @@ export function formatRub(n) {
   return new Intl.NumberFormat('ru-RU', {
     style: 'currency',
     currency: 'RUB',
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(Number(n));
 }
 
