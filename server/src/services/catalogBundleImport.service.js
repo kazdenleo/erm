@@ -1142,11 +1142,28 @@ async function finalizePreviewSession({ sessionId, profileId, extractRoot, colum
       type: a.type,
     })),
     totalRows: previewRows.length,
-    rows: previewRows.map(({ raw, imagePaths, ...rest }) => ({
+    // raw нужен UI: показать значения по текущему сопоставлению столбцов
+    rows: previewRows.map(({ imagePaths, ...rest }) => ({
       ...rest,
       imagePaths,
     })),
   };
+}
+
+function isBlankValue(v) {
+  if (v == null) return true;
+  if (typeof v === 'number') return !Number.isFinite(v);
+  return !String(v).trim();
+}
+
+function valuesDifferText(a, b) {
+  return String(a ?? '').trim() !== String(b ?? '').trim();
+}
+
+function dimIsEmptyValue(v) {
+  if (isBlankValue(v)) return true;
+  const n = Number(v);
+  return !Number.isFinite(n) || n === 0;
 }
 
 /**
@@ -1284,20 +1301,6 @@ export async function createFromSession(opts = {}) {
     }
 
     try {
-      const existing = await productsService.getBySku(sku, { profileId: opts.profileId });
-      if (existing) {
-        row.ok = false;
-        row.skipped = true;
-        row.exists = true;
-        row.productId = existing.id;
-        row.name = existing.name || name;
-        row.error =
-          `Уже есть в каталоге (#${existing.id})` +
-          (existing.name ? `: ${existing.name}` : '');
-        results.push(row);
-        continue;
-      }
-
       const attrColsUsed = Object.values(attributeMappings || {}).flatMap((spec) =>
         normalizeMappedColumns(spec)
       );
@@ -1315,6 +1318,7 @@ export async function createFromSession(opts = {}) {
       const countryOfOrigin = countryFromCol || countryDefault || null;
 
       const attributeValues = {};
+      const attrLabels = {};
       const attrsToAttach = [];
 
       const applicabilityText = resolveMappedColumnsValue(raw, mapping.applicability, {
@@ -1322,6 +1326,7 @@ export async function createFromSession(opts = {}) {
       });
       if (applicabilityText && applicabilityAttr?.id) {
         attributeValues[String(applicabilityAttr.id)] = applicabilityText;
+        attrLabels[String(applicabilityAttr.id)] = applicabilityAttr.name || 'Применимость';
         attrsToAttach.push(applicabilityAttr.id);
       }
       const analogsText = resolveMappedColumnsValue(raw, mapping.analogs, {
@@ -1329,6 +1334,7 @@ export async function createFromSession(opts = {}) {
       });
       if (analogsText && analogsAttr?.id) {
         attributeValues[String(analogsAttr.id)] = analogsText;
+        attrLabels[String(analogsAttr.id)] = analogsAttr.name || 'Аналоги';
         attrsToAttach.push(analogsAttr.id);
       }
 
@@ -1363,7 +1369,164 @@ export async function createFromSession(opts = {}) {
         }
         if (sk) continue; // прочие системные поля карточки уже в «Сопоставление колонок»
         attributeValues[aid] = val;
+        attrLabels[aid] = attr.name || aid;
         attrsToAttach.push(aid);
+      }
+
+      const folder = folderIndex.get(skuKey(sku));
+      const imageFiles = folder ? listImageFilesInDir(folder).slice(0, MAX_IMAGES) : [];
+
+      const existing = await productsService.getBySku(sku, { profileId: opts.profileId });
+      if (existing) {
+        const catId = existing.categoryId ?? existing.user_category_id ?? categoryId;
+        if (attrsToAttach.length) {
+          await ensureCategoryHasAttributes(catId, attrsToAttach);
+        }
+
+        const updates = {};
+        const proposals = [];
+        const filled = [];
+        const existingAv =
+          existing.attribute_values && typeof existing.attribute_values === 'object'
+            ? { ...existing.attribute_values }
+            : {};
+        const attrPatch = {};
+
+        const considerText = (field, label, incoming, current) => {
+          const next = incoming == null ? '' : String(incoming).trim();
+          if (!next) return;
+          if (isBlankValue(current)) {
+            updates[field] = next;
+            filled.push(field);
+          } else if (valuesDifferText(current, next)) {
+            proposals.push({
+              field,
+              label,
+              current: String(current).trim(),
+              proposed: next,
+            });
+          }
+        };
+        const considerDim = (field, label, incoming, current) => {
+          if (incoming == null) return;
+          const n = Number(incoming);
+          if (!Number.isFinite(n) || n === 0) return;
+          if (dimIsEmptyValue(current)) {
+            updates[field] = n;
+            filled.push(field);
+          } else if (Number(current) !== n) {
+            proposals.push({
+              field,
+              label,
+              current: String(current),
+              proposed: String(n),
+            });
+          }
+        };
+
+        considerText('name', 'Название', name, existing.name);
+        considerText('description', 'Описание', description, existing.description);
+        considerText(
+          'country_of_origin',
+          'Страна',
+          countryOfOrigin,
+          existing.country_of_origin ?? existing.countryOfOrigin
+        );
+        for (const [dimKey, dimVal] of Object.entries(dimPayload)) {
+          const labels = {
+            length: 'Длина',
+            width: 'Ширина',
+            height: 'Высота',
+            weight: 'Вес',
+            product_length: 'Длина товара',
+            product_width: 'Ширина товара',
+            product_height: 'Высота товара',
+            product_weight: 'Вес товара',
+          };
+          considerDim(dimKey, labels[dimKey] || dimKey, dimVal, existing[dimKey]);
+        }
+
+        for (const [aid, val] of Object.entries(attributeValues)) {
+          const next = String(val || '').trim();
+          if (!next) continue;
+          const cur = existingAv[aid];
+          const label = attrLabels[aid] || `Атрибут ${aid}`;
+          const fieldKey =
+            analogsAttr && String(analogsAttr.id) === aid
+              ? 'analogs'
+              : applicabilityAttr && String(applicabilityAttr.id) === aid
+                ? 'applicability'
+                : `attr:${aid}`;
+          if (isBlankValue(cur)) {
+            attrPatch[aid] = next;
+            filled.push(fieldKey);
+          } else if (valuesDifferText(cur, next)) {
+            proposals.push({
+              field: fieldKey,
+              label,
+              current: String(cur).trim(),
+              proposed: next,
+              attributeId: aid,
+            });
+          }
+        }
+        if (Object.keys(attrPatch).length) {
+          updates.attribute_values = { ...existingAv, ...attrPatch };
+        }
+
+        let imagesAdded = 0;
+        const existingImages = Array.isArray(existing.images) ? existing.images : [];
+        if (!existingImages.length && imageFiles.length) {
+          const downloaded = [];
+          const seenHashes = new Set();
+          for (let i = 0; i < imageFiles.length; i++) {
+            try {
+              const buf = fs.readFileSync(imageFiles[i]);
+              const rec = await saveLocalImageBufferToProductFolder(existing.id, buf, {
+                filename: path.basename(imageFiles[i]),
+                primary: downloaded.length === 0,
+                marketplaces: { ozon: true, wb: true, ym: true },
+              });
+              if (!rec) continue;
+              const hash = String(rec.content_hash || '').toLowerCase();
+              if (hash && seenHashes.has(hash)) continue;
+              if (hash) seenHashes.add(hash);
+              downloaded.push(rec);
+            } catch (imgErr) {
+              row.imageWarning = row.imageWarning
+                ? `${row.imageWarning}; ${imgErr?.message || imgErr}`
+                : String(imgErr?.message || imgErr);
+            }
+          }
+          if (downloaded.length) {
+            downloaded.forEach((d, i) => {
+              d.primary = i === 0;
+            });
+            updates.images = downloaded;
+            imagesAdded = downloaded.length;
+            filled.push('images');
+          }
+        }
+
+        if (Object.keys(updates).length) {
+          await productsRepo().update(existing.id, updates);
+        }
+
+        row.ok = true;
+        row.merged = true;
+        row.exists = true;
+        row.productId = existing.id;
+        row.name = updates.name || existing.name || name;
+        row.filled = filled;
+        row.proposals = proposals;
+        row.imagesAdded = imagesAdded;
+        row.message =
+          (filled.length
+            ? `Дополнено пустых: ${filled.join(', ')}`
+            : 'Пустых полей не было') +
+          (proposals.length ? `; предложений: ${proposals.length}` : '');
+        results.push(row);
+        continue;
       }
 
       if (attrsToAttach.length) {
@@ -1396,8 +1559,6 @@ export async function createFromSession(opts = {}) {
       const productId = product?.id;
       let imagesAdded = 0;
 
-      const folder = folderIndex.get(skuKey(sku));
-      const imageFiles = folder ? listImageFilesInDir(folder).slice(0, MAX_IMAGES) : [];
       if (productId != null && imageFiles.length) {
         const downloaded = [];
         const seenHashes = new Set();
@@ -1443,9 +1604,14 @@ export async function createFromSession(opts = {}) {
 
   return {
     total: results.length,
-    ok: results.filter((r) => r.ok).length,
+    ok: results.filter((r) => r.ok && !r.merged).length,
+    merged: results.filter((r) => r.ok && r.merged).length,
     skipped: results.filter((r) => r.skipped).length,
     failed: results.filter((r) => !r.ok && !r.skipped).length,
+    proposalCount: results.reduce(
+      (n, r) => n + (Array.isArray(r.proposals) ? r.proposals.length : 0),
+      0
+    ),
     results,
   };
 }

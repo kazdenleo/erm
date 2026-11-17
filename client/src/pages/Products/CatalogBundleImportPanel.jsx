@@ -4,6 +4,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
+import { Modal } from '../../components/common/Modal/Modal';
 import { useBrands } from '../../hooks/useBrands';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -38,6 +39,18 @@ function asColumnList(value) {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   if (value == null || value === '') return [];
   return [String(value)].filter(Boolean);
+}
+
+/** Значение из raw по сопоставленным столбцам (как на сервере). */
+function resolveRawMapped(raw, cols, { multiline = false } = {}) {
+  const list = asColumnList(cols);
+  const parts = [];
+  for (const c of list) {
+    const v = String(raw?.[c] ?? '').trim();
+    if (v) parts.push(v);
+  }
+  if (!parts.length) return '';
+  return multiline ? parts.join('\n') : parts.join('. ');
 }
 
 function mappingFromFieldMappings(fieldMappings) {
@@ -367,6 +380,8 @@ export function CatalogBundleImportPanel() {
   const [creating, setCreating] = useState(false);
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
+  const [proposalModal, setProposalModal] = useState({ open: false, items: [] });
+  const [applyingProposals, setApplyingProposals] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -522,13 +537,42 @@ export function CatalogBundleImportPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaults.categoryId, columns, extraAttrKey]);
 
+  const isRowFinished = (r) =>
+    r?.createStatus === 'ok' || r?.createStatus === 'merged';
+  const isRowSelectable = (r) => !isRowFinished(r) && !!sessionId;
+
   const selectedCount = useMemo(
-    () => rows.filter((r) => r.selected && !r.productId && !r.skipped).length,
-    [rows]
+    () => rows.filter((r) => r.selected && isRowSelectable(r)).length,
+    [rows, sessionId]
   );
-  const selectable = rows.filter((r) => !r.productId && !r.skipped);
+  const selectable = rows.filter((r) => isRowSelectable(r));
   const allSelected =
     selectable.length > 0 && selectable.every((r) => r.selected);
+
+  /** Колонки превью по текущему сопоставлению (чтобы видеть новые значения). */
+  const previewValueColumns = useMemo(() => {
+    const cols = [];
+    const pushMain = (key, label, multiline = false) => {
+      const mapped = asColumnList(mapping[key]);
+      if (!mapped.length) return;
+      cols.push({ id: `main:${key}`, label, mapped, multiline });
+    };
+    pushMain('description', 'Описание', true);
+    pushMain('applicability', 'Применимость', true);
+    pushMain('analogs', 'Аналоги', true);
+    pushMain('country', 'Страна', false);
+    for (const t of extraAttrTargets) {
+      const mapped = asColumnList(attributeMappings[t.attrId]);
+      if (!mapped.length) continue;
+      cols.push({
+        id: t.id,
+        label: t.name,
+        mapped,
+        multiline: /textarea|text|html|multiline/i.test(String(t.type || '')),
+      });
+    }
+    return cols;
+  }, [mapping, attributeMappings, extraAttrTargets]);
 
   const applyPreviewData = (data) => {
     const suggested = data?.suggestedMapping || {};
@@ -546,16 +590,18 @@ export function CatalogBundleImportPanel() {
       return {
         ...r,
         key: rowKey(r),
-        selected: !exists,
+        selected: true,
         productId: existingId,
-        skipped: exists,
+        skipped: false,
         exists,
-        createStatus: exists ? 'skipped' : '',
+        createStatus: exists ? 'exists' : '',
         createError: exists
           ? `Уже в каталоге (#${existingId})` +
             (r.existingProductName ? `: ${r.existingProductName}` : '')
           : '',
         imagesAdded: null,
+        proposals: [],
+        filled: [],
       };
     });
     setRows(nextRows);
@@ -635,9 +681,7 @@ export function CatalogBundleImportPanel() {
   const toggleSelectAll = (e) => {
     const checked = e.target.checked;
     setRows((prev) =>
-      prev.map((r) =>
-        r.productId || r.skipped ? r : { ...r, selected: checked }
-      )
+      prev.map((r) => (isRowSelectable(r) ? { ...r, selected: checked } : r))
     );
   };
 
@@ -646,12 +690,18 @@ export function CatalogBundleImportPanel() {
       setCreateError('Сначала загрузите ZIP или папку');
       return;
     }
-    const selected = rows.filter((r) => r.selected && !r.productId && !r.skipped);
+    const selected = rows.filter((r) => r.selected && isRowSelectable(r));
     if (!selected.length) {
       setCreateError('Выберите позиции');
       return;
     }
+    const needsDefaults = selected.some((r) => !r.exists && !r.productId);
+    if (needsDefaults && (!defaults.categoryId || !defaults.organizationId)) {
+      setCreateError('Укажите категорию и организацию для новых товаров');
+      return;
+    }
     if (!defaults.categoryId || !defaults.organizationId) {
+      // Для дозаполнения тоже нужны — новые атрибуты цепляем к категории
       setCreateError('Укажите категорию и организацию');
       return;
     }
@@ -688,6 +738,20 @@ export function CatalogBundleImportPanel() {
         prev.map((row) => {
           const hit = byIndex.get(Number(row.index));
           if (!hit) return row;
+          if (hit.ok && hit.merged) {
+            return {
+              ...row,
+              selected: false,
+              productId: hit.productId || row.productId,
+              imagesAdded: hit.imagesAdded ?? 0,
+              createStatus: 'merged',
+              createError: hit.message || hit.imageWarning || '',
+              skipped: false,
+              exists: true,
+              proposals: Array.isArray(hit.proposals) ? hit.proposals : [],
+              filled: hit.filled || [],
+            };
+          }
           if (hit.ok) {
             return {
               ...row,
@@ -718,9 +782,29 @@ export function CatalogBundleImportPanel() {
       );
       setCreateMessage(
         `Создано: ${data?.ok ?? 0}` +
+          (data?.merged ? `, дополнено: ${data.merged}` : '') +
+          (data?.proposalCount ? `, предложений: ${data.proposalCount}` : '') +
           (data?.skipped ? `, пропущено: ${data.skipped}` : '') +
           (data?.failed ? `, ошибок: ${data.failed}` : '')
       );
+      const proposalItems = (data?.results || [])
+        .filter(
+          (x) =>
+            x.ok &&
+            x.merged &&
+            x.productId &&
+            Array.isArray(x.proposals) &&
+            x.proposals.length > 0
+        )
+        .map((x) => ({
+          productId: x.productId,
+          sku: x.sku,
+          name: x.name,
+          proposals: x.proposals.map((p) => ({ ...p, accept: true })),
+        }));
+      if (proposalItems.length) {
+        setProposalModal({ open: true, items: proposalItems });
+      }
       setSessionId('');
     } catch (err) {
       setCreateError(
@@ -731,12 +815,62 @@ export function CatalogBundleImportPanel() {
     }
   };
 
+  const toggleProposalAccept = (productId, field, accept) => {
+    setProposalModal((prev) => ({
+      ...prev,
+      items: (prev.items || []).map((it) =>
+        Number(it.productId) !== Number(productId)
+          ? it
+          : {
+              ...it,
+              proposals: (it.proposals || []).map((p) =>
+                p.field === field ? { ...p, accept } : p
+              ),
+            }
+      ),
+    }));
+  };
+
+  const applySelectedProposals = async () => {
+    const payload = (proposalModal.items || [])
+      .map((it) => ({
+        productId: it.productId,
+        accepted: (it.proposals || [])
+          .filter((p) => p.accept)
+          .map((p) => ({
+            field: p.field,
+            proposed: p.proposed,
+            attributeId: p.attributeId,
+          })),
+      }))
+      .filter((it) => it.accepted.length > 0);
+    if (!payload.length) {
+      setProposalModal({ open: false, items: [] });
+      return;
+    }
+    setApplyingProposals(true);
+    try {
+      await productsApi.enrichApplyProposals(payload);
+      setProposalModal({ open: false, items: [] });
+      setCreateMessage((prev) =>
+        prev ? `${prev}; предложения применены` : 'Предложения применены'
+      );
+    } catch (err) {
+      setCreateError(
+        err?.response?.data?.message || err?.message || 'Не удалось применить предложения'
+      );
+    } finally {
+      setApplyingProposals(false);
+    }
+  };
+
   return (
     <div className="catalog-bundle-panel">
       <p className="text-muted small mb-3">
         Загрузите результат парсера: ZIP или целиком папку — один Excel (.xlsx) и рядом папки,
         названные как артикулы, с фото внутри. До 5000 товаров и до 50 фото на товар.
-        Существующие артикулы будут пропущены.
+        Уже существующие артикулы можно дозаполнить: пустые поля пишутся сразу, отличия — в
+        предложениях.
       </p>
 
       <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
@@ -874,7 +1008,9 @@ export function CatalogBundleImportPanel() {
               onClick={createSelected}
               disabled={creating || selectedCount === 0 || !sessionId}
             >
-              {creating ? 'Создание…' : `Добавить (${selectedCount})`}
+              {creating
+                ? 'Создание…'
+                : `Добавить / дополнить (${selectedCount})`}
             </Button>
             {!sessionId ? (
               <span className="text-muted small ms-2">
@@ -902,6 +1038,9 @@ export function CatalogBundleImportPanel() {
                   <th>Название</th>
                   <th>Бренд</th>
                   <th>Фото</th>
+                  {previewValueColumns.map((c) => (
+                    <th key={c.id}>{c.label}</th>
+                  ))}
                   <th>Статус</th>
                 </tr>
               </thead>
@@ -910,34 +1049,43 @@ export function CatalogBundleImportPanel() {
                   <tr
                     key={row.key}
                     className={
-                      row.productId && !row.skipped
-                        ? 'is-created'
-                        : row.skipped
-                          ? 'is-skipped'
-                          : row.createStatus === 'error'
-                            ? 'is-error'
-                            : ''
+                      row.createStatus === 'merged'
+                        ? 'is-merged'
+                        : row.createStatus === 'ok'
+                          ? 'is-created'
+                          : row.createStatus === 'skipped'
+                            ? 'is-skipped'
+                            : row.createStatus === 'error'
+                              ? 'is-error'
+                              : row.exists
+                                ? 'is-exists'
+                                : ''
                     }
                   >
                     <td>
                       <input
                         type="checkbox"
                         checked={!!row.selected}
-                        disabled={!!row.productId || !!row.skipped || !sessionId}
+                        disabled={!isRowSelectable(row)}
                         onChange={(e) => updateRow(row.key, { selected: e.target.checked })}
                         aria-label={`Выбрать ${row.sku}`}
                       />
                     </td>
                     <td>
                       <div className="small fw-semibold">{row.sku || '—'}</div>
-                      {row.productId ? (
-                        <div className={row.skipped ? 'text-muted small' : 'text-success small'}>
-                          {row.skipped ? (
-                            <a href={`/products/${row.productId}`}>уже есть #{row.productId}</a>
-                          ) : (
-                            `#${row.productId}`
-                          )}
+                      {row.createStatus === 'merged' && row.productId ? (
+                        <div className="text-success small">
+                          <a href={`/products/${row.productId}`}>дополнено #{row.productId}</a>
                         </div>
+                      ) : row.exists && row.productId ? (
+                        <div className="text-muted small">
+                          <a href={`/products/${row.productId}`}>уже есть #{row.productId}</a>
+                          {!isRowFinished(row) ? (
+                            <div>можно выбрать и дополнить</div>
+                          ) : null}
+                        </div>
+                      ) : row.createStatus === 'ok' && row.productId ? (
+                        <div className="text-success small">#{row.productId}</div>
                       ) : null}
                     </td>
                     <td>
@@ -951,26 +1099,44 @@ export function CatalogBundleImportPanel() {
                           ? `${row.imageCount} в папке`
                           : '—'}
                     </td>
+                    {previewValueColumns.map((c) => {
+                      const text = resolveRawMapped(row.raw, c.mapped, {
+                        multiline: c.multiline,
+                      });
+                      return (
+                        <td key={c.id} className="small product-enrichment-cell-scroll">
+                          {text ? (
+                            <pre className="product-enrichment-desc product-enrichment-desc--cell">
+                              {text}
+                            </pre>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                      );
+                    })}
                     <td className="small">
-                      {row.skipped ? (
+                      {row.createStatus === 'merged' ? (
+                        <div className="text-success">
+                          {row.createError || 'дополнено'}
+                          {Array.isArray(row.proposals) && row.proposals.length ? (
+                            <div className="text-muted">
+                              предложений: {row.proposals.length}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : row.createStatus === 'error' ? (
+                        <div className="text-danger">{row.createError || 'ошибка'}</div>
+                      ) : row.createStatus === 'ok' ? (
+                        <span className="text-success">создан</span>
+                      ) : row.exists ? (
                         <div className="text-muted">
                           {row.createError || 'уже есть в каталоге'}
                         </div>
+                      ) : row.warnings?.length ? (
+                        <span className="text-warning">{row.warnings.join('; ')}</span>
                       ) : (
-                        <>
-                          {row.warnings?.length ? (
-                            <span className="text-warning">{row.warnings.join('; ')}</span>
-                          ) : null}
-                          {row.createStatus === 'error' ? (
-                            <div className="text-danger">
-                              {row.createError || 'ошибка'}
-                            </div>
-                          ) : row.productId ? (
-                            <span className="text-success">создан</span>
-                          ) : row.warnings?.length ? null : (
-                            <span className="text-muted">—</span>
-                          )}
-                        </>
+                        <span className="text-muted">—</span>
                       )}
                     </td>
                   </tr>
@@ -980,6 +1146,87 @@ export function CatalogBundleImportPanel() {
           </div>
         </>
       ) : null}
+
+      <Modal
+        isOpen={proposalModal.open}
+        onClose={() => {
+          if (!applyingProposals) setProposalModal({ open: false, items: [] });
+        }}
+        title="Предложения по уже заполненным полям"
+        size="large"
+      >
+        <div>
+          <p className="text-muted small mb-3">
+            Пустые поля уже дополнены. Ниже — отличия от текущих значений в каталоге. Отметьте, что
+            заменить.
+          </p>
+          <div className="product-enrichment-proposals">
+            {(proposalModal.items || []).map((it) => (
+              <div key={String(it.productId)} className="product-enrichment-proposal-card">
+                <div className="fw-semibold mb-2">
+                  {it.sku || '—'}
+                  {it.name ? ` · ${it.name}` : ''}
+                  <span className="text-muted small ms-2">#{it.productId}</span>
+                </div>
+                <table className="table table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 36 }} />
+                      <th>Поле</th>
+                      <th>Сейчас</th>
+                      <th>Из файла</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(it.proposals || []).map((p) => (
+                      <tr key={`${it.productId}-${p.field}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={!!p.accept}
+                            disabled={applyingProposals}
+                            onChange={(e) =>
+                              toggleProposalAccept(it.productId, p.field, e.target.checked)
+                            }
+                            aria-label={`Принять ${p.label || p.field}`}
+                          />
+                        </td>
+                        <td>{p.label || p.field}</td>
+                        <td>
+                          <div className="product-enrichment-proposal-val">{p.current || '—'}</div>
+                        </td>
+                        <td>
+                          <div className="product-enrichment-proposal-val">{p.proposed || '—'}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+          <div className="d-flex justify-content-end gap-2 mt-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={applyingProposals}
+              onClick={() => setProposalModal({ open: false, items: [] })}
+            >
+              Пропустить
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              disabled={applyingProposals}
+              onClick={applySelectedProposals}
+            >
+              {applyingProposals ? 'Применение…' : 'Применить выбранные'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

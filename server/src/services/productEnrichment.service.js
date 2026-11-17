@@ -1939,12 +1939,24 @@ export async function applyEnrichmentProposals(items, opts = {}) {
           applied.push(field);
           continue;
         }
-        if (['name', 'description'].includes(field) && item.proposed != null) {
+        // Произвольный атрибут (импорт из парсера / доп. столбцы)
+        if (item.attributeId != null && item.proposed != null) {
+          existingAv[String(item.attributeId)] = String(item.proposed);
+          attrChanged = true;
+          applied.push(field || `attr:${item.attributeId}`);
+          continue;
+        }
+        if (['name', 'description', 'country_of_origin'].includes(field) && item.proposed != null) {
           updates[field] = String(item.proposed);
           applied.push(field);
           continue;
         }
-        if (['weight', 'length', 'width', 'height'].includes(field) && item.proposed != null) {
+        if (
+          ['weight', 'length', 'width', 'height', 'product_length', 'product_width', 'product_height', 'product_weight'].includes(
+            field
+          ) &&
+          item.proposed != null
+        ) {
           const n = Number(item.proposed);
           if (Number.isFinite(n)) {
             updates[field] = n;
@@ -1956,7 +1968,14 @@ export async function applyEnrichmentProposals(items, opts = {}) {
       if (attrChanged) {
         updates.attribute_values = existingAv;
         const catId = product.categoryId ?? product.user_category_id;
-        await ensureCategoryHasAttributes(catId, [attrIds.analogsId, attrIds.applicabilityId]);
+        const attrIdsToAttach = [
+          attrIds.analogsId,
+          attrIds.applicabilityId,
+          ...accepted
+            .map((x) => (x?.attributeId != null ? String(x.attributeId) : null))
+            .filter(Boolean),
+        ];
+        await ensureCategoryHasAttributes(catId, attrIdsToAttach);
       }
       if (Object.keys(updates).length) {
         await productsRepo().update(productId, updates);
