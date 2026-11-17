@@ -343,15 +343,35 @@ function joinMappedParts(parts, { multiline = false } = {}) {
   return list.join(multiline ? '\n' : '. ');
 }
 
+const ATTR_NAME_ALIASES = {
+  oem: ['oem', 'оем', 'оем номер', 'оем номера', 'oem номер', 'oem номера', 'оригинал', 'оригиналы'],
+  'оем номера': ['oem', 'оем', 'оем номер', 'оем номера', 'oem номер'],
+  'оем номер': ['oem', 'оем', 'оем номер', 'оем номера'],
+};
+
+function attrColumnHints(attrName) {
+  const want = normKey(attrName);
+  if (!want) return [];
+  const extra = ATTR_NAME_ALIASES[want] || [];
+  return [...new Set([want, ...extra.map(normKey)])];
+}
+
 function suggestAttributeMappings(columns, attributes) {
   const out = {};
   const cols = Array.isArray(columns) ? columns : [];
+  const used = new Set();
   for (const attr of attributes || []) {
     if (attr.systemKey) continue; // системные поля карточки маппим отдельно
-    const want = normKey(attr.name);
-    if (!want) continue;
-    const hit = cols.find((c) => normKey(c) === want);
-    if (hit) out[String(attr.id)] = hit;
+    const hints = attrColumnHints(attr.name);
+    if (!hints.length) continue;
+    const hit = cols.find((c) => {
+      const nc = normKey(c);
+      return nc && !used.has(nc) && hints.includes(nc);
+    });
+    if (hit) {
+      out[String(attr.id)] = hit;
+      used.add(normKey(hit));
+    }
   }
   return out;
 }

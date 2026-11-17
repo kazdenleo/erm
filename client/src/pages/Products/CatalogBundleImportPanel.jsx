@@ -329,18 +329,39 @@ const DIM_SYSTEM_KEYS = new Set([
   'weight',
 ]);
 
+/** Синонимы имени атрибута → столбцы Excel (нормированные). */
+const ATTR_NAME_ALIASES = {
+  oem: ['oem', 'оем', 'оем номер', 'оем номера', 'oem номер', 'oem номера', 'оригинал', 'оригиналы'],
+  'оем номера': ['oem', 'оем', 'оем номер', 'оем номера', 'oem номер'],
+  'оем номер': ['oem', 'оем', 'оем номер', 'оем номера'],
+};
+
+function attrColumnHints(attrName) {
+  const want = normCol(attrName);
+  if (!want) return [];
+  const extra = ATTR_NAME_ALIASES[want] || [];
+  return [...new Set([want, ...extra.map(normCol)])];
+}
+
 function suggestAttributeMappings(columns, attrs) {
   const out = {};
   const cols = Array.isArray(columns) ? columns : [];
+  const used = new Set();
   for (const attr of attrs || []) {
     if (!attr?.id || !attr?.name) continue;
     // Габариты не подставляем сами — иначе в карточку уезжают «размеры упаковки по умолчанию»
     const sk = String(attr.system_key ?? attr.systemKey ?? '').trim();
     if (sk && DIM_SYSTEM_KEYS.has(sk)) continue;
-    const want = normCol(attr.name);
-    if (!want) continue;
-    const hit = cols.find((c) => normCol(c) === want);
-    if (hit) out[String(attr.id)] = [hit];
+    const hints = attrColumnHints(attr.name);
+    if (!hints.length) continue;
+    const hit = cols.find((c) => {
+      const nc = normCol(c);
+      return nc && !used.has(nc) && hints.includes(nc);
+    });
+    if (hit) {
+      out[String(attr.id)] = [hit];
+      used.add(normCol(hit));
+    }
   }
   return out;
 }
@@ -510,9 +531,9 @@ export function CatalogBundleImportPanel() {
     return map;
   }, [fieldMappings, allTargets]);
 
-  // После выбора категории — подсказать совпадения имён для атрибутов (основное не трогаем)
+  // Подсказать совпадения имён атрибутов со столбцами (не ждём категорию — OEM и пр. в «Общие»)
   useEffect(() => {
-    if (!defaults.categoryId) return;
+    if (!columns.length || !extraAttrTargets.length) return;
     const suggested = suggestAttributeMappings(
       columns,
       extraAttrTargets.map((t) => ({
@@ -535,7 +556,7 @@ export function CatalogBundleImportPanel() {
       return changed ? next : prev;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaults.categoryId, columns, extraAttrKey]);
+  }, [columns, extraAttrKey]);
 
   const isRowFinished = (r) =>
     r?.createStatus === 'ok' || r?.createStatus === 'merged';
@@ -574,14 +595,35 @@ export function CatalogBundleImportPanel() {
     return cols;
   }, [mapping, attributeMappings, extraAttrTargets]);
 
+  /** Столбцы Excel, которые ещё ни к чему не привязаны. */
+  const unmappedColumns = useMemo(() => {
+    const used = new Set();
+    for (const cols of Object.values(fieldMappings || {})) {
+      for (const c of asColumnList(cols)) used.add(normCol(c));
+    }
+    return (columns || []).filter((c) => {
+      const n = normCol(c);
+      return n && !used.has(n);
+    });
+  }, [columns, fieldMappings]);
+
   const applyPreviewData = (data) => {
     const suggested = data?.suggestedMapping || {};
+    const suggestedAttrs =
+      data?.suggestedAttributeMappings && typeof data.suggestedAttributeMappings === 'object'
+        ? data.suggestedAttributeMappings
+        : {};
     setSessionId(String(data?.sessionId || ''));
     setColumns(Array.isArray(data?.columns) ? data.columns : []);
     const nextFields = EMPTY_FIELD_MAPPINGS();
     for (const t of MAIN_FIELD_TARGETS) {
       const cols = asColumnList(suggested[t.key]);
       if (cols.length) nextFields[t.id] = cols;
+    }
+    for (const [aid, colSpec] of Object.entries(suggestedAttrs)) {
+      const cols = asColumnList(colSpec);
+      if (!aid || !cols.length) continue;
+      nextFields[`attr:${aid}`] = cols;
     }
     setFieldMappings(nextFields);
     const nextRows = (data?.rows || []).map((r) => {
@@ -998,6 +1040,17 @@ export function CatalogBundleImportPanel() {
               columnOwners={columnOwners}
               onChange={setFieldMappings}
             />
+            {unmappedColumns.length ? (
+              <p className="text-muted small mt-2 mb-0">
+                Не сопоставлены столбцы:{' '}
+                {unmappedColumns.map((c) => (
+                  <span key={c} className="badge bg-light text-dark border me-1">
+                    {c}
+                  </span>
+                ))}
+                — добавьте через «+ Добавить сопоставление…» (например OEM → атрибут OEM).
+              </p>
+            ) : null}
           </section>
 
           <div className="product-enrichment-bulk-bar">
