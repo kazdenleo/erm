@@ -506,16 +506,20 @@ export function FboPurchaseCalculation() {
       if (!cell?.supplyItemId || cell.deleted) continue;
       if (cell.multiSource || (cell.parts?.length ?? 0) > 1) continue;
       const isKitComponent = Boolean(cell.isKitComponent && cell.kitProductId);
-      const qtyRaw = isKitComponent
-        ? Number(row.supplyQty?.[s.id]) || 0
-        : Number(cell.quantity) || Number(row.supplyQty?.[s.id]) || 0;
-      const quantity = Math.max(0, Math.floor(qtyRaw));
+      const kitUnits = Math.max(0, Math.floor(Number(cell.quantity) || 0));
+      const componentQty = Math.max(0, Math.floor(Number(row.supplyQty?.[s.id]) || 0));
+      // Для аналога комплектующего в поставку пишем штуки; kitUnits — если ошибочно выбран комплект.
+      const quantity = isKitComponent
+        ? componentQty || kitUnits
+        : kitUnits || componentQty;
       if (quantity < 1) continue;
       targets.push({
         supplyId: s.id,
         supplyLabel: s.label,
         supplyItemId: cell.supplyItemId,
         quantity,
+        kitUnits: kitUnits || null,
+        kitProductId: cell.kitProductId != null ? Number(cell.kitProductId) : null,
         isKitComponent,
       });
     }
@@ -566,11 +570,25 @@ export function FboPurchaseCalculation() {
     try {
       if (replaceCtx.mode === 'replace_all' || replaceCtx.mode === 'add_all') {
         const targets = Array.isArray(replaceCtx.targets) ? replaceCtx.targets : [];
+        const selectedIsKit =
+          String(product?.product_type || product?.productType || '').toLowerCase() === 'kit';
+        const parentKitIds = new Set(
+          targets.map((t) => Number(t.kitProductId)).filter((n) => Number.isFinite(n) && n > 0)
+        );
+        if (parentKitIds.has(Number(productId))) {
+          setErr(
+            'Нельзя добавить сам комплект как аналог комплектующего — в поставку ушло бы число штук как число комплектов. Выберите обычный товар.'
+          );
+          return;
+        }
         for (const t of targets) {
           if (replaceCtx.mode === 'add_all' || t.isKitComponent) {
+            // Если выбран другой комплект — пишем число комплектов, иначе штуки комплектующего.
+            const qtyToWrite =
+              selectedIsKit && t.kitUnits != null && t.kitUnits > 0 ? t.kitUnits : t.quantity;
             await fboSuppliesApi.addSupplyItem(t.supplyId, {
               productId,
-              quantity: t.quantity,
+              quantity: qtyToWrite,
             });
           } else {
             await fboSuppliesApi.replaceSupplyItem(t.supplyId, t.supplyItemId, {

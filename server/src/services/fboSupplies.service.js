@@ -1054,20 +1054,43 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
-    const ins = await query(
-      `INSERT INTO fbo_supply_items (
-        fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, name
-      ) VALUES ($1,$2,$3,$3,$4,$5,$6)
-      RETURNING id, fbo_supply_id, product_id, quantity`,
-      [sid, prod.id, qty, prod.barcode, prod.sku, prod.name]
+    // Уже есть строка с этим товаром — увеличиваем её, не плодим дубликаты в расчёте закупки.
+    const existing = await query(
+      `SELECT id, quantity
+       FROM fbo_supply_items
+       WHERE fbo_supply_id = $1 AND product_id = $2
+       ORDER BY id
+       LIMIT 1`,
+      [sid, prod.id]
     );
+    let row;
+    if (existing.rows?.length) {
+      const prevId = existing.rows[0].id;
+      const nextQty = (Number(existing.rows[0].quantity) || 0) + qty;
+      const upd = await query(
+        `UPDATE fbo_supply_items
+         SET quantity = $1, mp_quantity = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2
+         RETURNING id, fbo_supply_id, product_id, quantity`,
+        [nextQty, prevId]
+      );
+      row = upd.rows[0];
+    } else {
+      const ins = await query(
+        `INSERT INTO fbo_supply_items (
+          fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, name
+        ) VALUES ($1,$2,$3,$3,$4,$5,$6)
+        RETURNING id, fbo_supply_id, product_id, quantity`,
+        [sid, prod.id, qty, prod.barcode, prod.sku, prod.name]
+      );
+      row = ins.rows[0];
+    }
     await query(
       `UPDATE fbo_supplies
        SET pending_mp_content_update = TRUE, updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [sid]
     );
-    const row = ins.rows[0];
     await fboSupplyReserveService
       .rebalanceReservesForProduct(prod.id, { profileId: normalizeProfileId(profileId) })
       .catch(() => {});
@@ -1076,6 +1099,7 @@ class FboSuppliesService {
       supplyId: row.fbo_supply_id,
       productId: row.product_id,
       quantity: row.quantity,
+      merged: Boolean(existing.rows?.length),
     };
   }
 
