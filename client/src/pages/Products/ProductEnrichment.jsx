@@ -1423,6 +1423,7 @@ export function ProductEnrichment() {
         }}
         title="Предложения по уже заполненным полям"
         size="large"
+        scrollable
       >
         <div>
           <p className="text-muted small mb-3">
@@ -1465,7 +1466,9 @@ export function ProductEnrichment() {
                           <div className="product-enrichment-proposal-val">{p.current || '—'}</div>
                         </td>
                         <td>
-                          <div className="product-enrichment-proposal-val">{p.proposed || '—'}</div>
+                          <div className="product-enrichment-proposal-val product-enrichment-proposal-val--changed">
+                            {p.proposed || '—'}
+                          </div>
                         </td>
                       </tr>
                     ))}
