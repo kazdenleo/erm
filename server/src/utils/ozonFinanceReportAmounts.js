@@ -42,6 +42,8 @@ export function categorizeOzonServiceName(name) {
 export function categorizeOzonOperationKind(operationType) {
   const t = String(operationType || '').toLowerCase();
   if (t.includes('deliveredtocustomer')) return 'sale';
+  // «Выкуп товара у селлера» — в выручку ОПиУ (как реализация).
+  if (t.includes('buyout') || t.includes('выкуп')) return 'sale';
   if (t.includes('commission')) return 'commission';
   if (t.includes('defectfine') || (t.includes('fine') && !t.includes('cancelled'))) return 'penalty';
   if (t.includes('return')) return 'return';
