@@ -76,14 +76,16 @@ export function formatQty(n, digits = 2) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: digits }).format(Number(n));
 }
 
+/** Суммы в аналитике всегда с копейками (не округляем до рублей). */
 export function formatRub(n) {
   if (n == null || !Number.isFinite(Number(n))) return '—';
+  const value = Number(n);
   return new Intl.NumberFormat('ru-RU', {
     style: 'currency',
     currency: 'RUB',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(Number(n));
+  }).format(value);
 }
 
 export function formatPercent(n, digits = 1) {
