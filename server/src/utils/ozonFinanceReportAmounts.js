@@ -42,9 +42,10 @@ export function categorizeOzonServiceName(name) {
 export function categorizeOzonOperationKind(operationType) {
   const t = String(operationType || '').toLowerCase();
   if (t.includes('deliveredtocustomer')) return 'sale';
-  // «Выкуп товара у селлера» — в выручку ОПиУ (как реализация).
-  if (t.includes('buyout') || t.includes('выкуп')) return 'sale';
   if (t.includes('commission')) return 'commission';
+  // Выкуп у селлера — не продажа покупателю; в выручку ОПиУ не кладём.
+  if (t.includes('buyout') || t.includes('выкуп')) return 'other';
+
   if (t.includes('defectfine') || (t.includes('fine') && !t.includes('cancelled'))) return 'penalty';
   if (t.includes('return')) return 'return';
   if (t.includes('storage')) return 'storage';
@@ -99,7 +100,9 @@ export function extractOzonFinanceAmounts(op) {
     else if (kind === 'storage') amounts.storage_amount = abs;
     else if (kind === 'return') amounts.logistics_amount = abs;
     else if (kind === 'compensation') amounts.other_deductions = -abs;
-    else if (kind !== 'sale') amounts.other_deductions = abs;
+    else if (kind === 'buyout') {
+      // взаиморасчёты / клиринг — не в продажи и не в удержания ОПиУ
+    } else if (kind !== 'sale') amounts.other_deductions = abs;
   }
 
   if (saleReversal) {
