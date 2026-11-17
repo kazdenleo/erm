@@ -755,6 +755,15 @@ function resolveLineProductId(lookup, line) {
   return null;
 }
 
+function shouldSkipOzonAmountRecategorize(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  // Патч взаиморасчётов / строки, уже выровненные под 1С — не перетирать из raw_json.
+  if (raw._settlement_patched === true) return true;
+  if (raw.source === 'ozon_mutual_settlement') return true;
+  if (raw.realization_source === true) return true;
+  return false;
+}
+
 async function recategorizeOzonReportLines(profileId, syncId = null) {
   const params = [profileId];
   const syncFilter = syncId != null ? 'AND sync_id = $2' : '';
@@ -776,7 +785,11 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
   const batchSize = 100;
   let updated = 0;
   for (let i = 0; i < res.rows.length; i += batchSize) {
-    const batch = res.rows.slice(i, i + batchSize).sort((a, b) => Number(a.id) - Number(b.id));
+    const batch = res.rows
+      .slice(i, i + batchSize)
+      .filter((row) => !shouldSkipOzonAmountRecategorize(row.raw_json))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    if (!batch.length) continue;
     const values = [];
     const batchParams = [];
     let p = 1;
