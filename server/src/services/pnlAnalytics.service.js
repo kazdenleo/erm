@@ -196,6 +196,22 @@ class PnlAnalyticsService {
       });
     }
 
+    // Ozon: «к перечислению» = выручка − удержания (как в отчёте о взаиморасчётах / 1С).
+    // Иначе payout из accrual POSTING и строки реализации дают рассинхрон с разбивкой расходов.
+    for (const c of cells.values()) {
+      if (c.mp !== 'ozon') continue;
+      const f = c.facts;
+      const revenue = (Number(f.soldAmount) || 0) - (Number(f.returnedAmount) || 0);
+      f.netTransfer =
+        revenue -
+        (Number(f.commission) || 0) -
+        (Number(f.logistics) || 0) -
+        (Number(f.storage) || 0) -
+        (Number(f.penalty) || 0) -
+        (Number(f.acquiring) || 0) -
+        (Number(f.other) || 0);
+    }
+
     const netRevenue = (f) => f.soldAmount - f.returnedAmount;
     const revenueOf = (m, orgSet, mpSet) => {
       let sum = 0;

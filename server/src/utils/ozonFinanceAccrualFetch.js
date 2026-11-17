@@ -143,12 +143,24 @@ function productItemsFromItemFees(itemFees) {
  */
 function normalizePostingAccrual(accrual, typesMap, fallbackDate) {
   const products = Array.isArray(accrual?.posting?.products) ? accrual.posting.products : [];
-  const first = products[0] || {};
-  const commission = first.commission && typeof first.commission === 'object' ? first.commission : {};
-  const sellerPrice = moneyAmount(commission.seller_price);
-  const saleAmount = moneyAmount(commission.sale_amount ?? commission.seller_price);
-  const saleCommission = moneyAmount(commission.sale_commission ?? commission.commission);
-  const retailSigned = sellerPrice !== 0 ? sellerPrice : saleAmount;
+  // Суммируем по всем товарам отправления. Выручка = sale_amount («реализовано»),
+  // а не seller_price (цена за единицу) — иначе ОПиУ раздувается относительно отчёта о реализации / 1С.
+  let saleAmount = 0;
+  let saleCommission = 0;
+  for (const p of products) {
+    const commission = p?.commission && typeof p.commission === 'object' ? p.commission : {};
+    const lineSale = moneyAmount(commission.sale_amount);
+    const lineSeller = moneyAmount(commission.seller_price);
+    saleAmount += lineSale !== 0 ? lineSale : lineSeller;
+    saleCommission += moneyAmount(commission.sale_commission ?? commission.commission);
+  }
+  if (!products.length) {
+    const commission =
+      accrual?.commission && typeof accrual.commission === 'object' ? accrual.commission : {};
+    saleAmount = moneyAmount(commission.sale_amount ?? commission.seller_price ?? accrual.sale_amount);
+    saleCommission = moneyAmount(commission.sale_commission ?? commission.commission);
+  }
+  const retailSigned = saleAmount;
   const total = moneyAmount(accrual.total_amount ?? accrual.amount);
 
   const deliveryServices = [];
@@ -158,7 +170,7 @@ function normalizePostingAccrual(accrual, typesMap, fallbackDate) {
     deliveryServices.push(...servicesFromTypeFees(services, typesMap));
   }
 
-  // Знак seller_price/sale_amount: плюс — продажа, минус — сторно/возврат (как в кабинете Ozon).
+  // Знак sale_amount: плюс — продажа, минус — сторно/возврат (как в кабинете Ozon).
   const isSale = retailSigned > 0 || (retailSigned === 0 && total > 0);
   const isStorno = retailSigned < 0 || (retailSigned === 0 && total < 0 && saleCommission !== 0);
   let operationType = 'POSTING';

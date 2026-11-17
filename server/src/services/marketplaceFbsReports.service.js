@@ -13,6 +13,10 @@ import {
   fetchOzonFinanceAccrualOperations,
   filterOzonFbsAccrualOperations,
 } from '../utils/ozonFinanceAccrualFetch.js';
+import {
+  fetchOzonFinanceRealizationForRange,
+  stripPostingSaleRetailForRealization,
+} from '../utils/ozonFinanceRealization.js';
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
 import { fetchWbSalesReportsDetailed } from '../utils/wbSalesReportsDetailed.js';
@@ -432,7 +436,7 @@ function mapOzonTransactionRow(op, profileId, syncId) {
           : null,
     sku: firstItem?.sku != null ? String(firstItem.sku) : null,
     product_name: firstItem?.name != null ? String(firstItem.name) : null,
-    barcode: null,
+    barcode: op?.barcode != null ? String(op.barcode) : null,
     quantity: toNum(firstItem?.quantity) || 1,
     retail_amount: amounts.retail_amount,
     commission_amount: amounts.commission_amount,
@@ -1355,11 +1359,44 @@ class MarketplaceFbsReportsService {
       const productLookup = await buildProductSkuLookup(profileId);
       await deleteFbsLinesForPeriod(profileId, 'ozon', dateFrom, dateTo);
       const ops = await fetchOzonFinanceTransactions({ clientId, apiKey, dateFrom, dateTo });
-      // by-day: FBS POSTING + связанные ITEM (эквайринг) по unit_number; старый isOzonFbsOperation ITEM отбрасывал.
-      const fbsOps = filterOzonFbsAccrualOperations(ops);
-      const mapped = fbsOps
+      // by-day: FBS POSTING + связанные ITEM. Выручку/комиссию продажи — из отчёта о реализации (как 1С / взаиморасчёты).
+      const fbsAccrualOps = filterOzonFbsAccrualOperations(ops);
+
+      let realizationOps = [];
+      let realizationSummary = null;
+      try {
+        const realization = await fetchOzonFinanceRealizationForRange({
+          clientId,
+          apiKey,
+          dateFrom,
+          dateTo,
+        });
+        realizationOps = realization.operations || [];
+        realizationSummary = realization.summary;
+        logger.info('[FBS Reports] Ozon realization loaded', {
+          profileId,
+          dateFrom,
+          dateTo,
+          rows: realizationOps.length,
+          summary: realizationSummary,
+        });
+      } catch (realErr) {
+        logger.warn('[FBS Reports] Ozon realization failed, sales stay from accrual sale_amount:', realErr?.message || realErr);
+      }
+
+      const useRealization = realizationOps.length > 0;
+      const fbsOps = useRealization
+        ? fbsAccrualOps.map(stripPostingSaleRetailForRealization)
+        : fbsAccrualOps;
+      const combined = useRealization ? [...fbsOps, ...realizationOps] : fbsOps;
+      const mapped = combined
         .map((op) => mapOzonTransactionRow(op, profileId, syncId))
         .filter((row) => isDateInRangeYmd(row.operation_date, dateFrom, dateTo));
+      // barcode из отчёта о реализации
+      for (let i = 0; i < mapped.length; i += 1) {
+        const src = combined[i];
+        if (src?.barcode && !mapped[i].barcode) mapped[i].barcode = String(src.barcode);
+      }
       const inserted = await insertReportLines(mapped, productLookup);
       try {
         await linkReportLinesToProducts(profileId, syncId);
@@ -1367,7 +1404,15 @@ class MarketplaceFbsReportsService {
         logger.warn('[FBS Reports] product link failed (ozon):', linkErr?.message || linkErr);
       }
       await finishSyncRun(syncId, { status: 'done', rowsImported: inserted });
-      return { syncId, marketplace: 'ozon', rowsImported: inserted, totalFetched: ops.length, fbsFiltered: fbsOps.length };
+      return {
+        syncId,
+        marketplace: 'ozon',
+        rowsImported: inserted,
+        totalFetched: ops.length,
+        fbsFiltered: fbsOps.length,
+        realizationRows: realizationOps.length,
+        realizationSummary,
+      };
     } catch (e) {
       await finishSyncRun(syncId, { status: 'error', errorMessage: e.message || String(e) });
       throw e;

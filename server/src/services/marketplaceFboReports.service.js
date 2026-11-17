@@ -10,6 +10,10 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { extractOzonFinanceAmounts } from '../utils/ozonFinanceReportAmounts.js';
 import { fetchOzonFinanceAccrualOperations } from '../utils/ozonFinanceAccrualFetch.js';
+import {
+  fetchOzonFinanceRealizationForRange,
+  stripPostingSaleRetailForRealization,
+} from '../utils/ozonFinanceRealization.js';
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
 import { fetchWbSalesReportsDetailed } from '../utils/wbSalesReportsDetailed.js';
@@ -1284,7 +1288,24 @@ class MarketplaceFboReportsService {
       const productLookup = await buildProductSkuLookup(profileId);
       await deleteFboLinesForPeriod(profileId, 'ozon', dateFrom, dateTo);
       const ops = await fetchOzonFinanceTransactions({ clientId, apiKey, dateFrom, dateTo });
-      const fboOps = ops.filter(isOzonFboOperation);
+      // Выручка Ozon для ОПиУ — из отчёта о реализации (строки пишет FBS sync).
+      // FBO POSTING обнуляем только если realization доступен, иначе продажи FBO пропадут.
+      let realizationOk = false;
+      try {
+        const realization = await fetchOzonFinanceRealizationForRange({
+          clientId,
+          apiKey,
+          dateFrom,
+          dateTo,
+        });
+        realizationOk = (realization.operations || []).length > 0;
+      } catch (realErr) {
+        logger.warn('[FBO Reports] Ozon realization check failed, keep FBO accrual sales:', realErr?.message || realErr);
+      }
+      const fboAccrualOps = ops.filter(isOzonFboOperation);
+      const fboOps = realizationOk
+        ? fboAccrualOps.map(stripPostingSaleRetailForRealization)
+        : fboAccrualOps;
       const mapped = fboOps
         .map((op) => mapOzonTransactionRow(op, profileId, syncId))
         .filter((row) => isDateInRangeYmd(row.operation_date, dateFrom, dateTo));
