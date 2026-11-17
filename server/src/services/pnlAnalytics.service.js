@@ -292,7 +292,10 @@ class PnlAnalyticsService {
         tax += c.tax;
       }
       const revenue = netRevenue(f);
-      const feesDetailed = f.commission + f.logistics + f.storage + f.penalty + f.acquiring + f.other;
+      // other > 0 — удержания; other < 0 — компенсации (напр. акт страховой премии Ozon за утерю/порчу).
+      const otherWithheld = Math.max(0, Number(f.other) || 0);
+      const feesDetailed =
+        f.commission + f.logistics + f.storage + f.penalty + f.acquiring + otherWithheld;
       const mpTake = revenue - f.netTransfer;
       const grossProfit = f.netTransfer - f.cost - f.additional;
       const fixedTotal = Object.values(fixed).reduce((s, v) => s + v, 0);
@@ -309,7 +312,7 @@ class PnlAnalyticsService {
         storage: round2(f.storage),
         penalty: round2(f.penalty),
         acquiring: round2(f.acquiring),
-        other: round2(f.other),
+        other: round2(otherWithheld),
         mpAdjustments: round2(mpTake - feesDetailed),
         mpTake: round2(mpTake),
         netTransfer: round2(f.netTransfer),

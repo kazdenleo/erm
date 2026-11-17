@@ -30,6 +30,9 @@ export function categorizeOzonServiceName(name) {
   ) {
     return 'logistics';
   }
+  if (n.includes('insur') || n.includes('страх')) {
+    return 'compensation';
+  }
   if (n.includes('package') || n.includes('materials')) {
     return 'other';
   }
@@ -43,6 +46,8 @@ export function categorizeOzonOperationKind(operationType) {
   if (t.includes('defectfine') || (t.includes('fine') && !t.includes('cancelled'))) return 'penalty';
   if (t.includes('return')) return 'return';
   if (t.includes('storage')) return 'storage';
+  // Акт страховой премии Ozon — компенсация за утерю/порчу, не удержание.
+  if (t.includes('insur') || t.includes('страх')) return 'compensation';
   return 'other';
 }
 
@@ -80,6 +85,7 @@ export function extractOzonFinanceAmounts(op) {
       if (cat === 'commission') amounts.commission_amount += n;
       else if (cat === 'logistics') amounts.logistics_amount += n;
       else if (cat === 'storage') amounts.storage_amount += n;
+      else if (cat === 'compensation') amounts.other_deductions -= n; // доход, не удержание
       else amounts.other_deductions += n;
     }
   } else if (saleReversal) {
@@ -90,6 +96,7 @@ export function extractOzonFinanceAmounts(op) {
     else if (kind === 'commission') amounts.commission_amount = abs;
     else if (kind === 'storage') amounts.storage_amount = abs;
     else if (kind === 'return') amounts.logistics_amount = abs;
+    else if (kind === 'compensation') amounts.other_deductions = -abs;
     else if (kind !== 'sale') amounts.other_deductions = abs;
   }
 

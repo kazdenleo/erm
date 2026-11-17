@@ -28,6 +28,17 @@ describe('extractOzonFinanceAmounts', () => {
     expect(amounts.logistics_amount).toBe(75);
     expect(amounts.commission_amount).toBe(0);
   });
+
+  test('insurance premium act is compensation (negative other), not a withholding', () => {
+    const amounts = extractOzonFinanceAmounts({
+      operation_type: 'InsurancePremiumAct',
+      amount: -153.32,
+      services: [],
+    });
+    expect(amounts.other_deductions).toBeCloseTo(-153.32);
+    expect(amounts.penalty_amount).toBe(0);
+    expect(amounts.commission_amount).toBe(0);
+  });
 });
 
 describe('buildOrderBreakdownFromLines', () => {
