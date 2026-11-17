@@ -3,7 +3,8 @@
  * пока Api-Key Ozon невалиден и /v2/finance/realization недоступен.
  *
  * Эталон (Зеленоглазое такси, авг 2026):
- *  - Отчёт о реализации:         181 781.52  (выручка; выкупы НЕ входят)
+ *  - Отчёт о реализации:         181 781.52
+ *  - Выкупы №5509298/1589573/1954396: 1 895.19 (в выручку)
  *  - Акт выполненных работ:        61 704.81
  *  - Отчёт о перевыставлении:       6 799.35
  *  - Отчёт по штрафам:              1 374.57
@@ -18,7 +19,9 @@ const TO = '2026-09-01';
 const OP_DATE = '2026-08-31';
 
 const REALIZATION = 181781.52;
-const SOLD = REALIZATION;
+// Три выкупа из взаиморасчётов (без №5547093 / 1379.50).
+const BUYOUTS = 515.69 + 536.8 + 842.7; // 1895.19
+const SOLD = Math.round((REALIZATION + BUYOUTS) * 100) / 100;
 const ACT = 61704.81;
 const REINVOICE = 6799.35;
 const PENALTY = 1374.57;
@@ -127,12 +130,17 @@ try {
         // Колонки logistics/penalty/other не восстанавливаются из extract — skip в recategorize.
         docs: {
           realization: REALIZATION,
+          buyouts: BUYOUTS,
+          buyoutDocs: [
+            { no: '5509298', amount: 515.69 },
+            { no: '1589573', amount: 536.8 },
+            { no: '1954396', amount: 842.7 },
+          ],
           sold: SOLD,
           act: ACT,
           reinvoice: REINVOICE,
           penalty: PENALTY,
           insuranceCompensation: INSURANCE_COMPENSATION,
-          // выкупы во взаиморасчётах есть, но в выручку ОПиУ не входят
         },
       }),
     ]

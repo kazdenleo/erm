@@ -10,7 +10,11 @@ import { sqlNormArticle } from './offerArticleKey.js';
 
 export const SALE_LINE = `(
   (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Продажа')
-  OR (LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer')
+  OR (LOWER(TRIM(l.marketplace)) = 'ozon' AND (
+    l.operation_type = 'OperationAgentDeliveredToCustomer'
+    OR l.operation_type ILIKE '%buyout%'
+    OR l.operation_type ILIKE '%выкуп%'
+  ))
   OR (LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
     l.operation_type ILIKE '%Плат%покупателя%'
     OR l.operation_type ILIKE '%платеж покупателя%'
