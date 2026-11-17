@@ -53,8 +53,8 @@ function resolveRawMapped(raw, cols, { multiline = false } = {}) {
   return multiline ? parts.join('\n') : parts.join('. ');
 }
 
-/** Поле превью было дописано или предложено к замене. */
-function previewColumnChanged(row, col) {
+/** Поле превью было дописано/предложено, либо это значение из файла для уже существующего SKU. */
+function previewColumnChanged(row, col, hasText) {
   if (!row || !col) return false;
   const filled = Array.isArray(row.filled) ? row.filled : [];
   const proposals = Array.isArray(row.proposals) ? row.proposals : [];
@@ -65,18 +65,23 @@ function previewColumnChanged(row, col) {
       .filter((p) => p.attributeId != null)
       .map((p) => `attr:${p.attributeId}`),
   ]);
-  if (!keys.size) return false;
-  if (col.id === 'main:description') return keys.has('description');
-  if (col.id === 'main:applicability') return keys.has('applicability');
-  if (col.id === 'main:analogs') return keys.has('analogs');
-  if (col.id === 'main:country') {
-    return keys.has('country_of_origin') || keys.has('country');
+  if (keys.size) {
+    if (col.id === 'main:description' && keys.has('description')) return true;
+    if (col.id === 'main:applicability' && keys.has('applicability')) return true;
+    if (col.id === 'main:analogs' && keys.has('analogs')) return true;
+    if (
+      col.id === 'main:country' &&
+      (keys.has('country_of_origin') || keys.has('country'))
+    ) {
+      return true;
+    }
+    if (String(col.id).startsWith('attr:')) {
+      const aid = String(col.id).slice(5);
+      if (keys.has(`attr:${aid}`) || keys.has(aid)) return true;
+    }
   }
-  if (String(col.id).startsWith('attr:')) {
-    const aid = String(col.id).slice(5);
-    return keys.has(`attr:${aid}`) || keys.has(aid);
-  }
-  return false;
+  // До нажатия «дополнить»: для уже существующих SKU значения из файла — «окна» серым
+  return !!(row.exists && hasText);
 }
 
 function mappingFromFieldMappings(fieldMappings) {
@@ -1213,15 +1218,18 @@ export function CatalogBundleImportPanel() {
                         <div className="text-success small">#{row.productId}</div>
                       ) : null}
                     </td>
-                    <td
-                      className={
-                        Array.isArray(row.proposals) &&
-                        row.proposals.some((p) => p.field === 'name')
-                          ? 'product-enrichment-cell--changed'
-                          : undefined
-                      }
-                    >
-                      <div className="product-enrichment-name-cell product-enrichment-cell-scroll">
+                    <td>
+                      <div
+                        className={
+                          'product-enrichment-cell-window' +
+                          (Array.isArray(row.proposals) &&
+                          row.proposals.some((p) => p.field === 'name')
+                            ? ' product-enrichment-cell-window--changed'
+                            : row.exists && row.name
+                              ? ' product-enrichment-cell-window--changed'
+                              : '')
+                        }
+                      >
                         {row.name || '—'}
                       </div>
                     </td>
@@ -1243,20 +1251,28 @@ export function CatalogBundleImportPanel() {
                       const text = resolveRawMapped(row.raw, c.mapped, {
                         multiline: c.multiline,
                       });
-                      const changed = previewColumnChanged(row, c);
+                      const changed = previewColumnChanged(row, c, !!text);
                       return (
                         <td
                           key={c.id}
-                          className={
-                            'small product-enrichment-cell-scroll' +
-                            (changed ? ' product-enrichment-cell--changed' : '')
+                          className="small"
+                          title={
+                            changed
+                              ? 'Значение из файла / дописано / предложено к замене'
+                              : undefined
                           }
-                          title={changed ? 'Поле дописано или предложено к замене' : undefined}
                         >
                           {text ? (
-                            <pre className="product-enrichment-desc product-enrichment-desc--cell">
-                              {text}
-                            </pre>
+                            <div
+                              className={
+                                'product-enrichment-cell-window' +
+                                (changed ? ' product-enrichment-cell-window--changed' : '')
+                              }
+                            >
+                              <pre className="product-enrichment-desc product-enrichment-desc--cell">
+                                {text}
+                              </pre>
+                            </div>
                           ) : (
                             <span className="text-muted">—</span>
                           )}
