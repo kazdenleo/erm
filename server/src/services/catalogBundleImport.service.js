@@ -1300,8 +1300,9 @@ export async function createFromSession(opts = {}) {
     const sku =
       resolveMappedColumnsValue(raw, mapping.sku, { multiline: false }) ||
       String(item.sku || '').trim();
+    const nameMapped = resolveMappedColumnsValue(raw, mapping.name, { multiline: false });
     const name =
-      resolveMappedColumnsValue(raw, mapping.name, { multiline: false }) ||
+      nameMapped ||
       String(item.name || '').trim() ||
       sku;
     const brandName =
@@ -1444,7 +1445,11 @@ export async function createFromSession(opts = {}) {
           }
         };
 
-        considerText('name', 'Название', name, existing.name);
+        // Название из файла — только если колонка «Название» реально сопоставлена
+        // (иначе в name попадает артикул и затирает нормальное имя в proposals).
+        if (nameMapped) {
+          considerText('name', 'Название', nameMapped, existing.name);
+        }
         considerText('description', 'Описание', description, existing.description);
         considerText(
           'country_of_origin',

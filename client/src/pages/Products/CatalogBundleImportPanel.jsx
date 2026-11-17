@@ -561,6 +561,15 @@ export function CatalogBundleImportPanel() {
   const isRowFinished = (r) =>
     r?.createStatus === 'ok' || r?.createStatus === 'merged';
   const isRowSelectable = (r) => !isRowFinished(r) && !!sessionId;
+  const pendingProposalCount = useMemo(
+    () =>
+      (proposalModal.items || []).reduce(
+        (n, it) => n + (Array.isArray(it.proposals) ? it.proposals.length : 0),
+        0
+      ),
+    [proposalModal.items]
+  );
+  const hasStoredProposals = (proposalModal.items || []).length > 0;
 
   const selectedCount = useMemo(
     () => rows.filter((r) => r.selected && isRowSelectable(r)).length,
@@ -842,11 +851,36 @@ export function CatalogBundleImportPanel() {
           productId: x.productId,
           sku: x.sku,
           name: x.name,
+          filled: Array.isArray(x.filled) ? x.filled : [],
           proposals: x.proposals.map((p) => ({ ...p, accept: true })),
         }));
-      if (proposalItems.length) {
-        setProposalModal({ open: true, items: proposalItems });
+      // Показать модалку, если есть proposals ИЛИ что-то дописали в пустые
+      const filledOnly = (data?.results || [])
+        .filter(
+          (x) =>
+            x.ok &&
+            x.merged &&
+            x.productId &&
+            (!Array.isArray(x.proposals) || !x.proposals.length) &&
+            Array.isArray(x.filled) &&
+            x.filled.length
+        )
+        .map((x) => ({
+          productId: x.productId,
+          sku: x.sku,
+          name: x.name,
+          filled: x.filled,
+          proposals: [],
+        }));
+      const modalItems = proposalItems.length
+        ? proposalItems
+        : filledOnly;
+      if (modalItems.length) {
+        setProposalModal({ open: true, items: modalItems });
+      } else {
+        setProposalModal({ open: false, items: [] });
       }
+      // Сессия на сервере уже закрыта; proposals живут в состоянии и apply-proposals.
       setSessionId('');
     } catch (err) {
       setCreateError(
@@ -1065,9 +1099,21 @@ export function CatalogBundleImportPanel() {
                 ? 'Создание…'
                 : `Добавить / дополнить (${selectedCount})`}
             </Button>
-            {!sessionId ? (
+            {hasStoredProposals ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="small"
+                onClick={() => setProposalModal((prev) => ({ ...prev, open: true }))}
+              >
+                Предложения ({pendingProposalCount})
+              </Button>
+            ) : null}
+            {!sessionId && rows.length > 0 ? (
               <span className="text-muted small ms-2">
-                Сессия уже использована — загрузите данные снова для нового импорта
+                {hasStoredProposals
+                  ? 'Импорт выполнен — откройте предложения или загрузите данные снова'
+                  : 'Сессия использована — загрузите данные снова для нового импорта'}
               </span>
             ) : null}
           </div>
@@ -1203,15 +1249,17 @@ export function CatalogBundleImportPanel() {
       <Modal
         isOpen={proposalModal.open}
         onClose={() => {
-          if (!applyingProposals) setProposalModal({ open: false, items: [] });
+          // Не сбрасываем items — можно открыть снова кнопкой «Предложения»
+          if (!applyingProposals) setProposalModal((prev) => ({ ...prev, open: false }));
         }}
         title="Предложения по уже заполненным полям"
         size="large"
       >
         <div>
           <p className="text-muted small mb-3">
-            Пустые поля уже дополнены. Ниже — отличия от текущих значений в каталоге. Отметьте, что
-            заменить.
+            Пустые поля уже дополнены сразу. Ниже — отличия от текущих значений в каталоге
+            (описание, применимость, аналоги, OEM и др.). Отметьте, что заменить. Закрытие окна не
+            удаляет список — кнопка «Предложения» откроет его снова.
           </p>
           <div className="product-enrichment-proposals">
             {(proposalModal.items || []).map((it) => (
@@ -1221,40 +1269,53 @@ export function CatalogBundleImportPanel() {
                   {it.name ? ` · ${it.name}` : ''}
                   <span className="text-muted small ms-2">#{it.productId}</span>
                 </div>
-                <table className="table table-sm mb-0">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 36 }} />
-                      <th>Поле</th>
-                      <th>Сейчас</th>
-                      <th>Из файла</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(it.proposals || []).map((p) => (
-                      <tr key={`${it.productId}-${p.field}`}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={!!p.accept}
-                            disabled={applyingProposals}
-                            onChange={(e) =>
-                              toggleProposalAccept(it.productId, p.field, e.target.checked)
-                            }
-                            aria-label={`Принять ${p.label || p.field}`}
-                          />
-                        </td>
-                        <td>{p.label || p.field}</td>
-                        <td>
-                          <div className="product-enrichment-proposal-val">{p.current || '—'}</div>
-                        </td>
-                        <td>
-                          <div className="product-enrichment-proposal-val">{p.proposed || '—'}</div>
-                        </td>
+                {Array.isArray(it.filled) && it.filled.length ? (
+                  <div className="text-success small mb-2">
+                    Дописано в пустые: {it.filled.join(', ')}
+                  </div>
+                ) : null}
+                {(it.proposals || []).length ? (
+                  <table className="table table-sm mb-0">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 36 }} />
+                        <th>Поле</th>
+                        <th>Сейчас</th>
+                        <th>Из файла</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {(it.proposals || []).map((p) => (
+                        <tr key={`${it.productId}-${p.field}`}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={!!p.accept}
+                              disabled={applyingProposals}
+                              onChange={(e) =>
+                                toggleProposalAccept(it.productId, p.field, e.target.checked)
+                              }
+                              aria-label={`Принять ${p.label || p.field}`}
+                            />
+                          </td>
+                          <td>{p.label || p.field}</td>
+                          <td>
+                            <div className="product-enrichment-proposal-val">
+                              {p.current || '—'}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="product-enrichment-proposal-val">
+                              {p.proposed || '—'}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="text-muted small">Нет отличий по уже заполненным полям.</div>
+                )}
               </div>
             ))}
           </div>
@@ -1266,7 +1327,16 @@ export function CatalogBundleImportPanel() {
               disabled={applyingProposals}
               onClick={() => setProposalModal({ open: false, items: [] })}
             >
-              Пропустить
+              Отклонить все
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={applyingProposals}
+              onClick={() => setProposalModal((prev) => ({ ...prev, open: false }))}
+            >
+              Закрыть
             </Button>
             <Button
               type="button"

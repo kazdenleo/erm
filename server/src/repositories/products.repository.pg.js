@@ -71,6 +71,68 @@ function applyAttributePack(product, pack) {
   product.attribute_values_tool = pack?.tool || {};
 }
 
+/** Подгрузить product_attribute_values в product.attribute_values (для findBySku / merge). */
+async function attachProductAttributeValues(product) {
+  if (!product?.id) {
+    if (product) applyAttributePack(product, null);
+    return product;
+  }
+  const numId = typeof product.id === 'string' ? parseInt(product.id, 10) : Number(product.id);
+  if (!Number.isFinite(numId) || numId <= 0) {
+    applyAttributePack(product, null);
+    return product;
+  }
+  try {
+    let attrValResult;
+    try {
+      attrValResult = await query(
+        'SELECT attribute_id, value, is_manual, changed_by_tool FROM product_attribute_values WHERE product_id = $1',
+        [numId]
+      );
+    } catch (err) {
+      const msg = String(err?.message || '');
+      if (msg.includes('changed_by_tool')) {
+        try {
+          attrValResult = await query(
+            'SELECT attribute_id, value, is_manual FROM product_attribute_values WHERE product_id = $1',
+            [numId]
+          );
+        } catch (inner) {
+          if (!String(inner?.message || '').includes('is_manual')) throw inner;
+          attrValResult = await query(
+            'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
+            [numId]
+          );
+        }
+      } else if (msg.includes('is_manual')) {
+        attrValResult = await query(
+          'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
+          [numId]
+        );
+      } else {
+        throw err;
+      }
+    }
+    const byId = {};
+    const manual = {};
+    const tool = {};
+    for (const row of attrValResult.rows || []) {
+      const aid = row.attribute_id != null ? String(row.attribute_id) : null;
+      if (!aid) continue;
+      byId[aid] = row.value;
+      if (row.is_manual === true) manual[aid] = true;
+      if (row.changed_by_tool === true) tool[aid] = true;
+    }
+    applyAttributePack(product, { byId, manual, tool });
+  } catch (err) {
+    if (!err.message || !String(err.message).includes('product_attribute_values')) {
+      throw err;
+    }
+    applyAttributePack(product, null);
+  }
+  return product;
+}
+
 async function attachPricingStrategyFlags(products) {
   const list = Array.isArray(products) ? products.filter(Boolean) : [];
   if (!list.length) return;
@@ -2491,6 +2553,8 @@ class ProductsRepositoryPG {
       if (product.brand_name) {
         product.brand = product.brand_name;
       }
+      // Без этого merge/обогащение считают все атрибуты пустыми и перезаписывают молча.
+      await attachProductAttributeValues(product);
     }
     return product;
   }
