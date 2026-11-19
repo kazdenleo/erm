@@ -106,6 +106,12 @@ const analyticsChildren = [
     sectionKey: 'analytics_sales',
     requiresFbo: true,
   },
+  {
+    path: '/analytics/unit-economics',
+    label: 'Юнит-экономика',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'analytics_unit_economics',
+  },
 ];
 
 const menuItems = [

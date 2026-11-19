@@ -24,7 +24,7 @@ router.get('/dead-stock', wrapAsync(controller.getDeadStock));
 router.get('/penalties', wrapAsync(controller.getPenalties));
 router.get('/employees', requireProfileAdmin, wrapAsync(controller.getEmployeeMetrics));
 router.get('/pnl', requireProfileAdmin, wrapAsync(controller.getPnl));
-router.get('/unit-economics', requireProfileAdmin, wrapAsync(controller.getUnitEconomicsRask));
+router.get('/unit-economics', wrapAsync(controller.getUnitEconomicsRask));
 router.get('/expenses', requireProfileAdmin, wrapAsync(controller.listExpenses));
 router.post('/expenses', requireProfileAdmin, wrapAsync(controller.createExpense));
 router.put('/expenses/:id', requireProfileAdmin, wrapAsync(controller.updateExpense));

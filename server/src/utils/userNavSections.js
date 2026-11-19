@@ -6,6 +6,7 @@
 export const NAV_SECTION_KEYS = [
   'analytics',
   'analytics_sales',
+  'analytics_unit_economics',
   'card_work',
   'products',
   'orders',
@@ -47,6 +48,7 @@ export const NAV_SECTION_KEYS = [
 export const NAV_SECTION_LABELS = {
   analytics: 'Главная',
   analytics_sales: 'Аналитика — продажи',
+  analytics_unit_economics: 'Аналитика — юнит-экономика',
   card_work: 'Работа с карточками',
   products: 'Товары',
   orders: 'Заказы',
@@ -91,6 +93,7 @@ export const NAV_SECTION_GROUPS = [
     keys: [
       'analytics',
       'analytics_sales',
+      'analytics_unit_economics',
       'card_work',
       'products',
       'orders',
@@ -147,6 +150,7 @@ export const ROLE_NAV_PRESETS = {
     customers: false,
     analytics: false,
     analytics_sales: false,
+    analytics_unit_economics: false,
     card_work: false,
     products: false,
     prices: false,
@@ -179,6 +183,7 @@ export const ROLE_NAV_PRESETS = {
   warehouse_manager: {
     analytics: false,
     analytics_sales: false,
+    analytics_unit_economics: false,
     card_work: false,
     products: false,
     prices: false,
@@ -505,6 +510,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/card-work') || path.startsWith('/analytics/card-work')) return 'card_work';
   // Гипотезы — часть «Работы с карточками», не общей аналитики продаж.
   if (path.startsWith('/analytics/hypotheses')) return 'card_work';
+  if (path.startsWith('/analytics/unit-economics')) return 'analytics_unit_economics';
   if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';
