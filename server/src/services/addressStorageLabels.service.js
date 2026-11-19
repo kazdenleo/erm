@@ -5,7 +5,7 @@
 
 import bwipjs from 'bwip-js';
 import sharp from 'sharp';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import { effectiveBarcode } from './addressStorage.service.js';
 import productLabelsService from './productLabels.service.js';
 
@@ -127,8 +127,8 @@ export async function buildLocationLabelsPdf(
 
   const A4_W_MM = 210;
   const A4_H_MM = 297;
-  const sheetMarginMm = 5;
-  const gapMm = 2;
+  const sheetMarginMm = 2;
+  const gapMm = 0;
   const usableW = A4_W_MM - sheetMarginMm * 2;
   const usableH = A4_H_MM - sheetMarginMm * 2;
   if (labelW > usableW || labelH > usableH) {
@@ -145,6 +145,7 @@ export async function buildLocationLabelsPdf(
   const pageHPt = A4_H_MM * PT_PER_MM;
   const drawW = labelW * PT_PER_MM;
   const drawH = labelH * PT_PER_MM;
+  const cutColor = rgb(0.35, 0.35, 0.35);
   let indexOnPage = 0;
   let page = null;
 
@@ -163,6 +164,14 @@ export async function buildLocationLabelsPdf(
     const x = (sheetMarginMm + col * (labelW + gapMm)) * PT_PER_MM;
     const y = pageHPt - (sheetMarginMm + row * (labelH + gapMm) + labelH) * PT_PER_MM;
     page.drawImage(img, { x, y, width: drawW, height: drawH });
+    page.drawRectangle({
+      x,
+      y,
+      width: drawW,
+      height: drawH,
+      borderWidth: 0.6,
+      borderColor: cutColor,
+    });
     indexOnPage += 1;
     if (indexOnPage >= perPage) indexOnPage = 0;
   }

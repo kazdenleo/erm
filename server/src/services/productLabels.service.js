@@ -4,7 +4,7 @@
 
 import bwipjs from 'bwip-js';
 import sharp from 'sharp';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
 import { packagingLabelTemplatesRepository } from '../repositories/packagingLabelTemplates.repository.pg.js';
@@ -1195,8 +1195,9 @@ export const productLabelsService = {
 
     const A4_W_MM = 210;
     const A4_H_MM = 297;
-    const sheetMarginMm = 5;
-    const gapMm = 2;
+    // Без промежутков между этикетками; минимальные поля листа под принтер.
+    const sheetMarginMm = 2;
+    const gapMm = 0;
     const size = parseSize(template);
     const labelW = Number(size.widthMm) || 58;
     const labelH = Number(size.heightMm) || 40;
@@ -1214,6 +1215,9 @@ export const productLabelsService = {
     const perPage = cols * rows;
     const pageWPt = mmToPt(A4_W_MM);
     const pageHPt = mmToPt(A4_H_MM);
+    const drawW = mmToPt(labelW);
+    const drawH = mmToPt(labelH);
+    const cutColor = rgb(0.35, 0.35, 0.35);
     let indexOnPage = 0;
     let page = null;
 
@@ -1223,13 +1227,20 @@ export const productLabelsService = {
       }
       const rendered = await renderWithTemplate(template, {}, 'png', { cell });
       const image = await doc.embedPng(rendered.buffer);
-      const drawW = mmToPt(rendered.widthMm);
-      const drawH = mmToPt(rendered.heightMm);
       const col = indexOnPage % cols;
       const row = Math.floor(indexOnPage / cols);
       const x = mmToPt(sheetMarginMm + col * (labelW + gapMm));
       const y = pageHPt - mmToPt(sheetMarginMm + row * (labelH + gapMm) + labelH);
+      // Растягиваем в точный размер шаблона — без «дыр» внутри ячейки сетки.
       page.drawImage(image, { x, y, width: drawW, height: drawH });
+      page.drawRectangle({
+        x,
+        y,
+        width: drawW,
+        height: drawH,
+        borderWidth: 0.6,
+        borderColor: cutColor,
+      });
       indexOnPage += 1;
       if (indexOnPage >= perPage) indexOnPage = 0;
     }
