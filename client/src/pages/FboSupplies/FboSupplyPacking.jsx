@@ -512,7 +512,11 @@ export function FboSupplyPacking({
     if (!ids.length) return;
     setPrintingLabels(true);
     setScanError(null);
-    setScanMsg(`Получаем этикетки у Ozon (${ids.length})…`);
+    const waitingMsg =
+      marketplace === 'wb'
+        ? `Формируем QR-этикетки WB (${ids.length})…`
+        : `Получаем этикетки у Ozon (${ids.length})…`;
+    setScanMsg(waitingMsg);
     try {
       const boxes = [];
       const pallets = [];
@@ -549,7 +553,7 @@ export function FboSupplyPacking({
             : null,
         ]);
       }
-      setScanMsg(`Этикетки отправлены: ${ids.join(', ')}`);
+      setScanMsg(`Этикетки отправлены: ${ids.map((id) => formatCargoBarcodeLabel(id)).join(', ')}`);
     } catch (e) {
       setScanError(e.message || e.response?.data?.message || 'Не удалось получить этикетки');
     } finally {
@@ -614,6 +618,7 @@ export function FboSupplyPacking({
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
   const isOzon = marketplace !== 'wb' && marketplace !== 'ym' && marketplace !== 'yandex';
+  const isWb = marketplace === 'wb';
   const isYm = marketplace === 'ym' || marketplace === 'yandex';
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
@@ -793,6 +798,17 @@ export function FboSupplyPacking({
                 {printingLabels ? 'Этикетки…' : 'Печать этикеток'}
               </Button>
             </>
+          ) : null}
+          {isWb ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={scanLoading || printingLabels || !cargoUnits.length}
+              onClick={handlePrintAllCargoLabels}
+              title="QR-этикетки коробов WB: в коде полный $Ts, на печати — номер короба"
+            >
+              {printingLabels ? 'Этикетки…' : 'Печать этикеток'}
+            </Button>
           ) : null}
           {isYm ? (
             <Button
@@ -1048,7 +1064,7 @@ export function FboSupplyPacking({
                       cargo={activeCargo}
                       onPackingChange={handlePackingChange}
                     />
-                    {isOzon && activeCargo.barcode ? (
+                    {(isOzon || isWb) && activeCargo.barcode ? (
                       <Button
                         variant="secondary"
                         size="small"
@@ -1162,7 +1178,7 @@ export function FboSupplyPacking({
         <>
           <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
             {marketplace === 'wb'
-              ? 'Формат WB: баркод, кол-во, ШК короба, срок годности.'
+              ? 'Формат WB: баркод, кол-во, ШК короба (номер), ШК для печати (QR $Ts), срок годности.'
               : 'Формат Ozon: ШК товара, артикул, кол-во, зона, срок годности, ШК ГМ, тип ГМ.'}
           </p>
           {cargoUnits.length === 0 ? (
@@ -1222,7 +1238,7 @@ export function FboSupplyPacking({
                         ) : null}
                       </span>
                       <span className="text-muted small">{fmtDt(cargo.createdAt)}</span>
-                      {isOzon && cargo.barcode ? (
+                      {(isOzon || isWb) && cargo.barcode ? (
                         <Button
                           variant="secondary"
                           size="small"

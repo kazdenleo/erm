@@ -4,7 +4,8 @@
 
 export function isWbCargoQrPayload(raw) {
   const s = String(raw || '').trim();
-  return /^\$Ts;/i.test(s) && /;TAS$/i.test(s);
+  // `$` иногда теряется сканером в режиме клавиатуры
+  return /^\$?Ts;/i.test(s) && /;TAS$/i.test(s);
 }
 
 function decodeBase64Bytes(enc) {

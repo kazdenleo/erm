@@ -24,6 +24,7 @@ import {
 } from '../constants/ozonPlacementZones.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
+import { formatCargoBarcodeLabel } from '../utils/wbCargoQr.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -287,10 +288,13 @@ function mapCargoRow(row) {
     kind === 'pallet' && row.pallet_tare_weight_kg != null
       ? parsePalletTareWeightKg(row.pallet_tare_weight_kg)
       : null;
+  const barcode = row.barcode != null ? String(row.barcode) : '';
   return {
     id: row.id,
     fboSupplyId: row.fbo_supply_id,
-    barcode: row.barcode,
+    barcode,
+    /** Читаемый номер короба WB; полный QR остаётся в barcode. */
+    barcodeLabel: formatCargoBarcodeLabel(barcode),
     cargoKind: kind,
     palletTareWeightKg,
     transportCargoId: row.transport_cargo_id != null ? Number(row.transport_cargo_id) : null,
@@ -558,8 +562,8 @@ class FboSuppliesPackingService {
     return {
       action: 'cargo_created',
       message: switched
-        ? `Новое грузоместо: ${cargo.barcode}`
-        : `Добавлено грузоместо: ${cargo.barcode}`,
+        ? `Новое грузоместо: ${formatCargoBarcodeLabel(cargo.barcode)}`
+        : `Добавлено грузоместо: ${formatCargoBarcodeLabel(cargo.barcode)}`,
       activeCargoUnitId: cargo.id,
       cargoUnit: cargo,
       packing,
@@ -604,7 +608,7 @@ class FboSuppliesPackingService {
         const packing = await this.getPackingState(supplyId, packingCtx);
         return {
           action: 'cargo_selected',
-          message: `Грузоместо: ${cargo.barcode}`,
+          message: `Грузоместо: ${formatCargoBarcodeLabel(cargo.barcode)}`,
           activeCargoUnitId: cargo.id,
           cargoUnit: cargo,
           packing,
@@ -754,7 +758,7 @@ class FboSuppliesPackingService {
       const packing = await this.getPackingState(supplyId, packingCtx);
       return {
         action: 'cargo_selected',
-        message: `Грузоместо уже активно: ${cargo.barcode}`,
+        message: `Грузоместо уже активно: ${formatCargoBarcodeLabel(cargo.barcode)}`,
         activeCargoUnitId: cargo.id,
         cargoUnit: cargo,
         packing,
@@ -860,7 +864,7 @@ class FboSuppliesPackingService {
     const syncMeta = await withPackingStatusSync(supplyId, packing);
     return {
       action: 'product_removed',
-      message: `${name}: −1 шт. из грузоместа ${cargoCheck.rows[0].barcode} (осталось ${newQty})${
+      message: `${name}: −1 шт. из грузоместа ${formatCargoBarcodeLabel(cargoCheck.rows[0].barcode)} (осталось ${newQty})${
         collectReverted ? ' · сборка −1' : ''
       }`,
       activeCargoUnitId: activeId,

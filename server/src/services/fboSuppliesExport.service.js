@@ -5,6 +5,7 @@
 import ExcelJS from 'exceljs';
 import fboSuppliesPackingService from './fboSuppliesPacking.service.js';
 import fboSuppliesPurchaseCalcService from './fboSuppliesPurchaseCalc.service.js';
+import { splitWbCargoBarcodeForExport } from '../utils/wbCargoQr.js';
 
 const SHEET_NAME = 'Товары';
 
@@ -56,6 +57,7 @@ const WB_PACKING_HEADERS = [
   'Баркод товара',
   'Кол-во товаров',
   'ШК короба',
+  'ШК короба для печати',
   'Срок годности',
 ];
 
@@ -99,24 +101,29 @@ class FboSuppliesExportService {
 
     rows.forEach((row, i) => {
       const expiry = formatExpiryYmd(row.expiresAt);
-      const values =
-        mp === 'wb'
-          ? [row.productBarcode || '', row.quantity, row.cargoBarcode || '', expiry]
-          : [
-              row.productBarcode || '',
-              row.article || '',
-              row.isEmptyCargo ? '' : row.quantity,
-              row.placementZoneLabel || row.placementZone || '',
-              expiry,
-              row.cargoBarcode || '',
-              row.cargoTypeLabel || '',
-            ];
+      let values;
+      if (mp === 'wb') {
+        const { boxId, printPayload } = splitWbCargoBarcodeForExport(row.cargoBarcode);
+        values = [row.productBarcode || '', row.quantity, boxId, printPayload, expiry];
+      } else {
+        values = [
+          row.productBarcode || '',
+          row.article || '',
+          row.isEmptyCargo ? '' : row.quantity,
+          row.placementZoneLabel || row.placementZone || '',
+          expiry,
+          row.cargoBarcode || '',
+          row.cargoTypeLabel || '',
+        ];
+      }
       writeRow(ws, i + 2, values);
     });
 
     const ozonColWidths = [18, 18, 14, 22, 36, 18, 18];
+    const wbColWidths = [22, 14, 14, 36, 14];
     headers.forEach((_, colIndex) => {
-      ws.getColumn(colIndex + 1).width = mp === 'wb' ? (colIndex === 0 ? 22 : 16) : (ozonColWidths[colIndex] || 16);
+      ws.getColumn(colIndex + 1).width =
+        mp === 'wb' ? wbColWidths[colIndex] || 16 : ozonColWidths[colIndex] || 16;
     });
 
     const buffer = await wb.xlsx.writeBuffer();

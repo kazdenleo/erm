@@ -3,7 +3,8 @@
 /** Новый QR короба WB: при скане приходит `$Ts;…;TAS`, а не короткий номер из ЛК. */
 export function isWbCargoQrPayload(raw) {
   const s = String(raw || '').trim();
-  return /^\$Ts;/i.test(s) && /;TAS$/i.test(s);
+  // `$` иногда теряется сканером в режиме клавиатуры
+  return /^\$?Ts;/i.test(s) && /;TAS$/i.test(s);
 }
 
 function decodeBase64Bytes(enc) {
@@ -68,8 +69,8 @@ export function formatCargoBarcodeLabel(raw) {
 /** В системных сообщениях («Новое грузоместо: $Ts;…») подменяет payload на короткую подпись. */
 export function humanizeWbCargoQrInText(text) {
   const s = String(text || '');
-  if (!s.includes('$Ts;') && !s.includes('$ts;')) return s;
-  return s.replace(/\$Ts;[^\s;]+(?:;[^\s;]+)*;TAS/gi, (m) => formatCargoBarcodeLabel(m));
+  if (!/\$?Ts;/i.test(s) || !/;TAS/i.test(s)) return s;
+  return s.replace(/\$?Ts;[^\s;]+(?:;[^\s;]+)*;TAS/gi, (m) => formatCargoBarcodeLabel(m));
 }
 
 export function fmtVolumeL(v) {

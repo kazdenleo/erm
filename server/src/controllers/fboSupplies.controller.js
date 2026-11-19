@@ -14,7 +14,9 @@ import fboSuppliesExpressService from '../services/fboSuppliesExpress.service.js
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
-import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
+import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';
+import fboWbCargoLabelsService from '../services/fboWbCargoLabels.service.js';
+import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import fboSupplyForecastService from '../services/fboSupplyForecast.service.js';
 import employeeMetricsService from '../services/employeeMetrics.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
@@ -1033,13 +1035,17 @@ class FboSuppliesController {
         .split(/[,;\s]+/)
         .map((s) => s.trim())
         .filter(Boolean);
-      const { buffer, cargoIds: ids } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(
-        id,
-        cargoIds,
-        { profileId: tid, useCache: req.query?.refresh !== '1' }
-      );
+      const supply = await fboSuppliesService.getById(id, { profileId: tid });
+      const mp = String(supply?.marketplace || '').toLowerCase();
+      const isWb = mp === 'wb' || mp === 'wildberries';
+      const { buffer } = isWb
+        ? await fboWbCargoLabelsService.buildCargoLabelsPdf(id, cargoIds, { profileId: tid })
+        : await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(id, cargoIds, {
+            profileId: tid,
+            useCache: req.query?.refresh !== '1',
+          });
       logPackingAction(req, id, 'labels_print');
-      const filename = `ozon_cargo_labels_${id}.pdf`;
+      const filename = isWb ? `wb_cargo_labels_${id}.pdf` : `ozon_cargo_labels_${id}.pdf`;
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
       return res.send(buffer);
@@ -1085,10 +1091,15 @@ class FboSuppliesController {
         .split(/[,;\s]+/)
         .map((s) => s.trim())
         .filter(Boolean);
-      const { buffer } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(id, cargoIds, {
-        profileId: tid,
-        useCache: req.query?.refresh !== '1',
-      });
+      const supply = await fboSuppliesService.getById(id, { profileId: tid });
+      const mp = String(supply?.marketplace || '').toLowerCase();
+      const isWb = mp === 'wb' || mp === 'wildberries';
+      const { buffer } = isWb
+        ? await fboWbCargoLabelsService.buildCargoLabelsPdf(id, cargoIds, { profileId: tid })
+        : await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(id, cargoIds, {
+            profileId: tid,
+            useCache: req.query?.refresh !== '1',
+          });
       logPackingAction(req, id, 'labels_print');
       const b64 = buffer.toString('base64');
       const html = `<!DOCTYPE html>

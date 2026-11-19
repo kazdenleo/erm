@@ -1,5 +1,6 @@
 /**
  * Редактирование штрихкода грузоместа.
+ * Для QR WB (`$Ts;…;TAS`) в основном поле — номер короба, полный QR — отдельно.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -10,10 +11,12 @@ export function FboCargoBarcodeEdit({ supplyId, cargo, onPackingChange, onClick 
   const [barcode, setBarcode] = useState(cargo.barcode || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [showFullQr, setShowFullQr] = useState(false);
 
   useEffect(() => {
     setBarcode(cargo.barcode || '');
     setError(null);
+    setShowFullQr(false);
   }, [cargo.id, cargo.barcode]);
 
   const save = async () => {
@@ -37,33 +40,79 @@ export function FboCargoBarcodeEdit({ supplyId, cargo, onPackingChange, onClick 
     }
   };
 
+  const isWbQr = isWbCargoQrPayload(barcode);
+  const boxLabel = formatCargoBarcodeLabel(barcode);
+
   return (
     <div className="fbo-cargo-barcode-edit" onClick={onClick}>
-      <label className="fbo-cargo-barcode-edit__field">
-        <span className="text-muted small">ШК грузоместа</span>
-        <input
-          type="text"
-          className="form-control form-control-sm"
-          value={barcode}
-          disabled={saving}
-          onChange={(e) => {
-            setBarcode(e.target.value);
-            setError(null);
-          }}
-          onBlur={save}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              e.currentTarget.blur();
-            }
-          }}
-        />
-      </label>
-      {isWbCargoQrPayload(barcode) ? (
-        <div className="text-muted small mt-1" title={barcode}>
-          Номер короба WB: {formatCargoBarcodeLabel(barcode)} · в поле — полный QR для скана
-        </div>
-      ) : null}
+      {isWbQr ? (
+        <>
+          <label className="fbo-cargo-barcode-edit__field">
+            <span className="text-muted small">Номер короба WB</span>
+            <input
+              type="text"
+              className="form-control form-control-sm"
+              value={boxLabel}
+              readOnly
+              title={barcode}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-link btn-sm px-0 mt-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowFullQr((v) => !v);
+            }}
+          >
+            {showFullQr ? 'Скрыть полный QR' : 'Показать полный QR (для скана)'}
+          </button>
+          {showFullQr ? (
+            <label className="fbo-cargo-barcode-edit__field mt-1">
+              <span className="text-muted small">Полный QR `$Ts;…;TAS`</span>
+              <input
+                type="text"
+                className="form-control form-control-sm"
+                value={barcode}
+                disabled={saving}
+                spellCheck={false}
+                onChange={(e) => {
+                  setBarcode(e.target.value);
+                  setError(null);
+                }}
+                onBlur={save}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            </label>
+          ) : null}
+        </>
+      ) : (
+        <label className="fbo-cargo-barcode-edit__field">
+          <span className="text-muted small">ШК грузоместа</span>
+          <input
+            type="text"
+            className="form-control form-control-sm"
+            value={barcode}
+            disabled={saving}
+            onChange={(e) => {
+              setBarcode(e.target.value);
+              setError(null);
+            }}
+            onBlur={save}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+            }}
+          />
+        </label>
+      )}
       {error ? <div className="text-danger small mt-1">{error}</div> : null}
     </div>
   );
