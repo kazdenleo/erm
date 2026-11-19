@@ -187,15 +187,18 @@ export function locationTooltip(loc, stat) {
 }
 
 export function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const w = window.open(url, '_blank');
-  if (!w) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
+  const typed =
+    blob instanceof Blob && blob.type
+      ? blob
+      : new Blob([blob], { type: 'application/pdf' });
+  const url = URL.createObjectURL(typed);
+  // После async-запроса window.open часто блокируется — всегда качаем через <a download>.
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'download.pdf';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

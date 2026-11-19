@@ -452,14 +452,39 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
     setBusy(false);
   };
 
+  const printableLocations = useMemo(() => {
+    const pool = selectedIds.length
+      ? locations.filter((l) => selected.has(l.id))
+      : filtered;
+    return pool.filter((l) => l.isActive !== false);
+  }, [selectedIds.length, selected, locations, filtered]);
+
   const printLabels = async () => {
-    const ids = selectedIds.length ? selectedIds : filtered.map((l) => l.id);
-    if (!ids.length) return;
+    const ids = printableLocations.map((l) => l.id);
+    if (!ids.length) {
+      setNotice({
+        ok: false,
+        text: selectedIds.length
+          ? 'Среди выбранных нет активных ячеек для печати'
+          : 'Нет активных ячеек для печати',
+      });
+      return;
+    }
     setBusy(true);
     setNotice(null);
     try {
       const blob = await addressStorageApi.labelsPdf(warehouseId, ids, { pageMode });
-      downloadBlob(blob, pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`);
+      downloadBlob(
+        blob,
+        pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`
+      );
+      setNotice({
+        ok: true,
+        text:
+          pageMode === 'a4'
+            ? `Скачан лист А4: ${ids.length} этикеток`
+            : `Скачано этикеток: ${ids.length}`,
+      });
     } catch (e) {
       let text = addressStorageError(e).message;
       const data = e?.response?.data;
@@ -533,8 +558,14 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
           <option value="single">На этикетках</option>
           <option value="a4">Лист А4</option>
         </select>
-        <Button size="small" variant="secondary" onClick={printLabels} disabled={busy || !filtered.length}>
-          🖨 {pageMode === 'a4' ? 'А4' : 'Этикетки'} ({selectedIds.length || filtered.length})
+        <Button
+          size="small"
+          variant="secondary"
+          onClick={printLabels}
+          disabled={busy || !printableLocations.length}
+          title="Неактивные ячейки не печатаются"
+        >
+          🖨 {pageMode === 'a4' ? 'А4' : 'Этикетки'} ({printableLocations.length})
         </Button>
       </div>
 

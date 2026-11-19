@@ -58,9 +58,37 @@ export const addressStorageApi = {
     const r = await api.post(
       `${wh(warehouseId)}/locations/labels`,
       { ids, pageMode: pageMode === 'a4' ? 'a4' : 'single' },
-      { responseType: 'blob', timeout: 180000 }
+      { responseType: 'blob', timeout: 300000 }
     );
-    return r.data;
+    const blob = r.data;
+    const ctype = String(r.headers?.['content-type'] || blob?.type || '');
+    if (ctype.includes('application/json') || (blob && blob.type === 'application/json')) {
+      let message = 'Ошибка печати этикеток';
+      try {
+        const text = await blob.text();
+        message = JSON.parse(text)?.message || message;
+      } catch {
+        /* ignore */
+      }
+      const err = new Error(message);
+      err.response = { data: { message }, status: r.status };
+      throw err;
+    }
+    if (blob instanceof Blob && blob.size > 4) {
+      const head = await blob.slice(0, 5).text();
+      if (head !== '%PDF-' && !ctype.includes('application/pdf')) {
+        let message = 'Сервер вернул не PDF';
+        try {
+          message = JSON.parse(await blob.text())?.message || message;
+        } catch {
+          /* ignore */
+        }
+        const err = new Error(message);
+        err.response = { data: { message }, status: r.status };
+        throw err;
+      }
+    }
+    return blob instanceof Blob ? blob : new Blob([blob], { type: 'application/pdf' });
   },
 
   searchProducts: async (warehouseId, q) =>

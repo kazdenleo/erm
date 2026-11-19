@@ -106,9 +106,11 @@ class AddressStorageController {
     const pageMode = req.body?.pageMode === 'a4' || req.body?.page_mode === 'a4' ? 'a4' : 'single';
     const settings = await addressStorageService.getSettings(warehouseId);
     const all = await addressStorageService.listLocations(warehouseId);
-    const list = ids.size ? all.filter((l) => ids.has(l.id)) : all;
+    const list = (ids.size ? all.filter((l) => ids.has(l.id)) : all).filter(
+      (l) => l.isActive !== false
+    );
     if (!list.length) {
-      return res.status(400).json({ ok: false, message: 'Нет ячеек для печати' });
+      return res.status(400).json({ ok: false, message: 'Нет активных ячеек для печати' });
     }
     if (list.length > 2000) {
       return res.status(400).json({ ok: false, message: 'За раз можно напечатать не больше 2000 этикеток' });
