@@ -33,7 +33,7 @@ async function renderWbCargoLabelPng(barcode) {
   const pad = Math.round(2 * PX_PER_MM);
   const boxNo = isWbCargoQrPayload(barcode) ? decodeWbCargoBoxNumber(barcode) : null;
   const tech = isWbCargoQrPayload(barcode) ? decodeWbCargoTechCode(barcode) : null;
-  const title = boxNo ? `Короб № ${boxNo}` : formatCargoBarcodeLabel(barcode);
+  const title = boxNo || formatCargoBarcodeLabel(barcode);
   const qrPayload = String(barcode || '').trim();
   if (!qrPayload) {
     const err = new Error('Пустой штрихкод грузоместа');
@@ -42,7 +42,8 @@ async function renderWbCargoLabelPng(barcode) {
   }
 
   const titleH = Math.round(H * 0.22);
-  const techH = tech ? Math.round(H * 0.1) : 0;
+  // Техкод под QR только если он отличается от номера (короткий alphanumeric)
+  const techH = tech && tech !== title ? Math.round(H * 0.1) : 0;
   const qrAvail = H - pad * 2 - titleH - techH;
   const qrSide = Math.min(W - pad * 2, qrAvail);
 

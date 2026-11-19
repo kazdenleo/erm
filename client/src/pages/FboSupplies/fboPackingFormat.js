@@ -2,14 +2,39 @@
 
 /**
  * QR короба WB: `$Ts;…;TAS`.
- * Сегменты: $Ts ; … ; … ; <номер короба> ; <техкод> ; TAS
- * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS` → номер 1, техкод BJmumHmI.
- * Числа из base64-сегментов — не номер из ЛК WB.
+ * Номер из ЛК (напр. 15655909) — в техкоде: base64 → u24 BE.
+ * Пример: `$Ts;DJU;m5mZ;1;7uPlJPl;TAS` → `15655909`
  */
+
 export function isWbCargoQrPayload(raw) {
   const s = String(raw || '').trim();
-  // `$` иногда теряется сканером в режиме клавиатуры
-  return /^\$?Ts;/i.test(s) && /;TAS$/i.test(s);
+  if (!/^\$?Ts;/i.test(s)) return false;
+  const parts = s.split(';').map((p) => p.trim()).filter(Boolean);
+  return parts.length >= 5;
+}
+
+function decodeBase64Bytes(enc) {
+  const raw = String(enc || '').trim();
+  if (!raw) return null;
+  try {
+    let t = raw.replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    if (typeof atob === 'function') {
+      const bin = atob(t);
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    }
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(t, 'base64'));
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function u24Be(bytes, offset = 0) {
+  if (!bytes || bytes.length < offset + 3) return null;
+  return ((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]) >>> 0;
 }
 
 function splitWbCargoQrParts(raw) {
@@ -19,55 +44,46 @@ function splitWbCargoQrParts(raw) {
     .split(';')
     .map((p) => p.trim())
     .filter(Boolean);
-  if (parts.length < 6) return null;
+  if (/^TAS$/i.test(parts[parts.length - 1])) parts.pop();
+  if (parts.length < 5) return null;
   return parts;
 }
 
-export function parseWbCargoQr(raw) {
+export function decodeWbCargoTechCode(raw) {
   const parts = splitWbCargoQrParts(raw);
   if (!parts) return null;
-  return {
-    boxNo: parts[parts.length - 3] || '',
-    tech: parts[parts.length - 2] || '',
-    parts,
-  };
+  const tech = parts[parts.length - 1];
+  return tech && !/^\$?Ts$/i.test(tech) ? tech : null;
 }
 
-/** Порядковый номер короба в поставке («Короб № N»). */
+/** Номер короба как в ЛК WB (список коробов). */
 export function decodeWbCargoBoxNumber(raw) {
-  const parsed = parseWbCargoQr(raw);
-  if (!parsed) return null;
-  if (!/^\d{1,6}$/.test(parsed.boxNo)) return null;
-  return parsed.boxNo;
-}
-
-export function decodeWbCargoTechCode(raw) {
-  const parsed = parseWbCargoQr(raw);
-  if (!parsed?.tech) return null;
-  return parsed.tech;
+  const tech = decodeWbCargoTechCode(raw);
+  if (!tech) return null;
+  const n = u24Be(decodeBase64Bytes(tech), 0);
+  if (n == null || n < 1_000_000 || n > 99_999_999) return null;
+  return String(n);
 }
 
 /**
- * Подпись для UI: как на этикетке WB.
- * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS` → `№ 1 · BJmumHmI`
+ * Подпись для UI: номер короба как в ЛК WB.
+ * Пример: `$Ts;DJU;m5mZ;1;7uPlJPl;TAS` → `15655909`
  */
 export function formatCargoBarcodeLabel(raw) {
   const s = String(raw || '').trim();
   if (!s) return '—';
-  const parsed = parseWbCargoQr(s);
-  if (!parsed) return s;
-  const { boxNo, tech } = parsed;
-  if (/^\d{1,6}$/.test(boxNo) && tech) return `№ ${boxNo} · ${tech}`;
-  if (/^\d{1,6}$/.test(boxNo)) return `№ ${boxNo}`;
-  if (tech) return tech;
-  return 'QR WB';
+  const boxNo = decodeWbCargoBoxNumber(s);
+  if (boxNo) return boxNo;
+  if (!isWbCargoQrPayload(s)) return s;
+  const tech = decodeWbCargoTechCode(s);
+  return tech ? `QR WB · ${tech}` : 'QR WB';
 }
 
 /** В системных сообщениях подменяет payload на короткую подпись. */
 export function humanizeWbCargoQrInText(text) {
   const s = String(text || '');
-  if (!/\$?Ts;/i.test(s) || !/;TAS/i.test(s)) return s;
-  return s.replace(/\$?Ts;[^\s;]+(?:;[^\s;]+)*;TAS/gi, (m) => formatCargoBarcodeLabel(m));
+  if (!/\$?Ts;/i.test(s)) return s;
+  return s.replace(/\$?Ts;[^\s;]+(?:;[^\s;]+)*/gi, (m) => formatCargoBarcodeLabel(m));
 }
 
 export function fmtVolumeL(v) {

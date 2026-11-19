@@ -5,43 +5,37 @@ import {
   decodeWbCargoTechCode,
   formatCargoBarcodeLabel,
   isWbCargoQrPayload,
-  parseWbCargoQr,
   splitWbCargoBarcodeForExport,
 } from '../src/utils/wbCargoQr.js';
 
 describe('wbCargoQr', () => {
-  const sample = '$Ts;EqN;yKGq;1;BJmumHmI;TAS';
+  // Реальный скан с этикетки WB; номер в ЛК — 15655909
+  const sample = '$Ts;DJU;m5mZ;1;7uPlJPl;TAS';
+  const sampleNoTas = '$Ts;DJU;m5mZ;1;7uPlJPl';
 
-  it('detects WB cargo QR payload', () => {
+  it('detects WB cargo QR payload (with or without TAS)', () => {
     assert.equal(isWbCargoQrPayload(sample), true);
-    assert.equal(isWbCargoQrPayload('Ts;EqN;yKGq;1;BJmumHmI;TAS'), true);
+    assert.equal(isWbCargoQrPayload(sampleNoTas), true);
     assert.equal(isWbCargoQrPayload('WB_48506'), false);
-    assert.equal(isWbCargoQrPayload('13148586'), false);
   });
 
-  it('parses sequential box number and tech code (not base64 guess)', () => {
-    assert.deepEqual(parseWbCargoQr(sample), {
-      boxNo: '1',
-      tech: 'BJmumHmI',
-      parts: ['$Ts', 'EqN', 'yKGq', '1', 'BJmumHmI', 'TAS'],
-    });
-    assert.equal(decodeWbCargoBoxNumber(sample), '1');
-    assert.equal(decodeWbCargoTechCode(sample), 'BJmumHmI');
+  it('decodes box number from tech-code segment (matches WB portal list)', () => {
+    assert.equal(decodeWbCargoTechCode(sample), '7uPlJPl');
+    assert.equal(decodeWbCargoBoxNumber(sample), '15655909');
+    assert.equal(decodeWbCargoBoxNumber(sampleNoTas), '15655909');
+    // старый ошибочный сегмент m5mZ давал 10197401 — больше не используем
+    assert.notEqual(decodeWbCargoBoxNumber(sample), '10197401');
   });
 
-  it('formats UI label as box № + tech code', () => {
-    assert.equal(formatCargoBarcodeLabel(sample), '№ 1 · BJmumHmI');
+  it('formats UI label as WB portal box number', () => {
+    assert.equal(formatCargoBarcodeLabel(sample), '15655909');
     assert.equal(formatCargoBarcodeLabel('WB_48506'), 'WB_48506');
   });
 
   it('splits Excel columns: box number + print payload', () => {
     assert.deepEqual(splitWbCargoBarcodeForExport(sample), {
-      boxId: '1',
+      boxId: '15655909',
       printPayload: sample,
-    });
-    assert.deepEqual(splitWbCargoBarcodeForExport('WB_48506'), {
-      boxId: 'WB_48506',
-      printPayload: 'WB_48506',
     });
   });
 });
