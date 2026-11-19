@@ -10,6 +10,7 @@ import returnsAnalyticsService from '../services/returnsAnalytics.service.js';
 import deadStockAnalyticsService from '../services/deadStockAnalytics.service.js';
 import penaltiesAnalyticsService from '../services/penaltiesAnalytics.service.js';
 import homeSalesDynamicsService from '../services/homeSalesDynamics.service.js';
+import unitEconomicsRaskService from '../services/unitEconomicsRask.service.js';
 
 export async function getHomeDynamics(req, res) {
   const profileId = req.user?.profileId ?? null;
@@ -200,6 +201,20 @@ export async function getPnl(req, res) {
     marketplace,
     organizationId,
     scheme,
+  });
+  return res.json({ ok: true, data });
+}
+
+/** Юнит-экономика по артикулу (MVP «как Раск»). */
+export async function getUnitEconomicsRask(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { dateFrom, dateTo, marketplace, limit } = req.query || {};
+  const data = await unitEconomicsRaskService.getReport({
+    profileId,
+    dateFrom,
+    dateTo,
+    marketplace,
+    limit,
   });
   return res.json({ ok: true, data });
 }

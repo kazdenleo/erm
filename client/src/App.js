@@ -37,6 +37,7 @@ import { DeadStock } from './pages/Analytics/DeadStock/DeadStock';
 import { Penalties } from './pages/Analytics/Penalties/Penalties';
 import { EmployeeMetrics } from './pages/Analytics/EmployeeMetrics/EmployeeMetrics';
 import { Pnl } from './pages/Analytics/Pnl/Pnl';
+import { UnitEconomics } from './pages/Analytics/UnitEconomics/UnitEconomics';
 import { CardWork } from './pages/Analytics/CardWork/CardWork';
 import { CardWorkLayout } from './pages/Analytics/CardWork/CardWorkLayout';
 import { Hypotheses } from './pages/Analytics/Hypotheses/Hypotheses';
@@ -263,6 +264,7 @@ function App() {
             <Route path="dead-stock" element={<DeadStock />} />
             <Route path="penalties" element={<Penalties />} />
             <Route path="employees" element={<EmployeeMetrics />} />
+            <Route path="unit-economics" element={<UnitEconomics />} />
             <Route path="pnl" element={<Pnl />} />
             <Route path="card-work" element={<Navigate to="/card-work" replace />} />
             <Route path="hypotheses" element={<Navigate to="/card-work/hypotheses" replace />} />
