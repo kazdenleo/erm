@@ -3,12 +3,20 @@
  *
  * Пример: `$Ts;DJU;m5mZ;1;7uPlJPl;TAS`
  * Номер короба в ЛК WB (15655909) — первые 3 байта base64 техкода `7uPlJPl` (u24 BE).
- * Сегмент перед техкодом (`m5mZ` → 10197401) — другой ID, не номер из списка коробов.
  */
 
-export function isWbCargoQrPayload(raw) {
+const WB_QR_RE = /\$?Ts;[^\s$]+(?:;[^\s$]+)*;TAS/i;
+
+/** Если сканер продублировал QR — берём первый полный `$Ts;…;TAS`. */
+export function normalizeWbCargoQrPayload(raw) {
   const s = String(raw || '').trim();
-  // `$` иногда теряется сканером; `;TAS` иногда обрезается в UI/скане
+  if (!s) return '';
+  const m = s.match(WB_QR_RE);
+  return m ? m[0].replace(/^ts;/i, '$Ts;').replace(/^Ts;/, '$Ts;') : s;
+}
+
+export function isWbCargoQrPayload(raw) {
+  const s = normalizeWbCargoQrPayload(raw);
   if (!/^\$?Ts;/i.test(s)) return false;
   const parts = s.split(';').map((p) => p.trim()).filter(Boolean);
   return parts.length >= 5;
@@ -33,14 +41,11 @@ function u24Be(bytes, offset = 0) {
 
 function splitWbCargoQrParts(raw) {
   if (!isWbCargoQrPayload(raw)) return null;
-  const parts = String(raw)
-    .trim()
+  const parts = normalizeWbCargoQrPayload(raw)
     .split(';')
     .map((p) => p.trim())
     .filter(Boolean);
-  // отбрасываем хвостовой TAS, если есть
   if (/^TAS$/i.test(parts[parts.length - 1])) parts.pop();
-  // $Ts + ≥2 служебных + тип/номер + техкод
   if (parts.length < 5) return null;
   return parts;
 }
@@ -60,10 +65,19 @@ export function decodeWbCargoTechCode(raw) {
 export function decodeWbCargoBoxNumber(raw) {
   const tech = decodeWbCargoTechCode(raw);
   if (!tech) return null;
-  const n = u24Be(decodeBase64Bytes(tech), 0);
-  // Номера коробов WB обычно 7–8 знаков
+  const bytes = decodeBase64Bytes(tech);
+  // Актуальные этикетки WB: номер в первых 3 байтах (7uPlJPl → 15655909).
+  // Старый/чужой формат BJm* начинается с 0x04 — номер портала из него не извлечь.
+  const n = u24Be(bytes, 0);
   if (n == null || n < 1_000_000 || n > 99_999_999) return null;
   return String(n);
+}
+
+/** Похоже на товарный EAN/штрихкод, а не на QR короба WB. */
+export function looksLikeProductBarcodeNotWbCargo(raw) {
+  const s = String(raw || '').trim();
+  if (!s || isWbCargoQrPayload(s)) return false;
+  return /^\d{8,14}$/.test(s);
 }
 
 /**
@@ -77,12 +91,13 @@ export function formatCargoBarcodeLabel(raw) {
   if (boxNo) return boxNo;
   if (!isWbCargoQrPayload(s)) return s;
   const tech = decodeWbCargoTechCode(s);
-  return tech ? `QR WB · ${tech}` : 'QR WB';
+  // Не показываем «QR WB · …» — это выглядит как мусор; техкод оставляем как есть.
+  return tech || 'QR WB';
 }
 
 /** Для Excel: номер короба + полный payload для печати QR. */
 export function splitWbCargoBarcodeForExport(raw) {
-  const full = String(raw || '').trim();
+  const full = normalizeWbCargoQrPayload(raw);
   if (!full) return { boxId: '', printPayload: '' };
   if (!isWbCargoQrPayload(full)) {
     return { boxId: full, printPayload: full };

@@ -24,10 +24,13 @@ import {
 } from '../constants/ozonPlacementZones.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
-import { formatCargoBarcodeLabel } from '../utils/wbCargoQr.js';
+import { formatCargoBarcodeLabel, normalizeWbCargoQrPayload } from '../utils/wbCargoQr.js';
 
 function normalizeBarcode(v) {
-  return v != null ? String(v).trim() : '';
+  const s = v != null ? String(v).trim() : '';
+  if (!s) return '';
+  // Двойной скан QR WB: `$Ts;…;TAS$Ts;…;TAS` → один payload
+  return normalizeWbCargoQrPayload(s) || s;
 }
 
 /** Объём единицы товара, л (из карточки или габаритов мм). */
@@ -300,6 +303,7 @@ function mapCargoRow(row) {
     transportCargoId: row.transport_cargo_id != null ? Number(row.transport_cargo_id) : null,
     transportCargoBarcode:
       row.transport_cargo_barcode != null ? String(row.transport_cargo_barcode).trim() : null,
+    returnedAt: row.returned_at ?? null,
     createdAt: row.created_at,
   };
 }
@@ -337,7 +341,7 @@ class FboSuppliesPackingService {
     try {
       cargoR = await query(
         `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at,
-                c.transport_cargo_id, t.barcode AS transport_cargo_barcode
+                c.returned_at, c.transport_cargo_id, t.barcode AS transport_cargo_barcode
          FROM fbo_supply_cargo_units c
          LEFT JOIN fbo_supply_transport_cargoes t ON t.id = c.transport_cargo_id
          WHERE c.fbo_supply_id = $1
@@ -363,17 +367,30 @@ class FboSuppliesPackingService {
         createdAt: row.created_at,
       }));
     } catch (err) {
-      // До миграции 230 колонки/таблицы может не быть.
-      if (!/fbo_supply_transport_cargoes|transport_cargo_id/i.test(String(err?.message || ''))) {
+      // До миграций 230/251 колонки/таблицы может не быть.
+      const msg = String(err?.message || '');
+      if (!/fbo_supply_transport_cargoes|transport_cargo_id|returned_at/i.test(msg)) {
         throw err;
       }
-      cargoR = await query(
-        `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
-         FROM fbo_supply_cargo_units c
-         WHERE c.fbo_supply_id = $1
-         ORDER BY c.id ASC`,
-        [supplyId]
-      );
+      try {
+        cargoR = await query(
+          `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at,
+                  c.returned_at
+           FROM fbo_supply_cargo_units c
+           WHERE c.fbo_supply_id = $1
+           ORDER BY c.id ASC`,
+          [supplyId]
+        );
+      } catch (err2) {
+        if (!/returned_at/i.test(String(err2?.message || ''))) throw err2;
+        cargoR = await query(
+          `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
+           FROM fbo_supply_cargo_units c
+           WHERE c.fbo_supply_id = $1
+           ORDER BY c.id ASC`,
+          [supplyId]
+        );
+      }
     }
 
     const contentsR = await query(

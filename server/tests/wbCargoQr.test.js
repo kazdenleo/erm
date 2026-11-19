@@ -30,6 +30,14 @@ describe('wbCargoQr', () => {
   it('formats UI label as WB portal box number', () => {
     assert.equal(formatCargoBarcodeLabel(sample), '15655909');
     assert.equal(formatCargoBarcodeLabel('WB_48506'), 'WB_48506');
+    // Старый/чужой техкод BJm* — номер портала не извлекается
+    assert.equal(formatCargoBarcodeLabel('$Ts;EqN;yKGq;1;BJmumHml;TAS'), 'BJmumHml');
+  });
+
+  it('normalizes doubled QR scan', async () => {
+    const { normalizeWbCargoQrPayload } = await import('../src/utils/wbCargoQr.js');
+    const doubled = `${sample}${sample}`;
+    assert.equal(normalizeWbCargoQrPayload(doubled), sample);
   });
 
   it('splits Excel columns: box number + print payload', () => {

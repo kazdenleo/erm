@@ -6,11 +6,29 @@
  * Пример: `$Ts;DJU;m5mZ;1;7uPlJPl;TAS` → `15655909`
  */
 
-export function isWbCargoQrPayload(raw) {
+const WB_QR_RE = /\$?Ts;[^\s$]+(?:;[^\s$]+)*;TAS/i;
+
+/** Если сканер продублировал QR — берём первый полный `$Ts;…;TAS`. */
+export function normalizeWbCargoQrPayload(raw) {
   const s = String(raw || '').trim();
+  if (!s) return '';
+  const m = s.match(WB_QR_RE);
+  if (!m) return s;
+  return m[0].replace(/^ts;/i, '$Ts;').replace(/^Ts;/, '$Ts;');
+}
+
+export function isWbCargoQrPayload(raw) {
+  const s = normalizeWbCargoQrPayload(raw);
   if (!/^\$?Ts;/i.test(s)) return false;
   const parts = s.split(';').map((p) => p.trim()).filter(Boolean);
   return parts.length >= 5;
+}
+
+/** Похоже на товарный EAN, а не QR короба. */
+export function looksLikeProductBarcodeNotWbCargo(raw) {
+  const s = String(raw || '').trim();
+  if (!s || isWbCargoQrPayload(s)) return false;
+  return /^\d{8,14}$/.test(s);
 }
 
 function decodeBase64Bytes(enc) {
@@ -39,8 +57,7 @@ function u24Be(bytes, offset = 0) {
 
 function splitWbCargoQrParts(raw) {
   if (!isWbCargoQrPayload(raw)) return null;
-  const parts = String(raw)
-    .trim()
+  const parts = normalizeWbCargoQrPayload(raw)
     .split(';')
     .map((p) => p.trim())
     .filter(Boolean);
@@ -76,7 +93,7 @@ export function formatCargoBarcodeLabel(raw) {
   if (boxNo) return boxNo;
   if (!isWbCargoQrPayload(s)) return s;
   const tech = decodeWbCargoTechCode(s);
-  return tech ? `QR WB · ${tech}` : 'QR WB';
+  return tech || 'QR WB';
 }
 
 /** В системных сообщениях подменяет payload на короткую подпись. */
