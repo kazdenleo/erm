@@ -555,16 +555,24 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
         <Button size="small" variant="secondary" onClick={() => setImportOpen(true)}>
           Импорт закрепления
         </Button>
-        <select
-          className="form-select form-select-sm"
-          value={pageMode}
-          onChange={(e) => setPageMode(e.target.value === 'a4' ? 'a4' : 'single')}
-          title="Режим печати этикеток ячеек"
-          aria-label="Режим печати этикеток"
-        >
-          <option value="single">На этикетках</option>
-          <option value="a4">Лист А4</option>
-        </select>
+        <div className="address-print-mode" role="group" aria-label="Режим печати этикеток">
+          <button
+            type="button"
+            className={`address-print-mode__btn${pageMode === 'single' ? ' is-active' : ''}`}
+            onClick={() => setPageMode('single')}
+            title="Одна этикетка = одна страница PDF (принтер этикеток)"
+          >
+            Этикетки
+          </button>
+          <button
+            type="button"
+            className={`address-print-mode__btn${pageMode === 'a4' ? ' is-active' : ''}`}
+            onClick={() => setPageMode('a4')}
+            title="Несколько этикеток на лист А4"
+          >
+            Лист А4
+          </button>
+        </div>
         <Button
           size="small"
           variant="secondary"
@@ -572,7 +580,7 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
           disabled={busy || !printableLocations.length}
           title="Неактивные ячейки не печатаются"
         >
-          🖨 {pageMode === 'a4' ? 'А4' : 'Этикетки'} ({printableLocations.length})
+          🖨 Печать ({printableLocations.length})
         </Button>
       </div>
 
