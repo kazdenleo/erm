@@ -102,21 +102,24 @@ class AddressStorageController {
 
   async labels(req, res) {
     const { warehouseId, profileId, warehouse } = await requireWarehouse(req);
-    const ids = new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number));
+    const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const idList = [...new Set(rawIds.map(Number).filter((n) => Number.isFinite(n) && n > 0))];
     const pageMode = req.body?.pageMode === 'a4' || req.body?.page_mode === 'a4' ? 'a4' : 'single';
-    const settings = await addressStorageService.getSettings(warehouseId);
-    const all = await addressStorageService.listLocations(warehouseId);
-    const list = (ids.size ? all.filter((l) => ids.has(l.id)) : all).filter(
-      (l) => l.isActive !== false
-    );
-    if (!list.length) {
-      return res.status(400).json({ ok: false, message: 'Нет активных ячеек для печати' });
-    }
-    if (list.length > 2000) {
-      return res.status(400).json({ ok: false, message: 'За раз можно напечатать не больше 2000 этикеток' });
-    }
+    const started = Date.now();
     try {
-      const template = await productLabelsService.getCellTemplate(profileId);
+      const settings = await addressStorageService.getSettings(warehouseId);
+      const list = await addressStorageService.listLocationsForLabels(
+        warehouseId,
+        idList.length ? idList : null
+      );
+      if (!list.length) {
+        return res.status(400).json({ ok: false, message: 'Нет активных ячеек для печати' });
+      }
+      if (list.length > 2000) {
+        return res.status(400).json({ ok: false, message: 'За раз можно напечатать не больше 2000 этикеток' });
+      }
+      const templateProfileId = warehouse?.profile_id ?? warehouse?.profileId ?? profileId;
+      const template = await productLabelsService.getCellTemplate(templateProfileId);
       const pdf = await buildLocationLabelsPdf(list, settings, {
         template,
         warehouseName: warehouse?.name || '',
@@ -124,6 +127,8 @@ class AddressStorageController {
       });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="locations-${warehouseId}.pdf"`);
+      res.setHeader('X-ERM-Labels-Count', String(list.length));
+      res.setHeader('X-ERM-Labels-Ms', String(Date.now() - started));
       return res.status(200).send(pdf);
     } catch (err) {
       const code = err?.statusCode || 500;

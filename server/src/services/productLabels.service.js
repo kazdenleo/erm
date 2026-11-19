@@ -21,6 +21,12 @@ import {
   getKitComponentsFromProduct,
 } from '../constants/labelKitComponents.js';
 import { getKitComponents, isKitProductId } from './kitStock.service.js';
+import {
+  ensureLabelSvgFonts,
+  getLabelSvgFontFaceCss,
+  labelSvgFontFamily,
+} from '../utils/labelFonts.js';
+import { formatCargoBarcodeLabel, isWbCargoQrPayload } from '../utils/wbCargoQr.js';
 
 const SIZE_PRESETS = {
   '58x40': { widthMm: 58, heightMm: 40 },
@@ -44,7 +50,8 @@ function labelRenderCacheKey(productId, marketplace, format, template) {
         ? String(template.updatedAt)
         : '';
   const preset = template?.size_preset ?? template?.sizePreset ?? '';
-  return `${String(productId)}|${String(marketplace || '')}|${format}|${tplId}|${updated}|${preset}`;
+  // v2 — встроенный DejaVu (кириллица) + QR WB без «иероглифов» под ШК
+  return `v2|${String(productId)}|${String(marketplace || '')}|${format}|${tplId}|${updated}|${preset}`;
 }
 
 function getCachedLabelRender(key) {
@@ -371,11 +378,10 @@ function appendWrappedTextSvg(blocks, {
   }
   if (!lineCount) return y;
 
-  // Цифры штрихкода по центру — моноширинный; обычный текст — Arial.
-  const fontFamily =
-    textAnchor === 'middle' && /^\d[\d\s-]*$/.test(String(text || '').trim())
-      ? "Consolas, 'Courier New', monospace"
-      : 'Arial, sans-serif';
+  // Цифры штрихкода по центру — моноширинный; иначе ERMLabel (кириллица в SVG→PNG).
+  const fontFamily = labelSvgFontFamily({
+    monospace: textAnchor === 'middle' && /^\d[\d\s-]*$/.test(String(text || '').trim()),
+  });
   blocks.push(
     `<text x="${xAttr}" y="${firstBaseline}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}"${anchorAttr}>${tspans.join('')}</text>`
   );
@@ -558,13 +564,26 @@ async function enrichProductForLabel(product, template) {
   return { ...product, product_type: product.product_type || 'kit', kit_components };
 }
 
+/** Code128 в bwip — только ASCII; кириллица может зависнуть или падать. */
+function isCode128SafeText(s) {
+  return /^[\x20-\x7E]+$/.test(String(s || ''));
+}
+
 /** Тип штрихкода и нормализованный текст (EAN-13 — только цифры; DT-000023 — Code128 целиком). */
 function resolveBarcodeSpec(raw) {
   const trimmed = String(raw || '').trim();
   if (!trimmed) return null;
 
+  // QR короба WB: Code128 даёт «кашу» и длинный `$Ts` под штрихкодом.
+  if (isWbCargoQrPayload(trimmed)) {
+    return { bcid: 'qrcode', text: trimmed };
+  }
+
   if (!shouldUseBarcodeDigitFallback(trimmed)) {
-    return { bcid: 'code128', text: trimmed };
+    if (isCode128SafeText(trimmed)) return { bcid: 'code128', text: trimmed };
+    const ascii = trimmed.replace(/[^\x20-\x7E]/g, '').trim();
+    if (ascii) return { bcid: 'code128', text: ascii };
+    return null;
   }
 
   const digits = trimmed.replace(/\D/g, '');
@@ -578,9 +597,17 @@ function resolveBarcodeSpec(raw) {
   return { bcid: 'code128', text: digits };
 }
 
+/** Читаемый текст под ШК: для QR WB — номер короба, не `$Ts;…`. */
+function barcodeDisplayText(raw) {
+  const s = String(raw || '').trim();
+  if (isWbCargoQrPayload(s)) return formatCargoBarcodeLabel(s);
+  return s;
+}
+
 /** Ширина символа в модулях (для подбора целочисленного scale). */
 function estimateBarcodeModules(bcid, text) {
   if (bcid === 'ean13') return 95;
+  if (bcid === 'qrcode') return 45;
   const len = String(text || '').length;
   return 35 + 11 * Math.max(1, len);
 }
@@ -609,12 +636,21 @@ function pickBarcodeScale(bcid, text, targetWidthPx) {
   return Math.max(2, Math.min(8, scale));
 }
 
+function bwipToBufferWithTimeout(opts, ms = 5000) {
+  return Promise.race([
+    bwipjs.toBuffer(opts),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('bwip timeout')), ms);
+    }),
+  ]);
+}
+
 async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
   let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
 
   try {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const buf = await bwipjs.toBuffer({
+      const buf = await bwipToBufferWithTimeout({
         bcid: spec.bcid,
         text: spec.text,
         scale,
@@ -629,7 +665,7 @@ async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
       if (meta.width >= targetW * 0.9 || scale >= 8) return buf;
       scale += 1;
     }
-    return await bwipjs.toBuffer({
+    return await bwipToBufferWithTimeout({
       bcid: spec.bcid,
       text: spec.text,
       scale,
@@ -759,7 +795,9 @@ async function buildLabelSvg({
   const packagingBarcode = packaging?.barcode != null ? String(packaging.barcode).trim() : '';
   const packagingUnits = Math.floor(Number(packaging?.unitsPerBox ?? packaging?.units_per_box ?? 0));
   const barcodeValue = cell
-    ? String(cell.barcode || cell.code || '').trim()
+    ? String(cell.barcode || '').trim() ||
+      (isCode128SafeText(cell.code) ? String(cell.code || '').trim() : '') ||
+      (cell.id != null && String(cell.id).trim() !== '' ? `L${cell.id}` : '')
     : packaging
       ? packagingBarcode
       : pickBarcodeForMarketplace(product.barcodes, marketplace) ||
@@ -889,11 +927,12 @@ async function buildLabelSvg({
       const absoluteMinPx = Math.round(4 * mmToPx);
       const available = barcodeMaxY - y - textGap - blockGap;
 
+      const barcodeCaption = barcodeDisplayText(barcodeValue);
       if (available < absoluteMinPx) {
         // Места нет даже на полоски — хотя бы крупный текст кода.
         if (el.showText !== false && y < barcodeMaxY) {
           y = appendWrappedTextSvg(blocks, {
-            text: barcodeValue,
+            text: barcodeCaption,
             x: barX,
             y,
             fontSize: digitFs,
@@ -934,7 +973,7 @@ async function buildLabelSvg({
       if (el.showText !== false) {
         y += Math.max(2, Math.round(lineGapPx * 0.25));
         y = appendWrappedTextSvg(blocks, {
-          text: barcodeValue,
+          text: barcodeCaption,
           x: barX,
           y,
           fontSize: digitFs,
@@ -1029,10 +1068,11 @@ async function buildLabelSvg({
   }
 
   const clipId = 'label-content-clip';
-  return {
-    svg: `<?xml version="1.0" encoding="UTF-8"?>
+  const fontCss = getLabelSvgFontFaceCss();
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}">
   <defs>
+    ${fontCss ? `<style type="text/css"><![CDATA[\n${fontCss}\n]]></style>` : ''}
     <clipPath id="${clipId}">
       <rect x="${padL}" y="${padT}" width="${innerW}" height="${Math.max(0, maxContentY - padT)}" />
     </clipPath>
@@ -1041,7 +1081,9 @@ async function buildLabelSvg({
   <g clip-path="url(#${clipId})">
   ${blocks.join('\n  ')}
   </g>
-</svg>`,
+</svg>`;
+  return {
+    svg: ensureLabelSvgFonts(svg),
     widthMm,
     heightMm,
   };

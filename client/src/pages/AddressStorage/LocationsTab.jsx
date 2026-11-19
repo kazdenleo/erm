@@ -490,6 +490,10 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
       });
     } catch (e) {
       let text = addressStorageError(e).message;
+      if (/timeout/i.test(String(text)) || e?.code === 'ECONNABORTED') {
+        text =
+          'Превышено время ожидания печати. Попробуйте ещё раз — если снова долго, печатайте меньше ячеек за раз.';
+      }
       const data = e?.response?.data;
       if (data instanceof Blob) {
         try {

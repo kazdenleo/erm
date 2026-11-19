@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { effectiveBarcode } from './addressStorage.service.js';
 import productLabelsService from './productLabels.service.js';
+import { getLabelSvgFontFaceCss, labelSvgFontFamily } from '../utils/labelFonts.js';
 
 const PX_PER_MM = 12;
 const PT_PER_MM = 72 / 25.4;
@@ -58,15 +59,20 @@ export async function renderLabelPng(loc, settings) {
   const legendFont = fitFontSize(legend || ' ', W - pad * 2, legendH);
   const barY = pad + codeH + legendH + Math.round(H * 0.03);
 
+  const fontCss = getLabelSvgFontFaceCss();
+  const ff = labelSvgFontFamily();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
+  <defs><style type="text/css"><![CDATA[
+${fontCss}
+  ]]></style></defs>
   <rect width="100%" height="100%" fill="#fff"/>
-  <text x="${W / 2}" y="${pad + codeH * 0.82}" font-family="Arial, 'DejaVu Sans', sans-serif"
+  <text x="${W / 2}" y="${pad + codeH * 0.82}" font-family="${ff}"
         font-size="${codeFont}" font-weight="700" text-anchor="middle" fill="#000">${escXml(loc.code)}</text>
-  <text x="${W / 2}" y="${pad + codeH + legendH * 0.8}" font-family="Arial, 'DejaVu Sans', sans-serif"
+  <text x="${W / 2}" y="${pad + codeH + legendH * 0.8}" font-family="${ff}"
         font-size="${legendFont}" text-anchor="middle" fill="#000">${escXml(legend)}</text>
   ${
     showBarcodeText
-      ? `<text x="${W / 2}" y="${barY + barH + captionH * 0.85}" font-family="Arial, sans-serif" font-size="${Math.round(
+      ? `<text x="${W / 2}" y="${barY + barH + captionH * 0.85}" font-family="${ff}" font-size="${Math.round(
           captionH * 0.85
         )}" text-anchor="middle" fill="#000">${escXml(barcodeText)}</text>`
       : ''
@@ -96,6 +102,7 @@ export async function buildLocationLabelsPdf(
   const saved = template?.saved === true || template?.id != null;
   if (saved) {
     const cells = (locations || []).map((loc) => ({
+      id: loc.id,
       code: loc.code,
       legend: locationLegend(loc, settings),
       barcode: effectiveBarcode(loc),

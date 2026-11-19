@@ -273,6 +273,22 @@ class AddressStorageService {
 
   // ---------- Ячейки ----------
 
+  /** Лёгкий список ячеек для печати этикеток — без товаров и остатков. */
+  async listLocationsForLabels(warehouseId, ids = null) {
+    const params = [warehouseId];
+    let sql = `SELECT * FROM storage_locations WHERE warehouse_id = $1 AND COALESCE(is_active, true) = true`;
+    if (Array.isArray(ids) && ids.length) {
+      const idList = [...new Set(ids.map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+      if (!idList.length) return [];
+      params.push(idList);
+      sql += ` AND id = ANY($${params.length}::bigint[])`;
+    }
+    const r = await query(sql, params);
+    const rows = r.rows.map((row) => mapLocation(row));
+    rows.sort((a, b) => a.routeOrder - b.routeOrder || compareParts(a.parts, b.parts));
+    return rows;
+  }
+
   async listLocations(warehouseId) {
     const r = await query(
       `SELECT l.*,
