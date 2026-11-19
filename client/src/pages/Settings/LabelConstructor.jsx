@@ -1,8 +1,9 @@
 /**
- * Конструктор этикеток: товар по категориям + ШК упаковки
+ * Конструктор этикеток: товар по категориям + ШК упаковки + ячейка адресного хранения
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { categoryLabelTemplatesApi } from '../../services/categoryLabelTemplates.api.js';
 import { packagingLabelTemplatesApi } from '../../services/packagingLabelTemplates.api.js';
@@ -209,8 +210,29 @@ function buildTemplatePayload(form, { packaging = false, cell = false } = {}) {
   };
 }
 
+function editorModeFromSearch(searchParams) {
+  const m = String(searchParams?.get?.('mode') || '').trim();
+  if (m === 'cell' || m === 'packaging' || m === 'product') return m;
+  return 'product';
+}
+
 export function LabelConstructor() {
-  const [editorMode, setEditorMode] = useState('product'); // 'product' | 'packaging' | 'cell'
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [editorMode, setEditorMode] = useState(() => editorModeFromSearch(searchParams));
+
+  const setMode = (next) => {
+    setEditorMode(next);
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.set('tab', 'constructor');
+        if (next === 'product') p.delete('mode');
+        else p.set('mode', next);
+        return p;
+      },
+      { replace: true }
+    );
+  };
   const [categories, setCategories] = useState([]);
   const [allAttributes, setAllAttributes] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -663,7 +685,7 @@ export function LabelConstructor() {
           role="tab"
           aria-selected={!isPackaging && !isCell}
           className={`label-constructor-mode-tab${!isPackaging && !isCell ? ' is-active' : ''}`}
-          onClick={() => setEditorMode('product')}
+          onClick={() => setMode('product')}
         >
           Товар
         </button>
@@ -672,7 +694,7 @@ export function LabelConstructor() {
           role="tab"
           aria-selected={isPackaging}
           className={`label-constructor-mode-tab${isPackaging ? ' is-active' : ''}`}
-          onClick={() => setEditorMode('packaging')}
+          onClick={() => setMode('packaging')}
         >
           Упаковка (ШК коробки)
         </button>
@@ -681,14 +703,14 @@ export function LabelConstructor() {
           role="tab"
           aria-selected={isCell}
           className={`label-constructor-mode-tab${isCell ? ' is-active' : ''}`}
-          onClick={() => setEditorMode('cell')}
+          onClick={() => setMode('cell')}
         >
           Ячейка
         </button>
       </div>
       <p className="subtitle">
         {isCell
-          ? 'Шаблон этикетки ячейки адресного хранения. Один на профиль — печать со вкладки «Ячейки».'
+          ? 'Шаблон этикетки ячейки: размер (пресет) и состав. Один на профиль — печать с вкладок «Ячейки» и «Стеллажи».'
           : isPackaging
           ? 'Шаблон этикетки ШК упаковки для приёмки. Один на весь профиль — используется при печати из карточки товара.'
           : 'Настройте содержимое и отступы этикетки для каждой категории. При печати стикера товара используется шаблон его категории.'}
@@ -702,8 +724,8 @@ export function LabelConstructor() {
           {isCell ? (
             <p className="label-constructor-hint" style={{ marginTop: 0 }}>
               {cellSaved
-                ? 'Шаблон ячейки сохранён — печать этикеток ячеек идёт по нему.'
-                : 'Шаблон не сохранён — печать ячеек идёт в прежнем виде (размер из настроек склада).'}
+                ? 'Шаблон сохранён: размер и состав этикетки ячейки берутся отсюда, не из настроек склада.'
+                : 'Пока не сохранено — печать идёт по этому пресету и составу по умолчанию (58×40 мм). Размер на складе больше не задаётся.'}
             </p>
           ) : isPackaging ? (
             <p className="label-constructor-hint" style={{ marginTop: 0 }}>
@@ -751,7 +773,7 @@ export function LabelConstructor() {
           <div className="label-constructor-editor">
             <div className="label-constructor-row">
               <div className="form-group">
-                <label htmlFor="lc-size">Размер этикетки</label>
+                <label htmlFor="lc-size">{isCell ? 'Размер этикетки (страница PDF)' : 'Размер этикетки'}</label>
                 <select
                   id="lc-size"
                   value={form.size_preset}
@@ -1236,7 +1258,7 @@ export function LabelConstructor() {
             </div>
             <p className="label-constructor-hint">
               {isCell
-                ? 'Предпросмотр увеличен. После сохранения печать ячеек использует этот шаблон.'
+                ? 'Предпросмотр увеличен. Страница PDF при печати = выбранный размер этикетки.'
                 : isPackaging
                 ? 'Предпросмотр увеличен. Если у товара есть ШК коробки — он подставится; иначе используются тестовые данные.'
                 : 'Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих выберите комплект в списке или смотрите пример с тестовым составом.'}

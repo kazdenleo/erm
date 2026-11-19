@@ -112,6 +112,7 @@ class AddressStorageController {
     if (list.length > 2000) {
       return res.status(400).json({ ok: false, message: 'За раз можно напечатать не больше 2000 этикеток' });
     }
+    // Размер PDF — пресет шаблона конструктора, не мм в настройках склада.
     const template = await productLabelsService.getCellTemplate(profileId);
     const pdf = await buildLocationLabelsPdf(list, settings, {
       template,

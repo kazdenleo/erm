@@ -102,6 +102,7 @@ function mapSettings(row, warehouseId) {
       trackQuantities: false,
       levels: DEFAULT_LEVELS,
       separator: '-',
+      // label_*_mm: устаревшие поля склада; размер печати — шаблон конструктора.
       labelWidthMm: 58,
       labelHeightMm: 40,
     };

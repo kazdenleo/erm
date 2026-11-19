@@ -50,8 +50,13 @@ export function Labels() {
     (next) => {
       setTab(next);
       const nextParams = new URLSearchParams(searchParams);
-      if (next === 'general') nextParams.delete('tab');
-      else nextParams.set('tab', next);
+      if (next === 'general') {
+        nextParams.delete('tab');
+        nextParams.delete('mode');
+      } else {
+        nextParams.set('tab', next);
+        if (next !== 'constructor') nextParams.delete('mode');
+      }
       setSearchParams(nextParams, { replace: true });
     },
     [searchParams, setSearchParams]

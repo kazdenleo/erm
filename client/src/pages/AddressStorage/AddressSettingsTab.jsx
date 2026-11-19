@@ -1,8 +1,10 @@
 /**
- * Настройки адресного хранения склада: режим, шаблон адреса, учёт количества, размер этикетки.
+ * Настройки адресного хранения склада: режим, шаблон адреса, учёт количества.
+ * Размер этикетки ячейки — в конструкторе (Настройки → Этикетки).
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { addressStorageApi, addressStorageError } from '../../services/addressStorage.api';
 import { MODE_LABELS } from './addressStorageUtils';
@@ -39,8 +41,6 @@ export function AddressSettingsTab({ warehouseId, settings, locations, onSaved }
         trackQuantities: form.trackQuantities,
         levels: form.levels,
         separator: form.separator,
-        labelWidthMm: Number(form.labelWidthMm),
-        labelHeightMm: Number(form.labelHeightMm),
       });
       onSaved?.(saved);
       setMessage({ ok: true, text: 'Настройки сохранены' });
@@ -154,34 +154,12 @@ export function AddressSettingsTab({ warehouseId, settings, locations, onSaved }
 
       <section className="address-settings__block">
         <h4 className="address-settings__title">Этикетка ячейки</h4>
-        <p className="muted-hint">
-          Состав и шрифты — в «Настройки → Этикетки», вкладка «Ячейка». Пока шаблон не сохранён, печатается
-          прежний вид, размер берётся отсюда.
+        <p className="muted-hint mb-0">
+          Размер (58×40 или 75×120 мм) и состав задаются в{' '}
+          <Link to="/settings/labels?tab=constructor&mode=cell">
+            Настройки → Этикетки → конструктор, вкладка «Ячейка»
+          </Link>. Печать — с вкладок «Ячейки» и «Стеллажи».
         </p>
-        <div className="address-settings__row">
-          <label>
-            Ширина, мм{' '}
-            <input
-              type="number"
-              className="form-control form-control-sm address-settings__num"
-              value={form.labelWidthMm}
-              min={15}
-              max={200}
-              onChange={(e) => set({ labelWidthMm: e.target.value })}
-            />
-          </label>
-          <label>
-            Высота, мм{' '}
-            <input
-              type="number"
-              className="form-control form-control-sm address-settings__num"
-              value={form.labelHeightMm}
-              min={15}
-              max={200}
-              onChange={(e) => set({ labelHeightMm: e.target.value })}
-            />
-          </label>
-        </div>
       </section>
 
       <div className="address-settings__actions">
