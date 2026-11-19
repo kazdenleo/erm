@@ -1,5 +1,77 @@
 /** Форматирование объёма и массы для сборки FBO. */
 
+/** Новый QR короба WB: при скане приходит `$Ts;…;TAS`, а не короткий номер из ЛК. */
+export function isWbCargoQrPayload(raw) {
+  const s = String(raw || '').trim();
+  return /^\$Ts;/i.test(s) && /;TAS$/i.test(s);
+}
+
+function decodeBase64Bytes(enc) {
+  const raw = String(enc || '').trim();
+  if (!raw) return null;
+  try {
+    let t = raw.replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    if (typeof atob === 'function') {
+      const bin = atob(t);
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    }
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(t, 'base64'));
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function u24Be(bytes, offset = 0) {
+  if (!bytes || bytes.length < offset + 3) return null;
+  return ((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]) >>> 0;
+}
+
+/**
+ * Номер короба как в ЛК WB (цифры), извлечённый из QR `$Ts;…;TAS`.
+ * Полный QR остаётся штрихкодом для скана/печати.
+ */
+export function decodeWbCargoBoxNumber(raw) {
+  if (!isWbCargoQrPayload(raw)) return null;
+  const parts = String(raw)
+    .trim()
+    .split(';')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  // $Ts ; … ; <номер> ; … ; <техкод> ; TAS
+  if (parts.length < 6) return null;
+  const enc = parts[2];
+  const bytes = decodeBase64Bytes(enc);
+  const n = u24Be(bytes, 0);
+  if (n == null || n < 1000) return null;
+  return String(n);
+}
+
+/**
+ * Подпись для UI: номер короба WB, иначе исходный ШК.
+ * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS` → `13148586`
+ */
+export function formatCargoBarcodeLabel(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '—';
+  const boxNo = decodeWbCargoBoxNumber(s);
+  if (boxNo) return boxNo;
+  if (!isWbCargoQrPayload(s)) return s;
+  const parts = s.split(';').map((p) => p.trim()).filter(Boolean);
+  const id = parts.length >= 3 ? parts[parts.length - 2] : '';
+  return id ? `QR WB · ${id}` : 'QR WB';
+}
+
+/** В системных сообщениях («Новое грузоместо: $Ts;…») подменяет payload на короткую подпись. */
+export function humanizeWbCargoQrInText(text) {
+  const s = String(text || '');
+  if (!s.includes('$Ts;') && !s.includes('$ts;')) return s;
+  return s.replace(/\$Ts;[^\s;]+(?:;[^\s;]+)*;TAS/gi, (m) => formatCargoBarcodeLabel(m));
+}
+
 export function fmtVolumeL(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return '—';

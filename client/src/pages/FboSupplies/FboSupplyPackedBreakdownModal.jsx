@@ -5,6 +5,7 @@
 import React from 'react';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
+import { formatCargoBarcodeLabel } from './fboPackingFormat.js';
 
 export function FboSupplyPackedBreakdownModal({ isOpen, item, onClose }) {
   if (!isOpen || !item) return null;
@@ -38,7 +39,11 @@ export function FboSupplyPackedBreakdownModal({ isOpen, item, onClose }) {
             <tbody>
               {byCargo.map((row) => (
                 <tr key={`${row.cargoUnitId}-${row.quantity}`}>
-                  <td>{row.cargoBarcode || `№ ${row.cargoUnitId}`}</td>
+                  <td title={row.cargoBarcode || undefined}>
+                    {row.cargoBarcode
+                      ? formatCargoBarcodeLabel(row.cargoBarcode)
+                      : `№ ${row.cargoUnitId}`}
+                  </td>
                   <td>{row.quantity}</td>
                 </tr>
               ))}

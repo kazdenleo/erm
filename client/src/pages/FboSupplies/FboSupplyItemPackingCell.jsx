@@ -7,13 +7,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { packedCellClass } from './fboPackedCell.js';
+import { formatCargoBarcodeLabel } from './fboPackingFormat.js';
 
 function formatByCargoTitle(byCargo) {
   const rows = (byCargo || []).filter((r) => (Number(r.quantity) || 0) > 0);
   if (!rows.length) return null;
   return rows
     .map((r) => {
-      const label = r.cargoBarcode || (r.cargoUnitId != null ? `№ ${r.cargoUnitId}` : 'ГМ');
+      const raw = r.cargoBarcode || (r.cargoUnitId != null ? `№ ${r.cargoUnitId}` : 'ГМ');
+      const label = r.cargoBarcode ? formatCargoBarcodeLabel(r.cargoBarcode) : raw;
       return `${label}: ${Number(r.quantity) || 0} шт.`;
     })
     .join('\n');
@@ -213,8 +215,12 @@ export function FboSupplyItemPackingCell({
               <ul className="fbo-packed-cargo-tip__list">
                 {cargoRows.map((r) => (
                   <li key={`${r.cargoUnitId}-${r.cargoBarcode || ''}`}>
-                    <span className="fbo-packed-cargo-tip__bc">
-                      {r.cargoBarcode || (r.cargoUnitId != null ? `№ ${r.cargoUnitId}` : 'ГМ')}
+                    <span className="fbo-packed-cargo-tip__bc" title={r.cargoBarcode || undefined}>
+                      {r.cargoBarcode
+                        ? formatCargoBarcodeLabel(r.cargoBarcode)
+                        : r.cargoUnitId != null
+                          ? `№ ${r.cargoUnitId}`
+                          : 'ГМ'}
                     </span>
                     <span className="fbo-packed-cargo-tip__qty">{Number(r.quantity) || 0} шт.</span>
                   </li>

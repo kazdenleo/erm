@@ -17,8 +17,10 @@ import { FboTransportCargoes } from './FboTransportCargoes.jsx';
 import {
   cargoWeightExceededMessage,
   cargoWeightSummary,
+  formatCargoBarcodeLabel,
   fmtVolumeL,
   fmtWeightG,
+  humanizeWbCargoQrInText,
 } from './fboPackingFormat.js';
 import {
   buildStatsMap,
@@ -820,7 +822,8 @@ export function FboSupplyPacking({
             activeCargo.weightExceeded ? 'alert-warning' : 'alert-info'
           }`}
         >
-          Активное грузоместо: <strong>{activeCargo.barcode}</strong>
+          Активное грузоместо:{' '}
+          <strong title={activeCargo.barcode}>{formatCargoBarcodeLabel(activeCargo.barcode)}</strong>
           {' '}
           <span className="text-muted">
             ({activeCargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
@@ -855,14 +858,18 @@ export function FboSupplyPacking({
           Сканирование…
         </div>
       ) : null}
-      {scanError && <div className="alert alert-danger">{scanError}</div>}
+      {scanError && (
+        <div className="alert alert-danger">{humanizeWbCargoQrInText(scanError)}</div>
+      )}
       {placementWarning ? (
         <div className="alert alert-warning">{placementWarning}</div>
       ) : null}
       {activeWeightWarning && !scanError ? (
         <div className="alert alert-warning">{activeWeightWarning}</div>
       ) : null}
-      {scanMsg && !scanError && <div className="alert alert-success">{scanMsg}</div>}
+      {scanMsg && !scanError && (
+        <div className="alert alert-success">{humanizeWbCargoQrInText(scanMsg)}</div>
+      )}
 
       {ozonMeta?.filledCargoWarning ? (
         <div className="alert alert-warning">{ozonMeta.filledCargoWarning}</div>
@@ -875,8 +882,12 @@ export function FboSupplyPacking({
         <h4 className="fbo-packing-section-title" style={{ margin: 0, flex: 1 }}>
           Грузоместа ({cargoUnits.length})
           {isExpress && activeCargo?.barcode ? (
-            <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
-              активное: {activeCargo.barcode}
+            <span
+              className="text-muted fw-normal"
+              style={{ fontSize: 13, marginLeft: 8 }}
+              title={activeCargo.barcode}
+            >
+              активное: {formatCargoBarcodeLabel(activeCargo.barcode)}
             </span>
           ) : null}
         </h4>
@@ -927,7 +938,7 @@ export function FboSupplyPacking({
                     onClick={() => handleSelectCargo(cargo.id)}
                     title={cargo.barcode}
                   >
-                    <strong>{cargo.barcode}</strong>
+                    <strong>{formatCargoBarcodeLabel(cargo.barcode)}</strong>
                     <span className="text-muted">
                       {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'} · {cargo.totalQuantity ?? 0} шт.
                     </span>
@@ -1013,8 +1024,12 @@ export function FboSupplyPacking({
               <h4 className="fbo-packing-section-title">
                 Состав ГМ
                 {activeCargo ? (
-                  <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
-                    {activeCargo.barcode} · {activeCargo.totalQuantity ?? 0} шт.
+                  <span
+                    className="text-muted fw-normal"
+                    style={{ fontSize: 13, marginLeft: 8 }}
+                    title={activeCargo.barcode}
+                  >
+                    {formatCargoBarcodeLabel(activeCargo.barcode)} · {activeCargo.totalQuantity ?? 0} шт.
                   </span>
                 ) : null}
               </h4>
@@ -1184,7 +1199,7 @@ export function FboSupplyPacking({
                       }}
                     >
                       <div className="fbo-cargo-card__title">
-                        <strong>{cargo.barcode}</strong>
+                        <strong title={cargo.barcode}>{formatCargoBarcodeLabel(cargo.barcode)}</strong>
                         {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
                         {cargo.transportCargoBarcode ? (
                           <span className="badge bg-secondary ms-2" title="Привязан к транспортному грузоместу">

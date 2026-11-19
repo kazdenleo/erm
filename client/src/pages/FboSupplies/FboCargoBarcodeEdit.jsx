@@ -4,6 +4,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
+import { formatCargoBarcodeLabel, isWbCargoQrPayload } from './fboPackingFormat.js';
 
 export function FboCargoBarcodeEdit({ supplyId, cargo, onPackingChange, onClick }) {
   const [barcode, setBarcode] = useState(cargo.barcode || '');
@@ -58,6 +59,11 @@ export function FboCargoBarcodeEdit({ supplyId, cargo, onPackingChange, onClick 
           }}
         />
       </label>
+      {isWbCargoQrPayload(barcode) ? (
+        <div className="text-muted small mt-1" title={barcode}>
+          Номер короба WB: {formatCargoBarcodeLabel(barcode)} · в поле — полный QR для скана
+        </div>
+      ) : null}
       {error ? <div className="text-danger small mt-1">{error}</div> : null}
     </div>
   );
