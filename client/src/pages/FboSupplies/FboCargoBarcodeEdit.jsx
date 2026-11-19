@@ -48,7 +48,7 @@ export function FboCargoBarcodeEdit({ supplyId, cargo, onPackingChange, onClick 
       {isWbQr ? (
         <>
           <label className="fbo-cargo-barcode-edit__field">
-            <span className="text-muted small">Номер короба WB</span>
+            <span className="text-muted small">Короб WB (№ · техкод)</span>
             <input
               type="text"
               className="form-control form-control-sm"

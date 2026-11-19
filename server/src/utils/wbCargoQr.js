@@ -1,5 +1,13 @@
 /**
- * QR короба Wildberries: при скане `$Ts;…;TAS` вместо короткого номера из ЛК.
+ * QR короба Wildberries: при скане `$Ts;…;TAS`.
+ *
+ * Структура (по наблюдаемым payload и документации WB):
+ *   $Ts ; <…> ; <…> ; <номер короба> ; <техкод> ; TAS
+ * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS`
+ *   — номер короба в поставке: 1  (как «Короб № 1» в ЛК)
+ *   — техкод: BJmumHmI
+ *
+ * Число из base64-сегментов — не номер из кабинета WB, его не показываем.
  */
 
 export function isWbCargoQrPayload(raw) {
@@ -8,65 +16,63 @@ export function isWbCargoQrPayload(raw) {
   return /^\$?Ts;/i.test(s) && /;TAS$/i.test(s);
 }
 
-function decodeBase64Bytes(enc) {
-  const raw = String(enc || '').trim();
-  if (!raw) return null;
-  try {
-    let t = raw.replace(/-/g, '+').replace(/_/g, '/');
-    while (t.length % 4) t += '=';
-    return new Uint8Array(Buffer.from(t, 'base64'));
-  } catch {
-    return null;
-  }
-}
-
-function u24Be(bytes, offset = 0) {
-  if (!bytes || bytes.length < offset + 3) return null;
-  return ((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]) >>> 0;
-}
-
-/** Номер короба как в ЛК WB (цифры), из сегмента QR `$Ts;…;TAS`. */
-export function decodeWbCargoBoxNumber(raw) {
+function splitWbCargoQrParts(raw) {
   if (!isWbCargoQrPayload(raw)) return null;
   const parts = String(raw)
     .trim()
     .split(';')
     .map((p) => p.trim())
     .filter(Boolean);
+  // $Ts + ≥2 служебных + номер + техкод + TAS
   if (parts.length < 6) return null;
-  const n = u24Be(decodeBase64Bytes(parts[2]), 0);
-  if (n == null || n < 1000) return null;
-  return String(n);
+  return parts;
+}
+
+/** Разбор QR: номер короба (порядковый) и техкод с этикетки WB. */
+export function parseWbCargoQr(raw) {
+  const parts = splitWbCargoQrParts(raw);
+  if (!parts) return null;
+  const tech = parts[parts.length - 2] || '';
+  const boxNo = parts[parts.length - 3] || '';
+  return {
+    boxNo,
+    tech,
+    parts,
+  };
+}
+
+/** Порядковый номер короба в поставке («Короб № N»), если есть. */
+export function decodeWbCargoBoxNumber(raw) {
+  const parsed = parseWbCargoQr(raw);
+  if (!parsed) return null;
+  if (!/^\d{1,6}$/.test(parsed.boxNo)) return null;
+  return parsed.boxNo;
 }
 
 /** Техкод из QR (предпоследний сегмент перед TAS). */
 export function decodeWbCargoTechCode(raw) {
-  if (!isWbCargoQrPayload(raw)) return null;
-  const parts = String(raw)
-    .trim()
-    .split(';')
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (parts.length < 3) return null;
-  const tech = parts[parts.length - 2];
-  return tech || null;
+  const parsed = parseWbCargoQr(raw);
+  if (!parsed?.tech) return null;
+  return parsed.tech;
 }
 
 /**
- * Подпись для UI / читаемый текст на этикетке.
- * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS` → `13148586`
+ * Подпись для UI / текст на этикетке — как на стикере WB, не «угаданный» ID.
+ * Пример: `$Ts;EqN;yKGq;1;BJmumHmI;TAS` → `№ 1 · BJmumHmI`
  */
 export function formatCargoBarcodeLabel(raw) {
   const s = String(raw || '').trim();
   if (!s) return '—';
-  const boxNo = decodeWbCargoBoxNumber(s);
-  if (boxNo) return boxNo;
-  if (!isWbCargoQrPayload(s)) return s;
-  const tech = decodeWbCargoTechCode(s);
-  return tech ? `QR WB · ${tech}` : 'QR WB';
+  const parsed = parseWbCargoQr(s);
+  if (!parsed) return s;
+  const { boxNo, tech } = parsed;
+  if (/^\d{1,6}$/.test(boxNo) && tech) return `№ ${boxNo} · ${tech}`;
+  if (/^\d{1,6}$/.test(boxNo)) return `№ ${boxNo}`;
+  if (tech) return tech;
+  return 'QR WB';
 }
 
-/** Для Excel: короткий номер в «ШК короба», полный payload — в колонке для печати. */
+/** Для Excel: номер короба + полный payload для печати QR. */
 export function splitWbCargoBarcodeForExport(raw) {
   const full = String(raw || '').trim();
   if (!full) return { boxId: '', printPayload: '' };
