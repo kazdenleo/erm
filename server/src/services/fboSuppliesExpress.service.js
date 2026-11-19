@@ -134,19 +134,17 @@ class FboSuppliesExpressService {
     // Есть активное ГМ: даже если ШК совпал с номером коробки — сначала пробуем как товар.
     // (Частый баг: коробку случайно назвали ШК товара в режиме «Новое грузоместо».)
     if (!hasActiveCargo) {
-      // Без ГМ: на WB неизвестный штрихкод может создать коробку — делегируем packing.
-      if (String(supply.marketplace || '').toLowerCase() !== 'ozon') {
-        const packingResult = await fboSuppliesPackingService.scan(
-          supplyId,
-          { barcode: code, activeCargoUnitId: null, scanMode: undefined, allowOverage },
-          { profileId }
-        );
-        if (
-          packingResult?.action === 'cargo_created' ||
-          packingResult?.action === 'cargo_selected'
-        ) {
-          return { ...packingResult, express: true };
-        }
+      // Без ГМ: делегируем packing (создание/выбор ГМ + сообщение, если отсканировали товар).
+      const packingResult = await fboSuppliesPackingService.scan(
+        supplyId,
+        { barcode: code, activeCargoUnitId: null, scanMode: undefined, allowOverage },
+        { profileId }
+      );
+      if (
+        packingResult?.action === 'cargo_created' ||
+        packingResult?.action === 'cargo_selected'
+      ) {
+        return { ...packingResult, express: true };
       }
       const err = new Error(
         'Сначала отсканируйте штрихкод грузоместа, затем товар'
@@ -304,9 +302,11 @@ class FboSuppliesExpressService {
       }
     }
 
+    // После приёмки с «в пути» резерв мог ещё не отразить +1 (debounce) или комплект
+    // ещё не набран по комплектующим — не блокируем сборку повторной проверкой stockCover.
     const collectResult = await fboSuppliesCollectService.scan(
       supplyId,
-      { barcode: code, allowOverage },
+      { barcode: code, allowOverage, skipStockCover: received === true },
       { profileId, userId, userName }
     );
 
@@ -329,9 +329,11 @@ class FboSuppliesExpressService {
       };
     }
 
-    // Упаковка по SKU/ШК комплекта (строки поставки), а не по ШК комплектующей —
-    // иначе packing не найдёт позицию.
+    // Упаковка строго в ту же строку, что собрали (не перерезолвим ШК — иначе
+    // одиночная комплектующая может попасть в уже закрытый комплект).
     const packBarcode = await resolveExpressPackBarcode(collectResult, resolved, code);
+    const packItemId =
+      Number(collectResult?.item?.id) || Number(resolved?.item?.id) || itemId;
     const unitsToPack = Math.max(1, Number(collectResult?.unitsCompleted) || 1);
     let packingResult = null;
     for (let u = 0; u < unitsToPack; u += 1) {
@@ -339,6 +341,7 @@ class FboSuppliesExpressService {
         supplyId,
         {
           barcode: packBarcode,
+          supplyItemId: packItemId,
           activeCargoUnitId: activeId,
           scanMode: 'product',
           // Повторные единицы того же скана (редко) — без повторного 409 overage.

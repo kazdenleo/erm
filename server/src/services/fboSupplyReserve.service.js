@@ -134,6 +134,28 @@ function normalizeProfileId(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * Единая подпись поставки FBO в reason движений (резерв / снятие / пересчёт).
+ * Пример: «№184 · 2000073812893» или «№191 · PRE-54472463».
+ */
+export function formatFboSupplyMovementLabel(supplyId, externalShipmentNumber) {
+  const id = Number(supplyId);
+  const idPart = Number.isFinite(id) && id > 0 ? `№${id}` : null;
+  const ext =
+    externalShipmentNumber != null ? String(externalShipmentNumber).trim() : '';
+  if (idPart && ext) return `${idPart} · ${ext}`;
+  if (ext) return ext;
+  if (idPart) return `поставка ${idPart}`;
+  return 'FBO';
+}
+
+function fboReserveReason(kind, supplyId, externalShipmentNumber) {
+  const label = formatFboSupplyMovementLabel(supplyId, externalShipmentNumber);
+  if (kind === 'release') return `Снятие резерва FBO (${label})`;
+  if (kind === 'rebalance') return `Пересчёт резерва FBO (${label})`;
+  return `Резерв FBO (${label})`;
+}
+
 async function getNetReservedForFboItem(fboSupplyItemId, productId, client = null) {
   const run = client?.query ? client.query.bind(client) : query;
   const r = await run(
@@ -730,6 +752,124 @@ function simulateKitReserveFromPools(sim, wanted) {
     }
   }
   return alloc.kitsToReserve;
+}
+
+/**
+ * true, если текущий нетто-резерв по очереди уже совпадает с тем, что даст wipe+reapply.
+ * Тогда движения «Пересчёт −N / Резерв +N» не пишем.
+ */
+async function fboQueueAllocationAlreadyMatches(pid, queue, isKit, profileDeductionWh) {
+  if (!queue.length) return false;
+
+  const itemIds = queue.map((row) => String(row.supply_item_id));
+  const netsByItem = await batchGetFboItemReserveNetByProductWarehouse(itemIds);
+
+  if (isKit) {
+    const currentMap = await batchGetReservedKitUnitsForFboItems(
+      queue.map((row) => ({
+        kitProductId: pid,
+        fboSupplyItemId: row.supply_item_id,
+        lineQty: row.quantity,
+      }))
+    );
+    const allWhs = [
+      ...new Set(
+        queue
+          .map((row) =>
+            resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id)
+          )
+          .filter((wh) => wh != null)
+      ),
+    ];
+    if (!allWhs.length) return false;
+
+    const pools = await buildKitStockPoolsForWarehouses(pid, allWhs);
+    for (const itemId of itemIds) {
+      for (const { productId, warehouseId, net } of netsByItem.get(itemId) || []) {
+        if (net <= 0) continue;
+        if (warehouseId != null && !allWhs.includes(warehouseId)) return false;
+        if (Number(productId) === Number(pid)) {
+          pools.wholeRemaining += net;
+        } else {
+          pools.componentPools.set(
+            Number(productId),
+            (pools.componentPools.get(Number(productId)) || 0) + net
+          );
+        }
+      }
+    }
+    const sim = {
+      components: pools.components,
+      wholeRemaining: pools.wholeRemaining,
+      componentPools: new Map(pools.componentPools),
+    };
+    for (const row of queue) {
+      const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+      const desired = simulateKitReserveFromPools(sim, target);
+      const current = currentMap.get(String(row.supply_item_id)) || 0;
+      if (desired !== current) return false;
+    }
+    return true;
+  }
+
+  const queueWhIds = [
+    ...new Set(
+      queue
+        .map((row) =>
+          resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id)
+        )
+        .filter((wh) => wh != null)
+    ),
+  ];
+  if (!queueWhIds.length) return false;
+
+  const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
+    batchGetWarehouseOnHand([pid], queueWhIds),
+    batchGetNetReservedOnWarehouses([pid], queueWhIds),
+  ]);
+  const onHandByWh = onHandByProductWh.get(pid) || new Map();
+  const reservedByWh = reservedOnWhByProductWh.get(pid) || new Map();
+
+  const queueReservedByWh = new Map();
+  const currentByItemWh = new Map();
+  for (const row of queue) {
+    const itemId = String(row.supply_item_id);
+    const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
+    let onCorrectWh = 0;
+    for (const { productId, warehouseId, net } of netsByItem.get(itemId) || []) {
+      if (Number(productId) !== Number(pid) || net <= 0) continue;
+      if (rowWh != null && warehouseId === rowWh) {
+        onCorrectWh += net;
+        queueReservedByWh.set(rowWh, (queueReservedByWh.get(rowWh) || 0) + net);
+      } else if (net > 0) {
+        return false;
+      }
+    }
+    currentByItemWh.set(itemId, onCorrectWh);
+  }
+
+  const poolByWh = new Map();
+  for (const wh of queueWhIds) {
+    const onHand = onHandByWh.get(wh) || 0;
+    const reservedOnWh = reservedByWh.get(wh) || 0;
+    const queuePart = queueReservedByWh.get(wh) || 0;
+    poolByWh.set(wh, Math.max(0, onHand - reservedOnWh + queuePart));
+  }
+
+  for (const row of queue) {
+    const itemId = String(row.supply_item_id);
+    const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+    const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
+    if (rowWh == null) {
+      if ((currentByItemWh.get(itemId) || 0) !== 0) return false;
+      continue;
+    }
+    const pool = poolByWh.get(rowWh) || 0;
+    const desired = Math.min(target, pool);
+    poolByWh.set(rowWh, pool - desired);
+    if ((currentByItemWh.get(itemId) || 0) !== desired) return false;
+  }
+  return true;
 }
 
 function componentPoolsDecrement(componentPools, compId, qty) {
@@ -1391,107 +1531,117 @@ class FboSupplyReserveService {
     const queue = await findFboReserveQueueByProduct(pid, profileId);
     const allItemIds = new Set(queue.map((r) => String(r.supply_item_id)));
     const isKit = await isKitProductId(pid);
-
-    const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
-    const unreserveItemIds = unreserveQueue.map((row) => String(row.supply_item_id));
-    const unreserveNetsByItem = await batchGetFboItemReserveNetByProductWarehouse(unreserveItemIds);
-    for (const row of unreserveQueue) {
-      const itemId = row.supply_item_id;
-      const label = row.external_shipment_number
-        ? `FBO ${row.external_shipment_number}`
-        : `FBO поставка №${row.fbo_supply_id}`;
-      const nets = unreserveNetsByItem.get(String(itemId)) || [];
-      for (const { productId, warehouseId, net } of nets) {
-        if (net <= 0) continue;
-        await applyFboReserveDelta({
-          productId,
-          warehouseId,
-          supplyId: row.fbo_supply_id,
-          supplyItemId: itemId,
-          delta: -net,
-          reason: `Пересчёт резерва FBO (${label})`,
-          extraMeta: unreserveMeta,
-        }).catch((err) => logFboReserveFailure(`unreserve item ${itemId}`, err));
-      }
-    }
-
     const profileDeductionWh = await getProfileFboDeductionWarehouseId(profileId);
 
-    if (isKit) {
-      for (const row of queue) {
+    const allocationMatches = await fboQueueAllocationAlreadyMatches(
+      pid,
+      queue,
+      isKit,
+      profileDeductionWh
+    ).catch((err) => {
+      logFboReserveFailure(`allocation check product ${pid}`, err);
+      return false;
+    });
+
+    if (!allocationMatches) {
+      const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
+      const unreserveItemIds = unreserveQueue.map((row) => String(row.supply_item_id));
+      const unreserveNetsByItem = await batchGetFboItemReserveNetByProductWarehouse(unreserveItemIds);
+      for (const row of unreserveQueue) {
         const itemId = row.supply_item_id;
-        const supplyId = row.fbo_supply_id;
-        const target = Math.max(0, parseInt(row.quantity, 10) || 0);
-        if (target <= 0) continue;
-        const label = row.external_shipment_number
-          ? `FBO ${row.external_shipment_number}`
-          : `FBO поставка №${supplyId}`;
-        const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
-        const stockWhs = rowWh != null ? [rowWh] : [];
-        await applyKitFboReserve(pid, target, {
-          supplyId,
-          supplyItemId: itemId,
-          stockWarehouseIds: stockWhs,
-          deductionWarehouseId: rowWh,
-          label,
-          applyMeta,
-        }).catch((err) => logFboReserveFailure(`kit reserve item ${itemId}`, err));
-      }
-    } else {
-      const poolByWh = new Map();
-      const queueWhIds = [
-        ...new Set(
-          queue
-            .map((row) =>
-              resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id)
-            )
-            .filter((wh) => wh != null)
-        ),
-      ];
-      if (queueWhIds.length) {
-        const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
-          batchGetWarehouseOnHand([pid], queueWhIds),
-          batchGetNetReservedOnWarehouses([pid], queueWhIds),
-        ]);
-        const onHandByWh = onHandByProductWh.get(pid) || new Map();
-        const reservedByWh = reservedOnWhByProductWh.get(pid) || new Map();
-        for (const wh of queueWhIds) {
-          const onHand = onHandByWh.get(wh) || 0;
-          const reservedOnWh = reservedByWh.get(wh) || 0;
-          poolByWh.set(wh, Math.max(0, onHand - reservedOnWh));
+        const nets = unreserveNetsByItem.get(String(itemId)) || [];
+        for (const { productId, warehouseId, net } of nets) {
+          if (net <= 0) continue;
+          await applyFboReserveDelta({
+            productId,
+            warehouseId,
+            supplyId: row.fbo_supply_id,
+            supplyItemId: itemId,
+            delta: -net,
+            reason: fboReserveReason('rebalance', row.fbo_supply_id, row.external_shipment_number),
+            extraMeta: unreserveMeta,
+          }).catch((err) => logFboReserveFailure(`unreserve item ${itemId}`, err));
         }
       }
 
-      for (const row of queue) {
-        const itemId = row.supply_item_id;
-        const supplyId = row.fbo_supply_id;
-        const target = Math.max(0, parseInt(row.quantity, 10) || 0);
-        if (target <= 0) continue;
-
-        const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
-        if (rowWh == null) continue;
-
-        let need = target;
-        const label = row.external_shipment_number
-          ? `FBO ${row.external_shipment_number}`
-          : `FBO поставка №${supplyId}`;
-
-        let pool = poolByWh.get(rowWh) || 0;
-        if (pool <= 0) continue;
-        const add = Math.min(need, pool);
-        try {
-          await applyFboReserveDelta({
-            productId: pid,
-            warehouseId: rowWh,
+      if (isKit) {
+        for (const row of queue) {
+          const itemId = row.supply_item_id;
+          const supplyId = row.fbo_supply_id;
+          const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+          if (target <= 0) continue;
+          const label = formatFboSupplyMovementLabel(supplyId, row.external_shipment_number);
+          const rowWh = resolveFboDeductionWarehouseIdForRow(
+            profileDeductionWh,
+            row.deduction_warehouse_id
+          );
+          const stockWhs = rowWh != null ? [rowWh] : [];
+          await applyKitFboReserve(pid, target, {
             supplyId,
             supplyItemId: itemId,
-            delta: add,
-            reason: `Резерв FBO (${label})`,
-            extraMeta: applyMeta,
-          });
-          poolByWh.set(rowWh, pool - add);
-        } catch (err) {
-          logFboReserveFailure(`product ${pid} item ${itemId} wh ${rowWh}`, err);
+            stockWarehouseIds: stockWhs,
+            deductionWarehouseId: rowWh,
+            label,
+            applyMeta,
+          }).catch((err) => logFboReserveFailure(`kit reserve item ${itemId}`, err));
+        }
+      } else {
+        const poolByWh = new Map();
+        const queueWhIds = [
+          ...new Set(
+            queue
+              .map((row) =>
+                resolveFboDeductionWarehouseIdForRow(
+                  profileDeductionWh,
+                  row.deduction_warehouse_id
+                )
+              )
+              .filter((wh) => wh != null)
+          ),
+        ];
+        if (queueWhIds.length) {
+          const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
+            batchGetWarehouseOnHand([pid], queueWhIds),
+            batchGetNetReservedOnWarehouses([pid], queueWhIds),
+          ]);
+          const onHandByWh = onHandByProductWh.get(pid) || new Map();
+          const reservedByWh = reservedOnWhByProductWh.get(pid) || new Map();
+          for (const wh of queueWhIds) {
+            const onHand = onHandByWh.get(wh) || 0;
+            const reservedOnWh = reservedByWh.get(wh) || 0;
+            poolByWh.set(wh, Math.max(0, onHand - reservedOnWh));
+          }
+        }
+
+        for (const row of queue) {
+          const itemId = row.supply_item_id;
+          const supplyId = row.fbo_supply_id;
+          const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+          if (target <= 0) continue;
+
+          const rowWh = resolveFboDeductionWarehouseIdForRow(
+            profileDeductionWh,
+            row.deduction_warehouse_id
+          );
+          if (rowWh == null) continue;
+
+          let pool = poolByWh.get(rowWh) || 0;
+          if (pool <= 0) continue;
+          const add = Math.min(target, pool);
+          try {
+            await applyFboReserveDelta({
+              productId: pid,
+              warehouseId: rowWh,
+              supplyId,
+              supplyItemId: itemId,
+              delta: add,
+              reason: fboReserveReason('reserve', supplyId, row.external_shipment_number),
+              extraMeta: applyMeta,
+            });
+            poolByWh.set(rowWh, pool - add);
+          } catch (err) {
+            logFboReserveFailure(`product ${pid} item ${itemId} wh ${rowWh}`, err);
+          }
         }
       }
     }
@@ -1718,20 +1868,27 @@ class FboSupplyReserveService {
     const ids = [...new Set((itemIds || []).map((id) => String(id)).filter(Boolean))];
     if (!ids.length) return { productIds: [] };
 
-    const netsR = await query(
-      `SELECT meta->>'fbo_supply_item_id' AS supply_item_id,
-              product_id,
-              warehouse_id,
-              GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
-       FROM stock_movements
-       WHERE meta->>'fbo_supply_item_id' = ANY($1::text[])
-         AND type IN ('reserve', 'unreserve')
-       GROUP BY meta->>'fbo_supply_item_id', product_id, warehouse_id
-       HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0`,
-      [ids]
-    );
+    const [netsR, supplyR] = await Promise.all([
+      query(
+        `SELECT meta->>'fbo_supply_item_id' AS supply_item_id,
+                product_id,
+                warehouse_id,
+                GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+         FROM stock_movements
+         WHERE meta->>'fbo_supply_item_id' = ANY($1::text[])
+           AND type IN ('reserve', 'unreserve')
+         GROUP BY meta->>'fbo_supply_item_id', product_id, warehouse_id
+         HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0`,
+        [ids]
+      ),
+      query(
+        `SELECT id, external_shipment_number FROM fbo_supplies WHERE id = $1`,
+        [supplyId]
+      ),
+    ]);
 
-    const label = `Снятие резерва FBO (поставка №${supplyId})`;
+    const externalShipmentNumber = supplyR.rows?.[0]?.external_shipment_number ?? null;
+    const label = fboReserveReason('release', supplyId, externalShipmentNumber);
     const extraMeta = skipMarketplaceSync
       ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
       : {};
@@ -1989,11 +2146,23 @@ class FboSupplyReserveService {
     return result;
   }
 
-  async onSupplyStockEvent(productId, warehouseId, { profileId } = {}) {
+  /**
+   * @param {{ profileId?: number|null, immediate?: boolean }} [opts]
+   * immediate — дождаться пересчёта (экспресс-приёмка перед сборкой); иначе debounce.
+   */
+  async onSupplyStockEvent(productId, warehouseId, { profileId, immediate = false } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
     const profKey = profileId != null ? String(profileId) : '';
     const debounceKey = `${profKey}:${pid}`;
+
+    if (immediate === true) {
+      const prev = stockEventDebounce.get(debounceKey);
+      if (prev?.timer) clearTimeout(prev.timer);
+      stockEventDebounce.delete(debounceKey);
+      await this._runSupplyStockEvent(pid, warehouseId, { profileId });
+      return;
+    }
 
     const run = () => {
       this._runSupplyStockEvent(pid, warehouseId, { profileId }).catch((err) => {

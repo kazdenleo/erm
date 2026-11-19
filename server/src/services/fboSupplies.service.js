@@ -805,9 +805,27 @@ class FboSuppliesService {
       if (!FBO_SUPPLY_STATUSES.includes(nextStatus)) {
         /* ignore unknown */
       } else {
+        // Выход из «Возврат» — только через reactivate (номер, сброс списания, резерв).
+        if (prevStatus === 'return' && nextStatus !== 'return') {
+          const err = new Error(
+            'Чтобы вернуть поставку из «Возврат» в активные, используйте «Вернуть в активные» (новый номер поставки)'
+          );
+          err.statusCode = 400;
+          err.code = 'RETURN_REACTIVATE_REQUIRED';
+          throw err;
+        }
         if (nextStatus === 'ready_for_supply') {
           const packingEval = await evaluateSupplyPacking(id);
           assertCanSetReadyForSupply(packingEval);
+        }
+        // «Закрыт» только после «Отгружен» — иначе остаток мог не списаться, а резерв снимется.
+        if (nextStatus === 'closed' && prevStatus !== 'shipped' && prevStatus !== 'closed') {
+          const err = new Error(
+            'Нельзя установить «Закрыт»: сначала переведите поставку в «Отгружен»'
+          );
+          err.statusCode = 400;
+          err.code = 'FBO_CLOSED_REQUIRES_SHIPPED';
+          throw err;
         }
         setField('status', nextStatus);
       }

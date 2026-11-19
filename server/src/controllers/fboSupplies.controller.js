@@ -9,6 +9,7 @@ import fboSuppliesService from '../services/fboSupplies.service.js';
 import fboSuppliesImportService from '../services/fboSuppliesImport.service.js';
 import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
 import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
+import fboSuppliesReturnService from '../services/fboSuppliesReturn.service.js';
 import fboSuppliesCollectService from '../services/fboSuppliesCollect.service.js';
 import fboSuppliesExpressService from '../services/fboSuppliesExpress.service.js';
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
@@ -1257,6 +1258,92 @@ class FboSuppliesController {
     } catch (e) {
       if (e.statusCode === 404) {
         return res.status(404).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async getReturn(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesReturnService.getReturnState(id, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 404) {
+        return res.status(404).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async returnScan(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { barcode } = req.body || {};
+      const data = await fboSuppliesReturnService.scanReturnBox(id, { barcode }, { profileId });
+      logPackingAction(req, id, 'return_scan');
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (
+        e.statusCode === 400 ||
+        e.statusCode === 404 ||
+        e.statusCode === 409
+      ) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code,
+        });
+      }
+      next(e);
+    }
+  }
+
+  async reactivate(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { externalShipmentNumber, externalSupplyId } = req.body || {};
+      const data = await fboSuppliesReturnService.reactivateSupply(
+        id,
+        { externalShipmentNumber, externalSupplyId },
+        { profileId }
+      );
+      logPackingAction(req, id, 'reactivate');
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code,
+        });
+      }
+      next(e);
+    }
+  }
+
+  async assignReturnLabel(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { fromBarcode, toBarcode } = req.body || {};
+      const data = await fboSuppliesReturnService.assignCargoLabel(
+        id,
+        { fromBarcode, toBarcode },
+        { profileId }
+      );
+      logPackingAction(req, id, 'assign_label');
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code,
+        });
       }
       next(e);
     }

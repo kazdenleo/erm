@@ -330,7 +330,11 @@ export function FboSupplyPacking({
         playEventSound(SOUND_EVENTS.scan_error);
         const payload = e.response?.data || {};
         const msg = payload.message || e.message || 'Ошибка сканирования';
-        if (payload.code === 'CARGO_BARCODE_IS_PRODUCT' && newCargoMode) {
+        if (
+          (payload.code === 'CARGO_BARCODE_IS_PRODUCT' ||
+            payload.code === 'PRODUCT_SCANNED_WITHOUT_CARGO') &&
+          newCargoMode
+        ) {
           setNewCargoMode(false);
         }
         if (
@@ -669,12 +673,14 @@ export function FboSupplyPacking({
           formClassName="fbo-packing-scan-row warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
           placeholder={
             newCargoMode
-              ? 'Штрихкод коробки / паллеты'
-              : isExpress
-                ? 'Грузоместо или товар (приёмка + сборка + упаковка)'
-                : isOzon
-                  ? 'Штрихкод товара из поставки'
-                  : 'Коробка / паллета, затем товары поставки'
+              ? 'Штрихкод грузоместа (коробки / паллеты), не товара'
+              : !activeCargoUnitId
+                ? isExpress
+                  ? 'Сначала грузоместо, затем товар'
+                  : 'Сначала штрихкод грузоместа, затем товар внутрь'
+                : isExpress
+                  ? 'Товар в активное грузоместо (приёмка + сборка + упаковка)'
+                  : 'Товар в активное грузоместо'
           }
           loading={scanLoading || labelPrinting}
           disabled={scanLoading || labelPrinting}

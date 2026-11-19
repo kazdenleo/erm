@@ -5944,8 +5944,11 @@ class PurchasesService {
 
     try {
       const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+      // Сразу (без debounce): иначе экспресс успевает вызвать сборку со старым stockCover
+      // и первый скан падает с «можно собрать только N шт», а второй уже проходит.
       await fboSupplyReserveService.onSupplyStockEvent(productIdNum, result.warehouseId ?? whId, {
         profileId: pid,
+        immediate: true,
       });
     } catch (err) {
       logger.warn('[Purchases] FBO reserve after express receive', {

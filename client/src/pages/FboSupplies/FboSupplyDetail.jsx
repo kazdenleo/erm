@@ -30,6 +30,7 @@ import {
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyCollect } from './FboSupplyCollect.jsx';
 import { FboSupplyExpress } from './FboSupplyExpress.jsx';
+import { FboSupplyReturn } from './FboSupplyReturn.jsx';
 import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
@@ -708,9 +709,11 @@ export function FboSupplyDetail() {
 
   const handleStatusChange = async (newStatus) => {
     if (!supply || newStatus === supply.status) return;
-    if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy)) {
+    if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy, supply.status)) {
       setErr(
-        'Нельзя перевести в «Готова к отгрузке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
+        newStatus === 'closed'
+          ? 'Нельзя установить «Закрыт»: сначала переведите поставку в «Отгружен»'
+          : 'Нельзя перевести в «Готова к отгрузке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
       );
       return;
     }
@@ -1091,9 +1094,21 @@ export function FboSupplyDetail() {
           Упаковка
           {packing?.cargoUnits?.length ? ` (${packing.cargoUnits.length})` : ''}
         </button>
+        {['shipped', 'closed', 'return', 'packing', 'ready_for_supply'].includes(
+          supply?.status
+        ) ? (
+          <button
+            type="button"
+            role="tab"
+            className={`fbo-detail-tab${activeTab === 'return' ? ' active' : ''}`}
+            onClick={() => setActiveTab('return')}
+          >
+            Возврат
+          </button>
+        ) : null}
       </div>
 
-      {activeTab !== 'collect' ? (
+      {activeTab !== 'collect' && activeTab !== 'return' ? (
         <div className="fbo-supply-item-search">
           <input
             type="search"
@@ -1184,6 +1199,25 @@ export function FboSupplyDetail() {
           onItemQuantitySaved={handleItemQuantitySaved}
           itemSearchQuery={itemSearchQuery}
           printHelperUrl={printHelperUrl}
+        />
+      ) : null}
+
+      {activeTab === 'return' ? (
+        <FboSupplyReturn
+          supplyId={id}
+          supplyStatus={supply?.status}
+          marketplace={supply?.marketplace}
+          printHelperUrl={printHelperUrl}
+          onSupplyChange={(nextSupply, meta = {}) => {
+            if (nextSupply && nextSupply.id) {
+              setSupply((s) => (s ? { ...s, ...nextSupply } : nextSupply));
+              return;
+            }
+            const status = meta.status ?? nextSupply?.status;
+            if (status == null) return;
+            setSupply((s) => (s ? { ...s, status } : s));
+          }}
+          onPackingChange={handlePackingChange}
         />
       ) : null}
 

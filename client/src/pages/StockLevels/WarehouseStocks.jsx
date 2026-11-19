@@ -3837,9 +3837,18 @@ export function WarehouseStocks() {
                 </tr>
               </thead>
               <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-muted text-center py-4">
+                      {totalProducts > 0
+                        ? 'Товары найдены, но строки не отобразились. Обновите страницу.'
+                        : 'Нет товаров по текущим фильтрам'}
+                    </td>
+                  </tr>
+                ) : null}
                 {rows.map((row) => (
                   <tr
-                    key={row.product.sku || row.product.id}
+                    key={row.product.id != null ? String(row.product.id) : row.product.sku || 'row'}
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => openHistoryForRow(row), {
                       ignoreClosest:

@@ -325,18 +325,25 @@ export function useProductLabelPrint(printHelperUrl = '') {
       setError(null);
 
       const labelFilePath = `/products/${encodeURIComponent(id)}/label`;
+      const mp =
+        options.marketplace != null && String(options.marketplace).trim() !== ''
+          ? String(options.marketplace).trim()
+          : '';
       const labelQuery = new URLSearchParams({ format: 'pdf' });
       if (copies > 1) labelQuery.set('copies', String(copies));
-      if (options.marketplace) labelQuery.set('marketplace', String(options.marketplace));
+      if (mp) labelQuery.set('marketplace', mp);
       const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?${labelQuery.toString()}`;
-      const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?format=png`;
+      // PNG для Print Helper тоже с marketplace — иначе берётся ШК без привязки к МП.
+      const pngQuery = new URLSearchParams({ format: 'png' });
+      if (mp) pngQuery.set('marketplace', mp);
+      const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?${pngQuery.toString()}`;
       const base = String(helperUrl || '').trim().replace(/\/$/, '');
 
       try {
         await api.get(labelFilePath, {
           params: {
             format: 'png',
-            ...(options.marketplace ? { marketplace: String(options.marketplace) } : {}),
+            ...(mp ? { marketplace: mp } : {}),
           },
           responseType: 'blob',
           timeout: PRINT_HELPER_FETCH_MS,

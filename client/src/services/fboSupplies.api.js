@@ -539,6 +539,32 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  getReturn: async (id) => {
+    const response = await api.get(`/fbo-supplies/${id}/return`);
+    return response.data?.data ?? response.data;
+  },
+
+  returnScan: async (id, { barcode } = {}) => {
+    const response = await api.post(`/fbo-supplies/${id}/return/scan`, { barcode });
+    return response.data?.data ?? response.data;
+  },
+
+  reactivate: async (id, { externalShipmentNumber, externalSupplyId } = {}) => {
+    const response = await api.post(`/fbo-supplies/${id}/reactivate`, {
+      externalShipmentNumber,
+      ...(externalSupplyId !== undefined ? { externalSupplyId } : {}),
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  assignReturnLabel: async (id, { fromBarcode, toBarcode } = {}) => {
+    const response = await api.post(`/fbo-supplies/${id}/return/assign-label`, {
+      fromBarcode,
+      toBarcode,
+    });
+    return response.data?.data ?? response.data;
+  },
+
   packingScan: async (id, { barcode, activeCargoUnitId, scanMode, allowOverage } = {}) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
       barcode,

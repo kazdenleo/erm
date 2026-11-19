@@ -106,18 +106,40 @@ export function getNextFboSupplyStatus(current) {
   return FBO_SUPPLY_STATUS_ORDER[idx + 1];
 }
 
+/** «Закрыт» допустим только из «Отгружен» (или уже «Закрыт»). */
+export function canSetFboSupplyClosed(currentStatus) {
+  const cur = normalizeFboSupplyStatus(currentStatus);
+  return cur === 'shipped' || cur === 'closed';
+}
+
 /** Статусы в селекте (без «Возврат» — редкий кейс). */
 export const FBO_SUPPLY_STATUS_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
 
-/** Можно выбрать статус (запрет «Готова к отгрузке» при расхождениях). */
-export function canSelectFboSupplyStatus(status, hasDiscrepancy) {
-  if (!hasDiscrepancy) return true;
-  return normalizeFboSupplyStatus(status) !== 'ready_for_supply';
+/**
+ * Можно выбрать статус.
+ * — «Готова к отгрузке» запрещена при расхождениях план/факт.
+ * — «Закрыт» только после «Отгружен».
+ * @param {string} status — целевой статус опции
+ * @param {boolean} hasDiscrepancy
+ * @param {string|null} [currentStatus] — текущий статус поставки
+ */
+export function canSelectFboSupplyStatus(status, hasDiscrepancy, currentStatus = null) {
+  const target = normalizeFboSupplyStatus(status);
+  const current = normalizeFboSupplyStatus(currentStatus);
+  if (target === 'closed' && current !== 'shipped' && current !== 'closed') {
+    return false;
+  }
+  if (hasDiscrepancy && target === 'ready_for_supply') return false;
+  return true;
 }
 
-export function fboSupplyStatusBlockedTitle(status, hasDiscrepancy) {
-  if (!hasDiscrepancy) return null;
-  if (normalizeFboSupplyStatus(status) === 'ready_for_supply') {
+export function fboSupplyStatusBlockedTitle(status, hasDiscrepancy, currentStatus = null) {
+  const target = normalizeFboSupplyStatus(status);
+  const current = normalizeFboSupplyStatus(currentStatus);
+  if (target === 'closed' && current !== 'shipped' && current !== 'closed') {
+    return 'Сначала переведите поставку в «Отгружен»';
+  }
+  if (hasDiscrepancy && target === 'ready_for_supply') {
     return 'Упакуйте по каждой позиции ровно запланированное количество';
   }
   return null;

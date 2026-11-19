@@ -65,5 +65,10 @@ export function pickStatusAfterMarketplaceSync(current, marketplaceStatus) {
   const curR = getFboSupplyStatusRank(cur);
   const mpR = getFboSupplyStatusRank(mp);
   if (curR < 0 || mpR < 0) return cur;
-  return mpR > curR ? mp : cur;
+  let target = mpR > curR ? mp : cur;
+  // «Закрыт» только после «Отгружен» — иначе сначала ставим «Отгружен».
+  if (target === 'closed' && cur !== 'shipped' && cur !== 'closed') {
+    target = 'shipped';
+  }
+  return target;
 }

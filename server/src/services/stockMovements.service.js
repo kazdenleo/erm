@@ -1552,11 +1552,15 @@ class StockMovementsService {
       const supplyId = Number(r.supply_id);
       const supplyItemId = Number(r.item_id);
       const ext = r.external_shipment_number != null ? String(r.external_shipment_number).trim() : '';
-      const label = ext
-        ? `FBO ${ext}`
-        : Number.isFinite(supplyId) && supplyId > 0
-          ? `FBO поставка №${supplyId}`
-          : 'FBO поставка';
+      const idPart = Number.isFinite(supplyId) && supplyId > 0 ? `№${supplyId}` : null;
+      const label =
+        idPart && ext
+          ? `FBO ${idPart} · ${ext}`
+          : ext
+            ? `FBO ${ext}`
+            : idPart
+              ? `FBO поставка ${idPart}`
+              : 'FBO поставка';
       return {
         supplyId: Number.isFinite(supplyId) ? supplyId : null,
         supplyItemId: Number.isFinite(supplyItemId) ? supplyItemId : null,

@@ -638,26 +638,37 @@ class FboSuppliesPackingService {
       if (asProduct) {
         const name = asProduct.product_name || asProduct.name || asProduct.sku || 'товар';
         const err = new Error(
-          `«${name}» — штрихкод товара из поставки, а не коробки. Отмените «Новое грузоместо» и сканируйте товар снова, либо отсканируйте этикетку грузоместа.`
+          `«${name}» — это штрихкод товара, а не грузоместа. Сначала отсканируйте этикетку коробки/паллеты (или создайте грузоместо), затем сканируйте товары внутрь.`
         );
         err.statusCode = 400;
         err.code = 'CARGO_BARCODE_IS_PRODUCT';
+        err.productName = name;
         throw err;
       }
       return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
     }
 
     if (!activeId) {
+      const asProductWithoutCargo = await findSupplyItemForScan(supplyId, code, profileId);
+      if (asProductWithoutCargo) {
+        const name =
+          asProductWithoutCargo.product_name ||
+          asProductWithoutCargo.name ||
+          asProductWithoutCargo.sku ||
+          'товар';
+        const err = new Error(
+          `«${name}» — штрихкод товара. Сначала отсканируйте штрихкод грузоместа (коробки/паллеты), затем кладите товары внутрь.`
+        );
+        err.statusCode = 400;
+        err.code = 'PRODUCT_SCANNED_WITHOUT_CARGO';
+        err.productName = name;
+        throw err;
+      }
       if (!ozonStrictCargo) {
-        const unknownOnWb = await findSupplyItemForScan(supplyId, code, profileId);
-        if (!unknownOnWb) {
-          return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
-        }
+        return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
       }
       const err = new Error(
-        ozonStrictCargo
-          ? 'Сначала добавьте грузоместо: нажмите «Новое грузоместо» и отсканируйте штрихкод коробки'
-          : 'Сначала отсканируйте штрихкод коробки или паллеты'
+        'Сначала добавьте грузоместо: нажмите «Новое грузоместо» и отсканируйте штрихкод коробки'
       );
       err.statusCode = 400;
       throw err;

@@ -38,6 +38,21 @@ function itemStillNeedsCollect(row) {
   return collected < planned;
 }
 
+/** Сколько единиц строки уже лежит в грузоместах поставки. */
+async function getSupplyItemPackedQty(supplyId, supplyItemId) {
+  const sid = Number(supplyId);
+  const itemId = Number(supplyItemId);
+  if (!Number.isFinite(sid) || !Number.isFinite(itemId) || itemId < 1) return 0;
+  const r = await query(
+    `SELECT COALESCE(SUM(cc.quantity), 0)::int AS packed
+     FROM fbo_supply_cargo_contents cc
+     INNER JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
+     WHERE cu.fbo_supply_id = $1 AND cc.fbo_supply_item_id = $2`,
+    [sid, itemId]
+  );
+  return Math.max(0, Number(r.rows?.[0]?.packed) || 0);
+}
+
 /** Сколько единиц строки уже закреплено с наличия (не «в пути» и не чужой резерв). */
 async function stockCoverForSupplyItem(supply, item) {
   const enriched = await fboSupplyReserveService.enrichItemsWithReserved(
@@ -361,9 +376,19 @@ async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
   }
-  if (Math.max(0, parseInt(row.collected_quantity, 10) || 0) >= Math.max(0, parseInt(row.quantity, 10) || 0)) {
+  const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
+  if (Math.max(0, parseInt(row.collected_quantity, 10) || 0) >= planned) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
+  }
+  // Комплект уже полностью в коробах — не держим sticky, иначе скан комплектующей
+  // (той же, что и одиночная позиция) уходит в overage комплекта.
+  if (planned > 0) {
+    const packed = await getSupplyItemPackedQty(supplyId, stickyId);
+    if (packed >= planned) {
+      clearUserSticky(supplyId, { userId, userName });
+      return null;
+    }
   }
   const progress = parseProgress(row.collect_component_progress);
   if (!Object.keys(progress).length) {
@@ -503,9 +528,13 @@ async function pickPreferredKitComponentMatch(matches) {
 }
 
 /**
- * Один штрихкод может быть и отдельной строкой (5404), и комплектующей комплекта (5404RL).
- * Сначала добираем незавершённую прямую позицию; когда она собрана — идём в незавершённый комплект.
- * Sticky — на пользователя: пока у вас незакрытый комплект, нельзя перепрыгивать на другой товар.
+ * Один штрихкод может быть и отдельной строкой (K501-16), и комплектующей комплекта (WH650400-2-2).
+ * Приоритет без sticky:
+ *   1) прямая позиция (одиночка) — всегда, даже если план уже набран (overage на одиночку);
+ *   2) иначе — комплектующая незакрытого комплекта.
+ * Иначе скан «одиночной» щётки после закрытия её строки уходил в комплект и показывал
+ * «лишний товар» по комплекту, хотя оператор сканировал одиночку.
+ * Sticky — на пользователя: пока у вас незакрытый комплект, комплектующая идёт в него.
  * Чужой sticky не блокирует.
  */
 /** Резолв скана → строка поставки (экспорт для экспресс-режима). */
@@ -548,12 +577,12 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
     const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
     if (!direct && !viaKitResolved) continue;
 
-    const directOpen = direct && itemStillNeedsCollect(direct.item) ? direct : null;
-    const kitOpen = viaKitResolved && itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
+    // Dual-role: одиночная строка важнее комплектующей (комплект — по его штрихкоду / sticky).
+    if (direct) return direct;
 
-    if (directOpen) return directOpen;
+    const kitOpen = viaKitResolved && itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
     if (kitOpen) return kitOpen;
-    return direct || viaKitResolved;
+    return viaKitResolved;
   }
   return null;
 }
@@ -911,7 +940,7 @@ class FboSuppliesCollectService {
 
   async scan(
     supplyId,
-    { barcode, allowOverage = false } = {},
+    { barcode, allowOverage = false, skipStockCover = false } = {},
     { profileId, userId, userName } = {}
   ) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -1020,7 +1049,7 @@ class FboSuppliesCollectService {
       }
 
       const stockCover =
-        supply.deduct_stock === true
+        supply.deduct_stock === true && skipStockCover !== true
           ? await stockCoverForSupplyItem(supply, {
               id: itemId,
               productId: kitProductId,

@@ -1242,7 +1242,10 @@ function ymApiKeyHeader(apiKey) {
   return raw;
 }
 
-async function wbFbwRequest(path, { apiKey, method = 'GET', body = null, timeoutMs = 45000 } = {}) {
+async function wbFbwRequest(
+  path,
+  { apiKey, method = 'GET', body = null, timeoutMs = 45000, retries = 3 } = {}
+) {
   const auth = wbAuthHeader(apiKey);
   if (!auth) {
     const err = new Error('Не настроен API-ключ Wildberries (категория «Поставки»)');
@@ -1251,33 +1254,60 @@ async function wbFbwRequest(path, { apiKey, method = 'GET', body = null, timeout
   }
   const agent = getFetchProxyAgent();
   const url = path.startsWith('http') ? path : `${WB_SUPPLIES_API}${path.startsWith('/') ? path : `/${path}`}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const opts = {
-    method,
-    headers: { Authorization: auth, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    signal: controller.signal,
-    ...(agent && { agent }),
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  };
-  let response;
-  try {
-    response = await fetch(url, opts);
-  } catch (e) {
-    if (e?.name === 'AbortError') {
-      throw new Error('Таймаут запроса к Wildberries FBW API. Проверьте сеть или уменьшите период.');
+  const maxAttempts = Math.max(1, Math.min(5, Number(retries) || 1));
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const opts = {
+      method,
+      headers: {
+        Authorization: auth,
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      signal: controller.signal,
+      ...(agent && { agent }),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    };
+    try {
+      const response = await fetch(url, opts);
+      if (response.ok) {
+        return response.json().catch(() => ({}));
+      }
+      const text = await response.text().catch(() => '');
+      const retryable = response.status === 429 || response.status >= 500;
+      const err = new Error(
+        `Wildberries FBW API ${response.status}${text ? `: ${text.substring(0, 200)}` : ''}`
+      );
+      err.statusCode = response.status === 401 || response.status === 403 ? 400 : 502;
+      err.httpStatus = response.status;
+      if (!retryable || attempt >= maxAttempts) throw err;
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 700 * attempt));
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        lastErr = new Error(
+          'Таймаут запроса к Wildberries FBW API. Проверьте сеть или уменьшите период.'
+        );
+      } else {
+        lastErr = e;
+      }
+      const canRetry =
+        attempt < maxAttempts &&
+        (e?.name === 'AbortError' ||
+          e?.httpStatus === 429 ||
+          e?.httpStatus >= 500 ||
+          e?.code === 'ECONNRESET' ||
+          e?.code === 'ETIMEDOUT');
+      if (!canRetry) throw lastErr;
+      await new Promise((r) => setTimeout(r, 700 * attempt));
+    } finally {
+      clearTimeout(timer);
     }
-    throw e;
-  } finally {
-    clearTimeout(timer);
   }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    const err = new Error(`Wildberries FBW API ${response.status}${text ? `: ${text.substring(0, 200)}` : ''}`);
-    err.statusCode = response.status === 401 || response.status === 403 ? 400 : 502;
-    throw err;
-  }
-  return response.json().catch(() => ({}));
+  throw lastErr || new Error('Wildberries FBW API: запрос не выполнен');
 }
 
 async function ymRequest(path, { apiKey, method = 'GET', body = null } = {}) {
@@ -1480,15 +1510,57 @@ function parseWbGoodsResponse(data) {
   return [];
 }
 
-/** ID для GET /api/v1/supplies/{ID}/goods — supplyID или preorderID. */
-function wbSupplyGoodsApiId(row) {
-  const supplyId = row.supplyID ?? row.supplyId ?? row.supply_id;
+/**
+ * ID для GET /api/v1/supplies/{ID}[/goods].
+ * Если supplyID ещё нет (заказ PRE-…) — берём preorderID и isPreorderID=true.
+ */
+function wbSupplyGoodsApiRef(row) {
+  const supplyId = row?.supplyID ?? row?.supplyId ?? row?.supply_id;
   if (supplyId != null && String(supplyId).trim() !== '' && Number(supplyId) !== 0) {
-    return String(supplyId);
+    return { id: String(supplyId), isPreorder: false };
   }
-  const preorder = row.preorderID ?? row.preorderId ?? row.preorder_id;
-  if (preorder != null && String(preorder).trim() !== '') return String(preorder);
+  const preorder = row?.preorderID ?? row?.preorderId ?? row?.preorder_id;
+  if (preorder != null && String(preorder).trim() !== '' && Number(preorder) !== 0) {
+    return { id: String(preorder), isPreorder: true };
+  }
   return null;
+}
+
+/** @deprecated use wbSupplyGoodsApiRef */
+function wbSupplyGoodsApiId(row) {
+  return wbSupplyGoodsApiRef(row)?.id || null;
+}
+
+function wbSupplyApiPath(id, { isPreorder = false, suffix = '' } = {}) {
+  const sid = id != null ? String(id).trim() : '';
+  if (!sid) return null;
+  const q = isPreorder ? '?isPreorderID=true' : '';
+  return `/api/v1/supplies/${encodeURIComponent(sid)}${suffix || ''}${q}`;
+}
+
+function wbQtyFromGoodsRow(g) {
+  const raw =
+    g?.quantity ??
+    g?.count ??
+    g?.amount ??
+    g?.readyForSaleQuantity ??
+    g?.acceptedQuantity ??
+    g?.supplierBoxAmount ??
+    0;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function wbQtyFromSupplyDetails(details) {
+  if (!details || typeof details !== 'object') return 0;
+  const raw =
+    details.quantity ??
+    details.acceptedQuantity ??
+    details.readyForSaleQuantity ??
+    details.unloadingQuantity ??
+    0;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function firstNonEmptyWbString(...values) {
@@ -1569,11 +1641,11 @@ export function resolveWbSupplyWarehouseFields(row, details = null) {
   };
 }
 
-async function fetchWbSupplyDetails(apiKey, supplyApiId) {
-  const id = supplyApiId != null ? String(supplyApiId).trim() : '';
-  if (!id) return null;
+async function fetchWbSupplyDetails(apiKey, supplyApiId, { isPreorder = false } = {}) {
+  const path = wbSupplyApiPath(supplyApiId, { isPreorder });
+  if (!path) return null;
   try {
-    const data = await wbFbwRequest(`/api/v1/supplies/${encodeURIComponent(id)}`, {
+    const data = await wbFbwRequest(path, {
       apiKey,
       method: 'GET',
       timeoutMs: 30000,
@@ -2085,10 +2157,7 @@ function parseOzonTagsForCompare(v) {
 }
 
 function wbGoodRowToMpItem(g) {
-  const qty = parseInt(
-    g.quantity ?? g.count ?? g.amount ?? g.readyForSaleQuantity ?? 0,
-    10
-  );
+  const qty = wbQtyFromGoodsRow(g);
   const sku =
     g.vendorCode ?? g.supplierArticle ?? g.supplierVendorCode ?? g.sku ?? null;
   const barcode = g.barcode ?? g.barCode ?? g.barcodes?.[0] ?? null;
@@ -2270,9 +2339,26 @@ async function fetchMarketplaceStatusForSupply(supply, { profileId, ozonOrdersCa
   throw err;
 }
 
-async function resolveWbGoodsApiIdForSupply(supply, apiKey) {
+async function resolveWbGoodsApiRefForSupply(supply, apiKey) {
   const row = await resolveWbSupplyRowForErmSupply(supply, apiKey);
-  return row ? wbSupplyGoodsApiId(row) : null;
+  if (row) return wbSupplyGoodsApiRef(row);
+
+  const extNum =
+    supply?.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+  if (/^PRE-/i.test(extNum)) {
+    const preId = extNum.replace(/^PRE-/i, '').trim();
+    if (preId) return { id: preId, isPreorder: true };
+  }
+  const extId = supply?.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+  if (extId && /^PRE-/i.test(extNum || '')) {
+    return { id: extId.replace(/^PRE-/i, ''), isPreorder: true };
+  }
+  if (extId) return { id: extId, isPreorder: false };
+  return null;
+}
+
+async function resolveWbGoodsApiIdForSupply(supply, apiKey) {
+  return (await resolveWbGoodsApiRefForSupply(supply, apiKey))?.id || null;
 }
 
 async function fetchWbMpItemsForSupply(supply, { profileId } = {}) {
@@ -2289,8 +2375,8 @@ async function fetchWbMpItemsForSupply(supply, { profileId } = {}) {
     throw err;
   }
 
-  const goodsApiId = await resolveWbGoodsApiIdForSupply(supply, apiKey);
-  if (!goodsApiId) {
+  const ref = await resolveWbGoodsApiRefForSupply(supply, apiKey);
+  if (!ref?.id) {
     const err = new Error(
       'Не удалось определить ID поставки WB — укажите номер отгрузки или ID поставки в карточке'
     );
@@ -2298,10 +2384,12 @@ async function fetchWbMpItemsForSupply(supply, { profileId } = {}) {
     throw err;
   }
 
-  const goodsData = await wbFbwRequest(
-    `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
-    { apiKey, method: 'GET', timeoutMs: 30000 }
-  );
+  const goodsPath = wbSupplyApiPath(ref.id, { isPreorder: ref.isPreorder, suffix: '/goods' });
+  const goodsData = await wbFbwRequest(goodsPath, {
+    apiKey,
+    method: 'GET',
+    timeoutMs: 30000,
+  });
   return mapWbGoodsToMpItems(parseWbGoodsResponse(goodsData), { profileId });
 }
 
@@ -3019,56 +3107,79 @@ class FboSuppliesImportService {
       rows = parseWbSuppliesListResponse(fallbackData);
     }
 
-    const built = await mapWithConcurrency(rows, 6, async (row) => {
+    // WB FBW: ~30 req/min, burst ~10 — goods и details последовательно, мало параллели.
+    const built = await mapWithConcurrency(rows, 2, async (row) => {
       const externalNumber = wbExternalShipmentNumber(row);
-      const goodsApiId = wbSupplyGoodsApiId(row);
-      if (!externalNumber || !goodsApiId) return null;
+      const goodsRef = wbSupplyGoodsApiRef(row);
+      if (!externalNumber || !goodsRef?.id) return null;
 
       let items = [];
       let details = null;
-      try {
-        const [goodsData, detailsData] = await Promise.all([
-          wbFbwRequest(
-          `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
-          { apiKey, method: 'GET', timeoutMs: 30000 }
-          ),
-          fetchWbSupplyDetails(apiKey, goodsApiId),
-        ]);
-        details = detailsData;
-        const list = parseWbGoodsResponse(goodsData);
-        for (const g of list) {
-          const qty = parseInt(
-            g.quantity ?? g.count ?? g.amount ?? g.readyForSaleQuantity ?? 0,
-            10
-          );
-          if (!qty || qty <= 0) continue;
-          const sku =
-            g.vendorCode ??
-            g.supplierArticle ??
-            g.supplierVendorCode ??
-            g.sku ??
-            null;
-          const barcode = g.barcode ?? g.barCode ?? g.barcodes?.[0] ?? null;
-          const productId = await resolveProductId({ sku, barcode, profileId });
-          items.push({
-            productId,
-            quantity: qty,
-            sku,
-            barcode,
-            mpOfferId: sku,
-            mpProductId: g.nmID != null ? String(g.nmID) : g.nmId != null ? String(g.nmId) : null,
-            name: g.name ?? g.subject ?? g.brand ?? null,
-            unresolved: productId == null,
+      const goodsPath = wbSupplyApiPath(goodsRef.id, {
+        isPreorder: goodsRef.isPreorder,
+        suffix: '/goods',
+      });
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          const goodsData = await wbFbwRequest(goodsPath, {
+            apiKey,
+            method: 'GET',
+            timeoutMs: 30000,
           });
+          details = await fetchWbSupplyDetails(apiKey, goodsRef.id, {
+            isPreorder: goodsRef.isPreorder,
+          });
+          const list = parseWbGoodsResponse(goodsData);
+          items = [];
+          for (const g of list) {
+            const qty = wbQtyFromGoodsRow(g);
+            if (!qty) continue;
+            const sku =
+              g.vendorCode ??
+              g.supplierArticle ??
+              g.supplierVendorCode ??
+              g.sku ??
+              null;
+            const barcode = g.barcode ?? g.barCode ?? g.barcodes?.[0] ?? null;
+            const productId = await resolveProductId({ sku, barcode, profileId });
+            items.push({
+              productId,
+              quantity: qty,
+              sku,
+              barcode,
+              mpOfferId: sku,
+              mpProductId:
+                g.nmID != null ? String(g.nmID) : g.nmId != null ? String(g.nmId) : null,
+              name: g.name ?? g.subject ?? g.brand ?? null,
+              unresolved: productId == null,
+            });
+          }
+          break;
+        } catch {
+          items = [];
+          details = await fetchWbSupplyDetails(apiKey, goodsRef.id, {
+            isPreorder: goodsRef.isPreorder,
+          }).catch(() => null);
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 1200));
+          }
         }
-      } catch {
-        items = [];
-        details = await fetchWbSupplyDetails(apiKey, goodsApiId).catch(() => null);
       }
 
-      const whFields = resolveWbSupplyWarehouseFields(row, details);
+      let whFields = resolveWbSupplyWarehouseFields(row, details);
+      // Детали склада часто отваливаются по 429 — один повтор с паузой.
+      if (!whFields.marketplaceWarehouseName) {
+        await new Promise((r) => setTimeout(r, 800));
+        details =
+          (await fetchWbSupplyDetails(apiKey, goodsRef.id, {
+            isPreorder: goodsRef.isPreorder,
+          }).catch(() => null)) || details;
+        whFields = resolveWbSupplyWarehouseFields(row, details);
+      }
       const supplyId = row.supplyID ?? row.supplyId;
       const preorderId = row.preorderID ?? row.preorderId;
+      const itemsQty = sumSupplyItemsQuantity(items);
+      const detailsQty = wbQtyFromSupplyDetails(details);
 
       return {
         importKey: `wb:${externalNumber}`,
@@ -3081,13 +3192,13 @@ class FboSuppliesImportService {
         marketplaceWarehouseId: whFields.marketplaceWarehouseId,
         shippingCluster: whFields.shippingCluster,
         externalShipmentNumber: externalNumber,
-        externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsApiId),
+        externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsRef.id),
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
         deductStock: true,
         status: mapWbStateToStatus(row.statusName ?? row.status ?? row.statusID),
         items,
-        itemCount: sumSupplyItemsQuantity(items),
+        itemCount: Math.max(itemsQty, detailsQty),
         alreadyImported: false,
       };
     });

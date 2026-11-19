@@ -299,26 +299,34 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
               <table className="fbo-import-table">
                 <thead>
                   <tr>
-                    <th style={{ width: 36 }} />
-                    <th>Номер отгрузки</th>
-                    <th>МП</th>
-                    <th>Дата</th>
-                    <th>Склад МП</th>
-                    <th>Кластер размещения</th>
-                    <th>Кол-во, шт.</th>
-                    <th>Статус</th>
+                    <th className="fbo-import-col-check" />
+                    <th className="fbo-import-col-num">Номер отгрузки</th>
+                    <th className="fbo-import-col-mp">МП</th>
+                    <th className="fbo-import-col-date">Дата</th>
+                    <th className="fbo-import-col-wh">Склад МП</th>
+                    <th className="fbo-import-col-cluster">Кластер размещения</th>
+                    <th className="fbo-import-col-qty">Кол-во, шт.</th>
+                    <th className="fbo-import-col-status">Статус</th>
                   </tr>
                 </thead>
                 <tbody>
                   {candidates.map((c) => {
                     const disabled = c.alreadyImported;
                     const unresolved = (c.items || []).filter((i) => i.unresolved).length;
+                    const qty =
+                      c.itemCount ??
+                      (c.items || []).reduce(
+                        (s, it) => s + (parseInt(it.quantity, 10) || 0),
+                        0
+                      );
+                    const wh = c.marketplaceWarehouseName || '';
+                    const cluster = c.shippingCluster || '';
                     return (
                       <tr
                         key={c.importKey}
                         className={disabled ? 'fbo-import-row-disabled' : ''}
                       >
-                        <td>
+                        <td className="fbo-import-col-check">
                           <input
                             type="checkbox"
                             disabled={disabled}
@@ -326,22 +334,24 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                             onChange={() => toggleOne(c.importKey)}
                           />
                         </td>
-                        <td>{c.externalShipmentNumber}</td>
-                        <td>{getMarketplaceLabel(c.marketplace)}</td>
-                        <td>{fmtDate(c.readyAt)}</td>
-                        <td>{c.marketplaceWarehouseName || '—'}</td>
-                        <td>{c.shippingCluster || '—'}</td>
-                        <td>
-                          {c.itemCount ??
-                            (c.items || []).reduce(
-                              (s, it) => s + (parseInt(it.quantity, 10) || 0),
-                              0
-                            )}
+                        <td className="fbo-import-col-num" title={c.externalShipmentNumber || ''}>
+                          {c.externalShipmentNumber}
+                        </td>
+                        <td className="fbo-import-col-mp">{getMarketplaceLabel(c.marketplace)}</td>
+                        <td className="fbo-import-col-date">{fmtDate(c.readyAt)}</td>
+                        <td className="fbo-import-col-wh" title={wh || undefined}>
+                          {wh || '—'}
+                        </td>
+                        <td className="fbo-import-col-cluster" title={cluster || undefined}>
+                          {cluster || '—'}
+                        </td>
+                        <td className="fbo-import-col-qty">
+                          {qty}
                           {unresolved > 0 && (
                             <div className="fbo-import-warn">{unresolved} без привязки</div>
                           )}
                         </td>
-                        <td>
+                        <td className="fbo-import-col-status">
                           {disabled ? (
                             <span className="badge bg-secondary">Уже в системе</span>
                           ) : c.marketplace === 'ozon' && c.ozonState ? (

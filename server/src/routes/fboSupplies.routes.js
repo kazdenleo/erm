@@ -88,6 +88,19 @@ router.get(
   wrapAsync(fboSuppliesController.downloadPackingExcel.bind(fboSuppliesController))
 );
 router.get('/:id/packing', wrapAsync(fboSuppliesController.getPacking.bind(fboSuppliesController)));
+router.get('/:id/return', wrapAsync(fboSuppliesController.getReturn.bind(fboSuppliesController)));
+router.post(
+  '/:id/return/scan',
+  wrapAsync(fboSuppliesController.returnScan.bind(fboSuppliesController))
+);
+router.post(
+  '/:id/return/assign-label',
+  wrapAsync(fboSuppliesController.assignReturnLabel.bind(fboSuppliesController))
+);
+router.post(
+  '/:id/reactivate',
+  wrapAsync(fboSuppliesController.reactivate.bind(fboSuppliesController))
+);
 router.get('/:id/collect', wrapAsync(fboSuppliesController.getCollect.bind(fboSuppliesController)));
 router.post(
   '/:id/collect/scan',

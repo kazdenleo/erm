@@ -51,7 +51,9 @@ class ProductLabelsController {
   async getLabelPrint(req, res, next) {
     try {
       const productId = req.params.id ?? req.params.productId;
-      const html = productLabelsService.buildPrintHtml(productId);
+      const html = productLabelsService.buildPrintHtml(productId, {
+        marketplace: req.query?.marketplace ?? null,
+      });
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');
       return res.send(html);

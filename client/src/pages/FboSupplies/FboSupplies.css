@@ -390,6 +390,7 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: fixed;
 }
 
 .fbo-import-table th,
@@ -397,6 +398,7 @@
   padding: 8px 10px;
   border-bottom: 1px solid #eee;
   text-align: left;
+  vertical-align: middle;
 }
 
 .fbo-import-table th {
@@ -404,6 +406,47 @@
   top: 0;
   background: #f9fafb;
   z-index: 1;
+}
+
+.fbo-import-table .fbo-import-col-check {
+  width: 36px;
+}
+
+.fbo-import-table .fbo-import-col-num {
+  width: 132px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-import-table .fbo-import-col-mp {
+  width: 100px;
+  white-space: nowrap;
+}
+
+.fbo-import-table .fbo-import-col-date {
+  width: 92px;
+  white-space: nowrap;
+}
+
+.fbo-import-table .fbo-import-col-wh,
+.fbo-import-table .fbo-import-col-cluster {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fbo-import-table .fbo-import-col-qty {
+  width: 88px;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-import-table .fbo-import-col-status {
+  width: 110px;
+  white-space: nowrap;
 }
 
 .fbo-import-row-disabled {
@@ -1780,4 +1823,98 @@
   .fbo-express-col {
     max-height: 50vh;
   }
+}
+
+/* Возврат FBO */
+.fbo-return {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.fbo-return__progress {
+  font-size: 14px;
+}
+
+.fbo-return__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fbo-return__heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.fbo-return__reactivate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+.fbo-return__print-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.fbo-return__cargo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fbo-return__cargo-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.fbo-return__cargo-card--returned {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.fbo-return__cargo-card--assigned {
+  border-color: #93c5fd;
+}
+
+.fbo-return__cargo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.fbo-return__badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.fbo-return__badge--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.fbo-return__badge--assigned {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.fbo-return__contents {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #475569;
 }
