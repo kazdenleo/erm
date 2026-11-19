@@ -77,12 +77,20 @@ class CellLabelTemplatesController {
     try {
       const tid = requireProfileId(req);
       const body = req.body || {};
-      const sizePreset = String(body.size_preset || body.sizePreset || '58x40').trim();
+      const sizePreset = String(body.size_preset || body.sizePreset || '58x40').trim() || '58x40';
+      const clampMm = (v) => {
+        if (v == null || v === '') return null;
+        const n = Number(v);
+        if (!Number.isFinite(n)) return null;
+        return Math.min(200, Math.max(15, n));
+      };
+      const widthMm = clampMm(body.width_mm ?? body.widthMm);
+      const heightMm = clampMm(body.height_mm ?? body.heightMm);
       const template = await cellLabelTemplatesRepository.upsert({
         profileId: tid,
-        sizePreset,
-        widthMm: body.width_mm ?? body.widthMm ?? null,
-        heightMm: body.height_mm ?? body.heightMm ?? null,
+        sizePreset: sizePreset === 'custom' ? 'custom' : sizePreset,
+        widthMm: sizePreset === 'custom' ? widthMm ?? 58 : widthMm,
+        heightMm: sizePreset === 'custom' ? heightMm ?? 40 : heightMm,
         marginTopMm: Number(body.margin_top_mm ?? body.marginTopMm ?? 2),
         marginRightMm: Number(body.margin_right_mm ?? body.marginRightMm ?? 2),
         marginBottomMm: Number(body.margin_bottom_mm ?? body.marginBottomMm ?? 2),

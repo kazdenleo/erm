@@ -155,7 +155,8 @@ export function AddressSettingsTab({ warehouseId, settings, locations, onSaved }
       <section className="address-settings__block">
         <h4 className="address-settings__title">Этикетка ячейки</h4>
         <p className="muted-hint">
-          Состав и шрифты — в «Настройки → Этикетки», вкладка «Ячейка». Пока шаблон не сохранён, печатается
+          Состав, шрифты и свой размер этикетки — в «Настройки → Этикетки», вкладка «Ячейка». Режим печати
+          (на этикетках или лист А4) выбирается на вкладке «Ячейки». Пока шаблон не сохранён, печатается
           прежний вид, размер берётся отсюда.
         </p>
         <div className="address-settings__row">

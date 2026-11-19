@@ -42,11 +42,43 @@ const LABEL_PRESET_MM = {
   '75x120': { widthMm: 75, heightMm: 120 },
 };
 
-function innerLabelWidthMm(form) {
+const CUSTOM_SIZE_MIN_MM = 15;
+const CUSTOM_SIZE_MAX_MM = 200;
+
+function clampLabelMm(v, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(CUSTOM_SIZE_MAX_MM, Math.max(CUSTOM_SIZE_MIN_MM, n));
+}
+
+function labelSizeMm(form) {
+  if (form?.size_preset === 'custom') {
+    return {
+      widthMm: clampLabelMm(form?.width_mm, 58),
+      heightMm: clampLabelMm(form?.height_mm, 40),
+    };
+  }
   const preset = LABEL_PRESET_MM[form?.size_preset] || LABEL_PRESET_MM['58x40'];
+  const w = form?.width_mm != null && form?.width_mm !== '' ? Number(form.width_mm) : null;
+  const h = form?.height_mm != null && form?.height_mm !== '' ? Number(form.height_mm) : null;
+  return {
+    widthMm: Number.isFinite(w) && w > 0 ? w : preset.widthMm,
+    heightMm: Number.isFinite(h) && h > 0 ? h : preset.heightMm,
+  };
+}
+
+function presetMatchesMm(presetKey, widthMm, heightMm) {
+  const preset = LABEL_PRESET_MM[presetKey];
+  if (!preset) return false;
+  if (widthMm == null || heightMm == null) return true;
+  return Number(widthMm) === preset.widthMm && Number(heightMm) === preset.heightMm;
+}
+
+function innerLabelWidthMm(form) {
+  const { widthMm } = labelSizeMm(form);
   const left = Number(form?.margin_left_mm ?? 2);
   const right = Number(form?.margin_right_mm ?? 2);
-  return Math.max(20, preset.widthMm - left - right);
+  return Math.max(20, widthMm - left - right);
 }
 
 function defaultElements(form) {
@@ -104,18 +136,38 @@ function defaultPackagingElements(form) {
 function normalizeTemplate(data, { packaging = false, cell = false } = {}) {
   const d = data?.data ?? data ?? {};
   const hasElementsList = Array.isArray(d.elements);
-  const fallback = cell
-    ? defaultCellElements(d)
-    : packaging
-      ? defaultPackagingElements(d)
-      : defaultElements(d);
-  return {
-    size_preset: d.size_preset || d.sizePreset || '58x40',
+  const widthRaw = d.width_mm ?? d.widthMm;
+  const heightRaw = d.height_mm ?? d.heightMm;
+  const width_mm = widthRaw != null && widthRaw !== '' ? Number(widthRaw) : null;
+  const height_mm = heightRaw != null && heightRaw !== '' ? Number(heightRaw) : null;
+  let size_preset = d.size_preset || d.sizePreset || '58x40';
+  if (cell) {
+    if (
+      size_preset === 'custom' ||
+      (Number.isFinite(width_mm) &&
+        Number.isFinite(height_mm) &&
+        !presetMatchesMm(size_preset, width_mm, height_mm))
+    ) {
+      size_preset = 'custom';
+    }
+  }
+  const base = {
+    size_preset,
+    width_mm: Number.isFinite(width_mm) ? width_mm : size_preset === 'custom' ? 58 : null,
+    height_mm: Number.isFinite(height_mm) ? height_mm : size_preset === 'custom' ? 40 : null,
     margin_top_mm: Number(d.margin_top_mm ?? d.marginTopMm ?? 2),
     margin_right_mm: Number(d.margin_right_mm ?? d.marginRightMm ?? 2),
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
+  };
+  const fallback = cell
+    ? defaultCellElements(base)
+    : packaging
+      ? defaultPackagingElements(base)
+      : defaultElements(base);
+  return {
+    ...base,
     elements: hasElementsList ? clampElementsForSave(d.elements, { packaging, cell }) : fallback,
   };
 }
@@ -198,8 +250,12 @@ function clampElementsForSave(elements, { packaging = false, cell = false } = {}
 
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
 function buildTemplatePayload(form, { packaging = false, cell = false } = {}) {
+  const isCustom = cell && form.size_preset === 'custom';
+  const size = labelSizeMm(form);
   return {
-    size_preset: form.size_preset,
+    size_preset: isCustom ? 'custom' : form.size_preset || '58x40',
+    width_mm: isCustom ? size.widthMm : null,
+    height_mm: isCustom ? size.heightMm : null,
     margin_top_mm: parseMmValue(form.margin_top_mm, 2),
     margin_right_mm: parseMmValue(form.margin_right_mm, 2),
     margin_bottom_mm: parseMmValue(form.margin_bottom_mm, 2),
@@ -445,6 +501,8 @@ export function LabelConstructor() {
     selectedCategoryId,
     previewProductId,
     form.size_preset,
+    form.width_mm,
+    form.height_mm,
     form.margin_top_mm,
     form.margin_right_mm,
     form.margin_bottom_mm,
@@ -648,8 +706,12 @@ export function LabelConstructor() {
   const previewProductList = isPackaging ? packagingProducts : categoryProducts;
   const showEditor = isPackaging || isCell || Boolean(selectedCategoryId);
 
-  const previewSize = LABEL_SIZES.find((s) => s.value === form.size_preset)?.label || form.size_preset;
-  const previewAspect = form.size_preset === '75x120' ? '75 / 120' : '58 / 40';
+  const labelMm = labelSizeMm(form);
+  const previewSize =
+    form.size_preset === 'custom'
+      ? `${labelMm.widthMm} × ${labelMm.heightMm} мм`
+      : LABEL_SIZES.find((s) => s.value === form.size_preset)?.label || form.size_preset;
+  const previewAspect = `${labelMm.widthMm} / ${labelMm.heightMm}`;
 
   if (loading) {
     return <p className="label-constructor-loading">Загрузка…</p>;
@@ -755,7 +817,21 @@ export function LabelConstructor() {
                 <select
                   id="lc-size"
                   value={form.size_preset}
-                  onChange={(e) => setForm((p) => ({ ...p, size_preset: e.target.value }))}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setForm((p) => {
+                      if (next === 'custom') {
+                        const cur = labelSizeMm(p);
+                        return {
+                          ...p,
+                          size_preset: 'custom',
+                          width_mm: cur.widthMm,
+                          height_mm: cur.heightMm,
+                        };
+                      }
+                      return { ...p, size_preset: next, width_mm: null, height_mm: null };
+                    });
+                  }}
                   className="label-constructor-select"
                 >
                   {LABEL_SIZES.map((opt) => (
@@ -763,8 +839,49 @@ export function LabelConstructor() {
                       {opt.label}
                     </option>
                   ))}
+                  {isCell ? <option value="custom">Свой размер</option> : null}
                 </select>
               </div>
+              {isCell && form.size_preset === 'custom' ? (
+                <>
+                  <div className="form-group">
+                    <label htmlFor="lc-width-mm">Ширина, мм</label>
+                    <input
+                      id="lc-width-mm"
+                      type="number"
+                      min={CUSTOM_SIZE_MIN_MM}
+                      max={CUSTOM_SIZE_MAX_MM}
+                      step={1}
+                      className="label-constructor-select"
+                      value={form.width_mm ?? 58}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          width_mm: clampLabelMm(e.target.value, 58),
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="lc-height-mm">Высота, мм</label>
+                    <input
+                      id="lc-height-mm"
+                      type="number"
+                      min={CUSTOM_SIZE_MIN_MM}
+                      max={CUSTOM_SIZE_MAX_MM}
+                      step={1}
+                      className="label-constructor-select"
+                      value={form.height_mm ?? 40}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          height_mm: clampLabelMm(e.target.value, 40),
+                        }))
+                      }
+                    />
+                  </div>
+                </>
+              ) : null}
             </div>
 
             <fieldset className="label-constructor-fieldset">

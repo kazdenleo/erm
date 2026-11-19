@@ -54,8 +54,12 @@ export const addressStorageApi = {
   },
   renumberRoute: async (warehouseId, strategy) =>
     unwrap(await api.post(`${wh(warehouseId)}/locations/renumber`, { strategy })),
-  labelsPdf: async (warehouseId, ids) => {
-    const r = await api.post(`${wh(warehouseId)}/locations/labels`, { ids }, { responseType: 'blob', timeout: 180000 });
+  labelsPdf: async (warehouseId, ids, { pageMode = 'single' } = {}) => {
+    const r = await api.post(
+      `${wh(warehouseId)}/locations/labels`,
+      { ids, pageMode: pageMode === 'a4' ? 'a4' : 'single' },
+      { responseType: 'blob', timeout: 180000 }
+    );
     return r.data;
   },
 

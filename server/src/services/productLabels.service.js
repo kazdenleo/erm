@@ -1176,16 +1176,66 @@ export const productLabelsService = {
     return renderWithTemplate(template, {}, 'png', { previewScale, cell: sampleCellLabel() });
   },
 
-  async renderCellLabelsPdf(template, cells) {
+  async renderCellLabelsPdf(template, cells, options = {}) {
     const list = Array.isArray(cells) ? cells : [];
+    const pageMode = options.pageMode === 'a4' ? 'a4' : 'single';
     const doc = await PDFDocument.create();
+
+    if (pageMode !== 'a4') {
+      for (const cell of list) {
+        const rendered = await renderWithTemplate(template, {}, 'png', { cell });
+        const widthPt = mmToPt(rendered.widthMm);
+        const heightPt = mmToPt(rendered.heightMm);
+        const image = await doc.embedPng(rendered.buffer);
+        const page = doc.addPage([widthPt, heightPt]);
+        page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
+      }
+      return Buffer.from(await doc.save());
+    }
+
+    const A4_W_MM = 210;
+    const A4_H_MM = 297;
+    const sheetMarginMm = 5;
+    const gapMm = 2;
+    const size = parseSize(template);
+    const labelW = Number(size.widthMm) || 58;
+    const labelH = Number(size.heightMm) || 40;
+    const usableW = A4_W_MM - sheetMarginMm * 2;
+    const usableH = A4_H_MM - sheetMarginMm * 2;
+    if (labelW > usableW || labelH > usableH) {
+      const err = new Error(
+        `Этикетка ${labelW}×${labelH} мм не помещается на лист А4 (доступно ${usableW}×${usableH} мм с полями). Уменьшите размер в конструкторе или печатайте «На этикетках».`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    const cols = Math.max(1, Math.floor((usableW + gapMm) / (labelW + gapMm)));
+    const rows = Math.max(1, Math.floor((usableH + gapMm) / (labelH + gapMm)));
+    const perPage = cols * rows;
+    const pageWPt = mmToPt(A4_W_MM);
+    const pageHPt = mmToPt(A4_H_MM);
+    let indexOnPage = 0;
+    let page = null;
+
     for (const cell of list) {
+      if (indexOnPage === 0) {
+        page = doc.addPage([pageWPt, pageHPt]);
+      }
       const rendered = await renderWithTemplate(template, {}, 'png', { cell });
-      const widthPt = mmToPt(rendered.widthMm);
-      const heightPt = mmToPt(rendered.heightMm);
       const image = await doc.embedPng(rendered.buffer);
-      const page = doc.addPage([widthPt, heightPt]);
-      page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
+      const drawW = mmToPt(rendered.widthMm);
+      const drawH = mmToPt(rendered.heightMm);
+      const col = indexOnPage % cols;
+      const row = Math.floor(indexOnPage / cols);
+      const x = mmToPt(sheetMarginMm + col * (labelW + gapMm));
+      const y = pageHPt - mmToPt(sheetMarginMm + row * (labelH + gapMm) + labelH);
+      page.drawImage(image, { x, y, width: drawW, height: drawH });
+      indexOnPage += 1;
+      if (indexOnPage >= perPage) indexOnPage = 0;
+    }
+
+    if (!list.length) {
+      doc.addPage([pageWPt, pageHPt]);
     }
     return Buffer.from(await doc.save());
   },
@@ -1302,7 +1352,10 @@ export const productLabelsService = {
     return renderWithTemplate(template, product, 'png', { previewScale });
   },
 
-  buildPrintHtml(productId) {
+  buildPrintHtml(productId, { marketplace = null } = {}) {
+    const qs = new URLSearchParams({ format: 'png' });
+    const mp = marketplace != null ? String(marketplace).trim() : '';
+    if (mp) qs.set('marketplace', mp);
     return `<!DOCTYPE html>
 <html lang="ru"><head>
 <meta charset="utf-8"/>
@@ -1320,7 +1373,7 @@ export const productLabelsService = {
 <script>
 (function() {
   var img = document.getElementById('label');
-  var url = '/api/products/${encodeURIComponent(String(productId))}/label?format=png';
+  var url = '/api/products/${encodeURIComponent(String(productId))}/label?${qs.toString()}';
   img.onload = function() {
     setTimeout(function() { try { window.print(); } catch(e) {} }, 300);
   };

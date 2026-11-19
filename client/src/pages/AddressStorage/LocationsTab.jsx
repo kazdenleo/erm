@@ -6,11 +6,26 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { addressStorageApi, addressStorageError } from '../../services/addressStorage.api';
+import {
+  locationProductMatchesSearch,
+  normalizeProductSearchQuery,
+} from '../../utils/productSearch';
 import { AssignProductModal } from './AssignProductModal';
 import { LOCATION_TYPE_LABELS, downloadBlob, splitAddress, compareText } from './addressStorageUtils';
 
 const PAGE = 300;
 const LEVEL_HINTS = ['A-C', '01-10', '1-5', '1-4', '1-3', '1-2'];
+const CELL_LABELS_PAGE_MODE_LS = 'erm_cell_labels_page_mode';
+
+function readCellLabelsPageMode(warehouseId) {
+  try {
+    const raw = localStorage.getItem(`${CELL_LABELS_PAGE_MODE_LS}_${warehouseId}`);
+    if (raw === 'a4' || raw === 'single') return raw;
+  } catch {
+    /* ignore */
+  }
+  return 'single';
+}
 
 function GenerateModal({ isOpen, onClose, warehouseId, settings, onDone }) {
   const [values, setValues] = useState([]);
@@ -335,6 +350,19 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
   const [assignId, setAssignId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [pageMode, setPageMode] = useState(() => readCellLabelsPageMode(warehouseId));
+
+  useEffect(() => {
+    setPageMode(readCellLabelsPageMode(warehouseId));
+  }, [warehouseId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${CELL_LABELS_PAGE_MODE_LS}_${warehouseId}`, pageMode);
+    } catch {
+      /* ignore */
+    }
+  }, [warehouseId, pageMode]);
 
   const sep = settings.separator;
   const rackKeys = useMemo(() => {
@@ -343,7 +371,7 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
   }, [locations, sep]);
 
   const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
+    const term = normalizeProductSearchQuery(q).toLowerCase();
     return locations.filter((l) => {
       if (typeFilter && l.type !== typeFilter) return false;
       if (rackFilter && splitAddress(l.parts, sep).rackKey !== rackFilter) return false;
@@ -354,12 +382,8 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
       if (!term) return true;
       if (l.code.toLowerCase().includes(term)) return true;
       if (String(l.barcode || '').toLowerCase().includes(term)) return true;
-      return l.products.some((p) => {
-        if (String(p.sku || '').toLowerCase().includes(term)) return true;
-        if (String(p.name || '').toLowerCase().includes(term)) return true;
-        const codes = Array.isArray(p.barcodes) ? p.barcodes : [];
-        return codes.some((bc) => String(bc || '').toLowerCase().includes(term));
-      });
+      if (String(l.effectiveBarcode || '').toLowerCase().includes(term)) return true;
+      return (l.products || []).some((p) => locationProductMatchesSearch(p, term));
     });
   }, [locations, q, typeFilter, rackFilter, occupancy, sep]);
 
@@ -434,8 +458,8 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
     setBusy(true);
     setNotice(null);
     try {
-      const blob = await addressStorageApi.labelsPdf(warehouseId, ids);
-      downloadBlob(blob, `cells-${warehouseId}.pdf`);
+      const blob = await addressStorageApi.labelsPdf(warehouseId, ids, { pageMode });
+      downloadBlob(blob, pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`);
     } catch (e) {
       let text = addressStorageError(e).message;
       const data = e?.response?.data;
@@ -499,8 +523,18 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
         <Button size="small" variant="secondary" onClick={() => setImportOpen(true)}>
           Импорт закрепления
         </Button>
+        <select
+          className="form-select form-select-sm"
+          value={pageMode}
+          onChange={(e) => setPageMode(e.target.value === 'a4' ? 'a4' : 'single')}
+          title="Режим печати этикеток ячеек"
+          aria-label="Режим печати этикеток"
+        >
+          <option value="single">На этикетках</option>
+          <option value="a4">Лист А4</option>
+        </select>
         <Button size="small" variant="secondary" onClick={printLabels} disabled={busy || !filtered.length}>
-          🖨 Этикетки ({selectedIds.length || filtered.length})
+          🖨 {pageMode === 'a4' ? 'А4' : 'Этикетки'} ({selectedIds.length || filtered.length})
         </Button>
       </div>
 

@@ -301,6 +301,20 @@ class AddressStorageService {
                       SELECT NULLIF(TRIM(p.box_barcode), '')
                       WHERE NULLIF(TRIM(COALESCE(p.box_barcode, '')), '') IS NOT NULL
                     ) t
+                  ),
+                  'marketplaceSkus', (
+                    SELECT COALESCE(json_agg(s ORDER BY s), '[]'::json)
+                    FROM (
+                      SELECT NULLIF(TRIM(ps.sku), '') AS s
+                        FROM product_skus ps
+                       WHERE ps.product_id = x.product_id
+                         AND NULLIF(TRIM(ps.sku), '') IS NOT NULL
+                      UNION
+                      SELECT NULLIF(TRIM(ps.marketplace_product_id::text), '')
+                        FROM product_skus ps
+                       WHERE ps.product_id = x.product_id
+                         AND ps.marketplace_product_id IS NOT NULL
+                    ) m
                   )
                 ) ORDER BY x.assigned DESC, p.name) AS items
          FROM (

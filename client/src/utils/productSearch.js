@@ -78,6 +78,65 @@ export function isLikelyBarcodeScan(raw) {
   return /^\d{4,}$/.test(v);
 }
 
+/** Варианты EAN для сканера (12↔13↔14 цифр, ведущий ноль) — как на сервере. */
+export function barcodeDigitVariants(code) {
+  const d = String(code || '').replace(/\D/g, '');
+  if (!d) return [];
+  const out = [d];
+  if (d.length === 12) out.push(`0${d}`);
+  if (d.length === 13 && d.startsWith('0')) out.push(d.slice(1));
+  if (d.length === 14 && d.startsWith('0')) out.push(d.slice(1));
+  if (d.length === 14 && d.startsWith('00')) out.push(d.slice(2));
+  return [...new Set(out)];
+}
+
+/**
+ * Совпадение запроса со списком ШК товара: точное, подстрока, КИ→GTIN, варианты ведущего нуля.
+ * @param {unknown} query
+ * @param {unknown} barcodes
+ */
+export function barcodesMatchQuery(query, barcodes) {
+  const raw = normalizeProductSearchQuery(query);
+  if (!raw) return false;
+  const lookup = productLookupCodesFromScan(raw);
+  const toTry = (lookup.length ? lookup : [raw])
+    .map((c) => String(c || '').trim().toLowerCase())
+    .filter(Boolean);
+  const stored = barcodeStringsFromProduct(barcodes)
+    .map((b) => String(b || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (!stored.length || !toTry.length) return false;
+
+  for (const q of toTry) {
+    if (stored.some((b) => b === q || b.includes(q))) return true;
+    if (!shouldUseBarcodeDigitFallback(q)) continue;
+    const qVars = new Set(barcodeDigitVariants(q));
+    if (!qVars.size) continue;
+    for (const b of stored) {
+      for (const bv of barcodeDigitVariants(b)) {
+        if (qVars.has(bv)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Товар в ячейке/списке: артикул, название или ШК (с нормализацией скана).
+ * @param {{ sku?: unknown, name?: unknown, barcodes?: unknown }} product
+ * @param {unknown} query
+ */
+export function locationProductMatchesSearch(product, query) {
+  const q = normalizeProductSearchQuery(query).toLowerCase();
+  if (!q || !product) return false;
+  if (String(product.sku || '').toLowerCase().includes(q)) return true;
+  if (String(product.name || '').toLowerCase().includes(q)) return true;
+  if (barcodesMatchQuery(q, product.barcodes)) return true;
+  const mpSkus = Array.isArray(product.marketplaceSkus) ? product.marketplaceSkus : [];
+  if (mpSkus.some((s) => String(s || '').toLowerCase().includes(q))) return true;
+  return false;
+}
+
 /** Релевантность для сортировки: точный артикул > префикс/хвост > название. */
 export function scoreProductSearchMatch(product, query) {
   const q = normalizeProductSearchQuery(query).toLowerCase();

@@ -87,7 +87,12 @@ function locationLegend(loc, settings) {
     .join(' · ');
 }
 
-export async function buildLocationLabelsPdf(locations, settings, { template = null, warehouseName = '' } = {}) {
+export async function buildLocationLabelsPdf(
+  locations,
+  settings,
+  { template = null, warehouseName = '', pageMode = 'single' } = {}
+) {
+  const mode = pageMode === 'a4' ? 'a4' : 'single';
   const saved = template?.saved === true || template?.id != null;
   if (saved) {
     const cells = (locations || []).map((loc) => ({
@@ -96,21 +101,74 @@ export async function buildLocationLabelsPdf(locations, settings, { template = n
       barcode: effectiveBarcode(loc),
       warehouseName: warehouseName || '',
     }));
-    return productLabelsService.renderCellLabelsPdf(template, cells);
+    return productLabelsService.renderCellLabelsPdf(template, cells, { pageMode: mode });
   }
 
+  const labelW = Number(settings?.labelWidthMm) || 58;
+  const labelH = Number(settings?.labelHeightMm) || 40;
+  const list = locations || [];
   const pdf = await PDFDocument.create();
-  const wPt = (Number(settings?.labelWidthMm) || 58) * PT_PER_MM;
-  const hPt = (Number(settings?.labelHeightMm) || 40) * PT_PER_MM;
-  for (const loc of locations || []) {
+
+  if (mode !== 'a4') {
+    const wPt = labelW * PT_PER_MM;
+    const hPt = labelH * PT_PER_MM;
+    for (const loc of list) {
+      const png = await renderLabelPng(loc, {
+        ...settings,
+        labelWidthMm: labelW,
+        labelHeightMm: labelH,
+      });
+      const img = await pdf.embedPng(png);
+      const page = pdf.addPage([wPt, hPt]);
+      page.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
+    }
+    return Buffer.from(await pdf.save());
+  }
+
+  const A4_W_MM = 210;
+  const A4_H_MM = 297;
+  const sheetMarginMm = 5;
+  const gapMm = 2;
+  const usableW = A4_W_MM - sheetMarginMm * 2;
+  const usableH = A4_H_MM - sheetMarginMm * 2;
+  if (labelW > usableW || labelH > usableH) {
+    const err = new Error(
+      `Этикетка ${labelW}×${labelH} мм не помещается на лист А4 (доступно ${usableW}×${usableH} мм с полями). Уменьшите размер или печатайте «На этикетках».`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const cols = Math.max(1, Math.floor((usableW + gapMm) / (labelW + gapMm)));
+  const rows = Math.max(1, Math.floor((usableH + gapMm) / (labelH + gapMm)));
+  const perPage = cols * rows;
+  const pageWPt = A4_W_MM * PT_PER_MM;
+  const pageHPt = A4_H_MM * PT_PER_MM;
+  const drawW = labelW * PT_PER_MM;
+  const drawH = labelH * PT_PER_MM;
+  let indexOnPage = 0;
+  let page = null;
+
+  for (const loc of list) {
+    if (indexOnPage === 0) {
+      page = pdf.addPage([pageWPt, pageHPt]);
+    }
     const png = await renderLabelPng(loc, {
       ...settings,
-      labelWidthMm: Number(settings?.labelWidthMm) || 58,
-      labelHeightMm: Number(settings?.labelHeightMm) || 40,
+      labelWidthMm: labelW,
+      labelHeightMm: labelH,
     });
     const img = await pdf.embedPng(png);
-    const page = pdf.addPage([wPt, hPt]);
-    page.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
+    const col = indexOnPage % cols;
+    const row = Math.floor(indexOnPage / cols);
+    const x = (sheetMarginMm + col * (labelW + gapMm)) * PT_PER_MM;
+    const y = pageHPt - (sheetMarginMm + row * (labelH + gapMm) + labelH) * PT_PER_MM;
+    page.drawImage(img, { x, y, width: drawW, height: drawH });
+    indexOnPage += 1;
+    if (indexOnPage >= perPage) indexOnPage = 0;
+  }
+
+  if (!list.length) {
+    pdf.addPage([pageWPt, pageHPt]);
   }
   return Buffer.from(await pdf.save());
 }
