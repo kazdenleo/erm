@@ -361,11 +361,51 @@ class AddressStorageService {
     }
     const { parts, code } = validateParts(rawParts, settings.separator);
     const type = LOCATION_TYPES.includes(body.type) ? body.type : 'storage';
-    const maxR = await query(
-      `SELECT COALESCE(MAX(route_order), 0)::int AS m FROM storage_locations WHERE warehouse_id = $1`,
-      [warehouseId]
-    );
-    const routeOrder = toIntOrNull(body.routeOrder) ?? maxR.rows[0].m + 10;
+    let routeOrder = toIntOrNull(body.routeOrder);
+    if (routeOrder == null) {
+      // Ставим рядом с соседними адресами, а не в самый конец списка —
+      // иначе при пагинации UI новая ячейка «пропадает» за лимитом «Показать ещё».
+      const loadNeighbors = async (prefixLen) => {
+        if (prefixLen > 0) {
+          return query(
+            `SELECT route_order, parts FROM storage_locations
+             WHERE warehouse_id = $1 AND cardinality(parts) = $2 AND parts[1:$3] = $4::text[]`,
+            [warehouseId, parts.length, prefixLen, parts.slice(0, prefixLen)]
+          );
+        }
+        return query(`SELECT route_order, parts FROM storage_locations WHERE warehouse_id = $1`, [
+          warehouseId,
+        ]);
+      };
+      let prefixLen = Math.max(0, parts.length - 1);
+      let sibR = await loadNeighbors(prefixLen);
+      // Если на этом уровне ещё никого нет (например 3Б-7-7) — ищем среди всего стеллажа/склада.
+      while (prefixLen > 0 && !(sibR.rows || []).length) {
+        prefixLen -= 1;
+        sibR = await loadNeighbors(prefixLen);
+      }
+      const sibs = (sibR.rows || []).map((row) => ({
+        routeOrder: Number(row.route_order) || 0,
+        parts: Array.isArray(row.parts) ? row.parts : [],
+      }));
+      const before = sibs.filter((s) => compareParts(s.parts, parts) < 0);
+      const after = sibs.filter((s) => compareParts(s.parts, parts) > 0);
+      if (before.length && after.length) {
+        const lo = Math.max(...before.map((s) => s.routeOrder));
+        const hi = Math.min(...after.map((s) => s.routeOrder));
+        routeOrder = hi > lo + 1 ? Math.floor((lo + hi) / 2) : lo + 1;
+      } else if (before.length) {
+        routeOrder = Math.max(...before.map((s) => s.routeOrder)) + 10;
+      } else if (after.length) {
+        routeOrder = Math.max(0, Math.min(...after.map((s) => s.routeOrder)) - 10);
+      } else {
+        const maxR = await query(
+          `SELECT COALESCE(MAX(route_order), 0)::int AS m FROM storage_locations WHERE warehouse_id = $1`,
+          [warehouseId]
+        );
+        routeOrder = (maxR.rows[0]?.m || 0) + 10;
+      }
+    }
     try {
       const r = await query(
         `INSERT INTO storage_locations

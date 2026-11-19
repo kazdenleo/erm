@@ -178,9 +178,12 @@ function EditModal({ location, isNew, warehouseId, settings, onClose, onSaved })
     };
     if (form.routeOrder !== '') body.routeOrder = Number(form.routeOrder);
     try {
-      if (isNew) await addressStorageApi.createLocation(warehouseId, body);
-      else await addressStorageApi.updateLocation(warehouseId, location.id, body);
-      await onSaved?.();
+      let saved = null;
+      if (isNew) saved = await addressStorageApi.createLocation(warehouseId, body);
+      else {
+        saved = await addressStorageApi.updateLocation(warehouseId, location.id, body);
+      }
+      await onSaved?.(saved);
       onClose();
     } catch (e) {
       setError(addressStorageError(e).message);
@@ -734,7 +737,23 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
           warehouseId={warehouseId}
           settings={settings}
           onClose={() => setEditId(null)}
-          onSaved={reloadLocations}
+          onSaved={async (saved) => {
+            await reloadLocations();
+            if (saved?.code) {
+              setQ(saved.code);
+              setOccupancy('');
+              setRackFilter('');
+              setTypeFilter('');
+              setLimit(PAGE);
+              setNotice({
+                ok: true,
+                text:
+                  editId === 'new'
+                    ? `Создана ячейка ${saved.code}`
+                    : `Сохранена ячейка ${saved.code}`,
+              });
+            }
+          }}
         />
       ) : null}
       <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} warehouseId={warehouseId} onDone={reloadLocations} />
