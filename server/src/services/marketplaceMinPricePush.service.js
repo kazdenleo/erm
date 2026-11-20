@@ -21,6 +21,7 @@ import {
   resolvePushFloorForMarketplace,
   isProductInPricePushScope,
   resolvePushMarketplacesAllowList,
+  resolveMarketplacePushModes,
 } from '../utils/pricePushSettings.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { refreshComputedAttributeValues } from './computedAttributes.service.js';
@@ -1105,11 +1106,17 @@ export async function pushForProduct(productId, opts = {}) {
     });
   }
 
-  const priceModes = {
-    pushMinPrice: pushSchemes.pushMinPrice !== false,
-    pushSellingPrice: pushSchemes.pushSellingPrice === true,
-  };
-  if (!priceModes.pushMinPrice && !priceModes.pushSellingPrice) {
+  const ozonModes = resolveMarketplacePushModes(pushSchemes, 'ozon');
+  const wbModes = resolveMarketplacePushModes(pushSchemes, 'wb');
+  const ymModes = resolveMarketplacePushModes(pushSchemes, 'ym');
+  const anyContent =
+    ozonModes.pushMinPrice ||
+    ozonModes.pushSellingPrice ||
+    wbModes.pushMinPrice ||
+    wbModes.pushSellingPrice ||
+    ymModes.pushMinPrice ||
+    ymModes.pushSellingPrice;
+  if (!anyContent) {
     return {
       skipped: true,
       reason: 'content_disabled',
@@ -1118,31 +1125,31 @@ export async function pushForProduct(productId, opts = {}) {
   }
   const results = [];
 
-  if (ctx.floors.ozon != null && allowed('ozon')) {
+  if (ctx.floors.ozon != null && allowed('ozon') && (ozonModes.pushMinPrice || ozonModes.pushSellingPrice)) {
     try {
       const selling = ctx.selling?.ozon ?? ctx.floors.ozon;
       results.push(
-        await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId, priceModes)
+        await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId, ozonModes)
       );
     } catch (e) {
       results.push({ marketplace: 'ozon', ok: false, error: e?.message || String(e) });
     }
   }
-  if (ctx.floors.wb != null && allowed('wb')) {
+  if (ctx.floors.wb != null && allowed('wb') && (wbModes.pushMinPrice || wbModes.pushSellingPrice)) {
     try {
       const selling = ctx.selling?.wb ?? ctx.floors.wb;
       results.push(
-        await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId, priceModes)
+        await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId, wbModes)
       );
     } catch (e) {
       results.push({ marketplace: 'wb', ok: false, error: e?.message || String(e) });
     }
   }
-  if (ctx.floors.ym != null && allowed('ym')) {
+  if (ctx.floors.ym != null && allowed('ym') && (ymModes.pushMinPrice || ymModes.pushSellingPrice)) {
     try {
       const selling = ctx.selling?.ym ?? ctx.floors.ym;
       results.push(
-        await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId, priceModes)
+        await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId, ymModes)
       );
     } catch (e) {
       results.push({ marketplace: 'ym', ok: false, error: e?.message || String(e) });

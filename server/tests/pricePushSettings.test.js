@@ -12,63 +12,120 @@ import {
 } from '../src/utils/pricePushSettings.js';
 
 describe('pricePushSettings', () => {
-  it('parsePricePushSettings defaults both schemes enabled and min-only content', () => {
+  it('parsePricePushSettings defaults both schemes and Ozon min-only', () => {
     const s = parsePricePushSettings({});
     expect(s.pushFbs).toBe(true);
     expect(s.pushFbo).toBe(true);
+    // Default legacy: all MP on + min only → Ozon min; WB/YM without selling stay off for content
+    expect(s.marketplacePush.ozon).toEqual({ pushMinPrice: true, pushSellingPrice: false });
+    expect(s.marketplacePush.wb.pushMinPrice).toBe(false);
+    expect(s.marketplacePush.ym.pushMinPrice).toBe(false);
     expect(s.pushOzon).toBe(true);
-    expect(s.pushWb).toBe(true);
-    expect(s.pushYm).toBe(true);
     expect(s.pushMinPrice).toBe(true);
     expect(s.pushSellingPrice).toBe(false);
   });
 
-  it('parses and merges pushMinPrice / pushSellingPrice', () => {
-    expect(
-      parsePricePushSettings({ pushMinPrice: false, pushSellingPrice: true })
-    ).toMatchObject({ pushMinPrice: false, pushSellingPrice: true });
-    expect(
-      mergePricePushSettings(
-        { pushMinPrice: true, pushSellingPrice: false },
-        { pushSellingPrice: true }
-      )
-    ).toMatchObject({ pushMinPrice: true, pushSellingPrice: true });
+  it('parses per-marketplace matrix', () => {
+    const s = parsePricePushSettings({
+      marketplacePush: {
+        ozon: { pushMinPrice: true, pushSellingPrice: false },
+        wb: { pushSellingPrice: true },
+        ym: { pushMinPrice: true, pushSellingPrice: true },
+      },
+    });
+    expect(s.marketplacePush.ozon).toEqual({ pushMinPrice: true, pushSellingPrice: false });
+    expect(s.marketplacePush.wb).toEqual({ pushMinPrice: false, pushSellingPrice: true });
+    // YM min forced off (no API field)
+    expect(s.marketplacePush.ym).toEqual({ pushMinPrice: false, pushSellingPrice: true });
+    expect(s.pushOzon).toBe(true);
+    expect(s.pushWb).toBe(true);
+    expect(s.pushYm).toBe(true);
+    expect(s.pushMinPrice).toBe(true);
+    expect(s.pushSellingPrice).toBe(true);
   });
 
-  it('migrates legacy syncSellingPriceToMin to two toggles', () => {
+  it('merges marketplacePush independently', () => {
+    const merged = mergePricePushSettings(
+      {
+        marketplacePush: {
+          ozon: { pushMinPrice: true, pushSellingPrice: false },
+          wb: { pushSellingPrice: false },
+          ym: { pushSellingPrice: false },
+        },
+      },
+      {
+        marketplacePush: {
+          wb: { pushSellingPrice: true },
+        },
+      }
+    );
+    expect(merged.marketplacePush.ozon.pushMinPrice).toBe(true);
+    expect(merged.marketplacePush.wb.pushSellingPrice).toBe(true);
+    expect(merged.pushWb).toBe(true);
+  });
+
+  it('migrates legacy syncSellingPriceToMin to marketplace matrix', () => {
     expect(parsePricePushSettings({ syncSellingPriceToMin: true })).toMatchObject({
       pushMinPrice: true,
       pushSellingPrice: true,
+      pushOzon: true,
     });
-    expect(parsePricePushSettings({ syncSellingPriceToMin: false })).toMatchObject({
+    expect(parsePricePushSettings({ syncSellingPriceToMin: false }).marketplacePush.ozon).toEqual({
       pushMinPrice: true,
       pushSellingPrice: false,
     });
   });
 
   it('parses marketplace flags and marketplaces array', () => {
-    expect(enabledPushMarketplaces({ pushOzon: true, pushWb: false, pushYm: true })).toEqual([
-      'ozon',
-      'ym',
-    ]);
-    expect(parsePricePushSettings({ marketplaces: ['wb', 'wildberries'] })).toMatchObject({
+    expect(
+      enabledPushMarketplaces({
+        pushOzon: true,
+        pushWb: false,
+        pushYm: true,
+        pushSellingPrice: true,
+      })
+    ).toEqual(['ozon', 'ym']);
+    expect(
+      parsePricePushSettings({ marketplaces: ['wb', 'wildberries'], pushSellingPrice: true })
+    ).toMatchObject({
       pushOzon: false,
       pushWb: true,
       pushYm: false,
     });
-    expect(hasPricePushMarketplaceEnabled({ pushOzon: false, pushWb: false, pushYm: false })).toBe(
-      false
-    );
+    expect(
+      hasPricePushMarketplaceEnabled({
+        marketplacePush: {
+          ozon: { pushMinPrice: false, pushSellingPrice: false },
+          wb: { pushSellingPrice: false },
+          ym: { pushSellingPrice: false },
+        },
+      })
+    ).toBe(false);
   });
 
   it('resolvePushMarketplacesAllowList intersects request with settings', () => {
-    const settings = { pushOzon: true, pushWb: false, pushYm: true };
+    const settings = {
+      marketplacePush: {
+        ozon: { pushMinPrice: true, pushSellingPrice: false },
+        wb: { pushSellingPrice: false },
+        ym: { pushSellingPrice: true },
+      },
+    };
     expect(resolvePushMarketplacesAllowList(settings, null)).toEqual(['ozon', 'ym']);
     expect(resolvePushMarketplacesAllowList(settings, ['wb', 'ozon'])).toEqual(['ozon']);
     expect(resolvePushMarketplacesAllowList(settings, ['wb'])).toEqual([]);
-    expect(resolvePushMarketplacesAllowList({ pushOzon: false, pushWb: false, pushYm: false }, [
-      'ozon',
-    ])).toEqual([]);
+    expect(
+      resolvePushMarketplacesAllowList(
+        {
+          marketplacePush: {
+            ozon: { pushMinPrice: false, pushSellingPrice: false },
+            wb: { pushSellingPrice: false },
+            ym: { pushSellingPrice: false },
+          },
+        },
+        ['ozon']
+      )
+    ).toEqual([]);
   });
 
   it('allows both FBS and FBO schemes disabled (do not push prices)', () => {
