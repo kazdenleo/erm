@@ -17,10 +17,18 @@ export function promoJoinDecision({ entryPrice, floor } = {}) {
   return { ok: true, gap: Math.round(entry - fl) };
 }
 
+/** После проверки пола: закрыть вход при отрицательной прогнозной прибыли. */
+export function promoProfitGate(profitRub) {
+  const p = Number(profitRub);
+  if (Number.isFinite(p) && p < 0) return { ok: false, reason: 'negative_profit' };
+  return { ok: true };
+}
+
 export function joinBlockMessage(reason) {
   if (reason === 'below_floor') return 'Цена входа ниже минимальной. Вход в акцию закрыт';
   if (reason === 'no_floor') return 'Минимальная цена не посчитана. Вход в акцию закрыт';
   if (reason === 'no_entry_price') return 'Нет цены входа в акцию';
+  if (reason === 'negative_profit') return 'Прогноз прибыли отрицательный. Вход в акцию закрыт';
   return reason ? String(reason) : 'Вход в акцию закрыт';
 }
 

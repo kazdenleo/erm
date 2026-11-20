@@ -33,6 +33,7 @@ import {
 } from '../utils/pricePushSettings.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import priceWhatIfService from '../services/priceWhatIf.service.js';
 
 function asciiContentDispositionFilename(name, fallback = 'prices.xlsx') {
   const s = String(name || fallback);
@@ -438,8 +439,34 @@ class PricesController {
   }
 
   /**
+   * POST /api/product/prices/what-if — прогноз прибыли при цене (текущей или заданной).
+   * Body: { productId, marketplace?, salePrice? }
+   */
+  async whatIf(req, res, next) {
+    try {
+      const productId = req.body?.productId ?? req.query?.productId;
+      const marketplace = req.body?.marketplace ?? req.query?.marketplace ?? 'all';
+      const salePrice = req.body?.salePrice ?? req.query?.salePrice ?? null;
+      const data = await priceWhatIfService.preview({
+        productId,
+        marketplace,
+        salePrice,
+        profileId: req.user?.profileId ?? null,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      const status = error?.statusCode || 500;
+      if (status >= 400 && status < 500) {
+        return res.status(status).json({ ok: false, message: error.message });
+      }
+      logger.error('[Prices Controller] whatIf error:', error);
+      next(error);
+    }
+  }
+
+  /**
    * POST /api/product/prices/push-one — отправить сохранённые мин. цены товара на МП.
-   * Body: { productId }
+   * Body: { productId, confirmNegativeProfit? }
    */
   async pushOne(req, res, next) {
     try {
@@ -448,13 +475,35 @@ class PricesController {
       if (isNaN(id) || id <= 0) {
         return res.status(400).json({ ok: false, message: 'Некорректный ID товара (передайте productId)' });
       }
+      const confirmNegative = Boolean(req.body?.confirmNegativeProfit);
+      const preview = await priceWhatIfService.preview({
+        productId: id,
+        marketplace: 'all',
+        profileId: req.user?.profileId ?? null,
+      });
+      if (preview.hasBlockers) {
+        return res.status(400).json({
+          ok: false,
+          reason: 'below_floor',
+          message: 'Есть цены ниже минимальной — сначала пересчитайте или поднимите цену',
+          data: preview,
+        });
+      }
+      if (preview.hasWarnings && !confirmNegative) {
+        return res.status(409).json({
+          ok: false,
+          reason: 'negative_profit',
+          message: 'Прогноз прибыли отрицательный. Подтвердите отправку ещё раз.',
+          data: preview,
+        });
+      }
       const result = await pushForProduct(id);
       const summary = summarizeProductPush(result);
       if (!summary.ok) {
         const status = summary.reason === 'product_not_found' ? 404 : 400;
         return res.status(status).json({ ok: false, message: summary.message, reason: summary.reason, data: result });
       }
-      return res.status(200).json({ ok: true, message: summary.message, data: result });
+      return res.status(200).json({ ok: true, message: summary.message, data: result, whatIf: preview });
     } catch (error) {
       logger.error('[Prices Controller] pushOne error:', error);
       next(error);

@@ -38,6 +38,8 @@ import { Penalties } from './pages/Analytics/Penalties/Penalties';
 import { EmployeeMetrics } from './pages/Analytics/EmployeeMetrics/EmployeeMetrics';
 import { Pnl } from './pages/Analytics/Pnl/Pnl';
 import { UnitEconomics } from './pages/Analytics/UnitEconomics/UnitEconomics';
+import { Rnp } from './pages/Analytics/Rnp/Rnp';
+import { Reconciliation } from './pages/Analytics/Reconciliation/Reconciliation';
 import { CardWork } from './pages/Analytics/CardWork/CardWork';
 import { CardWorkLayout } from './pages/Analytics/CardWork/CardWorkLayout';
 import { Hypotheses } from './pages/Analytics/Hypotheses/Hypotheses';
@@ -265,6 +267,8 @@ function App() {
             <Route path="penalties" element={<Penalties />} />
             <Route path="employees" element={<EmployeeMetrics />} />
             <Route path="unit-economics" element={<UnitEconomics />} />
+            <Route path="rnp" element={<Rnp />} />
+            <Route path="reconciliation" element={<Reconciliation />} />
             <Route path="pnl" element={<Pnl />} />
             <Route path="card-work" element={<Navigate to="/card-work" replace />} />
             <Route path="hypotheses" element={<Navigate to="/card-work/hypotheses" replace />} />

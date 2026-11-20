@@ -41,9 +41,15 @@ export const pricesApi = {
     return response.data;
   },
 
+  /** Прогноз прибыли при цене (текущей или заданной) */
+  async whatIf({ productId, marketplace = 'all', salePrice = null } = {}) {
+    const response = await api.post('/product/prices/what-if', { productId, marketplace, salePrice });
+    return response.data;
+  },
+
   /** Отправить сохранённые мин. цены одного товара на маркетплейсы */
-  async pushForProduct(productId) {
-    const response = await api.post('/product/prices/push-one', { productId });
+  async pushForProduct(productId, { confirmNegativeProfit = false } = {}) {
+    const response = await api.post('/product/prices/push-one', { productId, confirmNegativeProfit });
     return response.data;
   },
 

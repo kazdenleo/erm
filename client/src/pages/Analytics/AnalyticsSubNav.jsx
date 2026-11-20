@@ -21,7 +21,9 @@ const TABS = [
   { to: '/analytics/dead-stock', label: 'Неликвиды', sectionKey: 'analytics_sales' },
   { to: '/analytics/penalties', label: 'Штрафы', sectionKey: 'analytics_sales' },
   { to: '/analytics/employees', label: 'Сотрудники', sectionKey: 'analytics_sales', adminOnly: true },
+  { to: '/analytics/rnp', label: 'РНП', sectionKey: 'analytics_sales' },
   { to: '/analytics/unit-economics', label: 'Юнит-экономика', sectionKey: 'analytics_unit_economics' },
+  { to: '/analytics/reconciliation', label: 'Сверка', sectionKey: 'analytics_sales', adminOnly: true },
   { to: '/analytics/pnl', label: 'ОПиУ', sectionKey: 'analytics_sales', adminOnly: true },
 ];
 

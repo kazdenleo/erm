@@ -61,6 +61,7 @@ router.post('/sync-calculator-cache', (req, res, next) => pricesController.syncC
 router.post('/recalculate-one', (req, res, next) => pricesController.recalculateForProduct(req, res, next));
 
 // Отправить сохранённые мин. цены одного товара на маркетплейсы
+router.post('/what-if', (req, res, next) => pricesController.whatIf(req, res, next));
 router.post('/push-one', (req, res, next) => pricesController.pushOne(req, res, next));
 
 // Отправить мин. цены на МП (фон; body.organizationId — опционально)

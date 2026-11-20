@@ -10,7 +10,12 @@ import pricesService from './prices.service.js';
 import { netProfitAtSalePrice } from './min-price-calculator.service.js';
 import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
-import { joinBlockMessage, ozonEntryPrice, promoJoinDecision } from '../utils/promoParticipation.js';
+import {
+  joinBlockMessage,
+  ozonEntryPrice,
+  promoJoinDecision,
+  promoProfitGate,
+} from '../utils/promoParticipation.js';
 import { exitActionPrice, isUnifiedPriceBlock } from '../utils/ozonPromoExit.js';
 import { elasticBoostLevels } from '../utils/ozonElasticBoost.js';
 
@@ -200,14 +205,25 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
       );
     };
     const profit = profitAt(entry);
+    let joinReason = decision.ok ? null : decision.reason;
+    if (!joinReason) {
+      const profitGate = promoProfitGate(profit);
+      if (!profitGate.ok) joinReason = profitGate.reason;
+    }
     const boostLevels = marketplace === 'ozon'
       ? elasticBoostLevels(row).map((level) => {
-          const decision = promoJoinDecision({ entryPrice: level.price, floor });
+          const levelDecision = promoJoinDecision({ entryPrice: level.price, floor });
+          const levelProfit = profitAt(level.price);
+          let levelReason = levelDecision.ok ? null : levelDecision.reason;
+          if (!levelReason) {
+            const pg = promoProfitGate(levelProfit);
+            if (!pg.ok) levelReason = pg.reason;
+          }
           return {
             ...level,
-            profit_rub: profitAt(level.price),
-            below_floor: decision.reason === 'below_floor',
-            join_block_reason: decision.ok ? null : decision.reason,
+            profit_rub: levelProfit,
+            below_floor: levelDecision.reason === 'below_floor',
+            join_block_reason: levelReason,
           };
         })
       : [];
@@ -228,7 +244,8 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
         : null,
       profit_rub: profit,
       below_floor: decision.reason === 'below_floor',
-      join_block_reason: decision.ok ? null : decision.reason,
+      profit_negative: Number.isFinite(Number(profit)) && Number(profit) < 0,
+      join_block_reason: joinReason,
     };
   });
 }
@@ -259,6 +276,22 @@ export async function joinOzonAction({ actionId, products = [] }, options = {}) 
     if (!decision.ok) {
       blocked.push({ ozonProductId, ourProductId, reason: decision.reason, message: joinBlockMessage(decision.reason) });
       continue;
+    }
+    if (Number.isFinite(ourProductId) && ourProductId > 0) {
+      const [eco] = await attachPromoEconomics(
+        [{ our_product_id: ourProductId, action_price: actionPrice }],
+        'ozon',
+        options
+      );
+      if (eco?.join_block_reason) {
+        blocked.push({
+          ozonProductId,
+          ourProductId,
+          reason: eco.join_block_reason,
+          message: joinBlockMessage(eco.join_block_reason),
+        });
+        continue;
+      }
     }
     // action_price — та же единая предельная цена, что и в «Ценах»: Ozon копирует её во все разделы.
     const item = { product_id: ozonProductId, action_price: actionPrice };
@@ -409,6 +442,22 @@ export async function setOzonActionPrice({ actionId, products = [] }, options = 
     if (!decision.ok) {
       blocked.push({ ozonProductId, ourProductId, reason: decision.reason, message: joinBlockMessage(decision.reason) });
       continue;
+    }
+    if (Number.isFinite(ourProductId) && ourProductId > 0) {
+      const [eco] = await attachPromoEconomics(
+        [{ our_product_id: ourProductId, action_price: actionPrice }],
+        'ozon',
+        options
+      );
+      if (eco?.join_block_reason) {
+        blocked.push({
+          ozonProductId,
+          ourProductId,
+          reason: eco.join_block_reason,
+          message: joinBlockMessage(eco.join_block_reason),
+        });
+        continue;
+      }
     }
     allowed.push({ product_id: ozonProductId, action_price: Math.round(actionPrice), boost });
   }

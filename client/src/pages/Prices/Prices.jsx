@@ -893,21 +893,41 @@ export function Prices() {
   };
 
   /** Отправить сохранённые мин. цены одного товара на маркетплейсы. */
-  const handlePushOne = async (productId) => {
+  const handlePushOne = async (productId, { confirmNegativeProfit = false } = {}) => {
     if (!productId) return;
+    let keepLoading = false;
     try {
       setPushOneProductId(productId);
       setRecalcAllMessage(null);
-      const res = await pricesApi.pushForProduct(productId);
+      const res = await pricesApi.pushForProduct(productId, { confirmNegativeProfit });
       const msg = res?.message || 'Цены отправлены на маркетплейсы.';
       setRecalcAllMessage(msg);
       setTimeout(() => setRecalcAllMessage(null), 8000);
     } catch (err) {
+      const status = err?.response?.status;
+      const payload = err?.response?.data;
+      if (status === 409 && payload?.reason === 'negative_profit' && !confirmNegativeProfit) {
+        const lines = (payload?.data?.items || [])
+          .filter((i) => i.profitNegative)
+          .map((i) => `${String(i.marketplace || '').toUpperCase()}: ${i.profitRub} ₽`)
+          .join('; ');
+        const ok = window.confirm(
+          `${payload.message || 'Прогноз прибыли отрицательный.'}\n${lines}\n\nВсё равно отправить цены?`
+        );
+        if (ok) {
+          keepLoading = true;
+          await handlePushOne(productId, { confirmNegativeProfit: true });
+          return;
+        }
+        setRecalcAllMessage('Отправка отменена: отрицательная прибыль');
+        setTimeout(() => setRecalcAllMessage(null), 8000);
+        return;
+      }
       console.error('[Prices] push one failed:', err);
-      setRecalcAllMessage('Ошибка: ' + (err.response?.data?.message || err.message));
+      setRecalcAllMessage('Ошибка: ' + (payload?.message || err.message));
       setTimeout(() => setRecalcAllMessage(null), 8000);
     } finally {
-      setPushOneProductId(null);
+      if (!keepLoading) setPushOneProductId(null);
     }
   };
 

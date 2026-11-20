@@ -123,7 +123,9 @@ export const salesAnalyticsApi = {
   getDeadStock: (params = {}) => getWithParams('/sales-analytics/dead-stock', params),
   getPenalties: (params = {}) => getWithParams('/sales-analytics/penalties', params),
   getEmployees: (params = {}) => getWithParams('/sales-analytics/employees', params),
-  getPnl: (params = {}) => getWithParams('/sales-analytics/pnl', params),
+  getPnl: (params = {}) => getWithParams('/sales-analytics/pnl', params, { timeout: 180000 }),
+  getRnpPulse: (params = {}) => getWithParams('/sales-analytics/rnp', params),
+  getReconciliation: (params = {}) => getWithParams('/sales-analytics/reconciliation', params, { timeout: 120000 }),
 
   listExpenses: () => getWithParams('/sales-analytics/expenses'),
   createExpense: async (body) => unwrap(await api.post('/sales-analytics/expenses', body)),
@@ -135,11 +137,11 @@ function unwrap(r) {
   return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
 }
 
-async function getWithParams(url, params = {}) {
+async function getWithParams(url, params = {}, axiosConfig = {}) {
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([k, v]) => {
     if (v != null && v !== '') search.set(k, String(v));
   });
   const qs = search.toString();
-  return unwrap(await api.get(`${url}${qs ? `?${qs}` : ''}`));
+  return unwrap(await api.get(`${url}${qs ? `?${qs}` : ''}`, axiosConfig));
 }

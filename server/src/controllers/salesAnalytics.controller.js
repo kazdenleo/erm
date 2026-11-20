@@ -11,6 +11,8 @@ import deadStockAnalyticsService from '../services/deadStockAnalytics.service.js
 import penaltiesAnalyticsService from '../services/penaltiesAnalytics.service.js';
 import homeSalesDynamicsService from '../services/homeSalesDynamics.service.js';
 import unitEconomicsRaskService from '../services/unitEconomicsRask.service.js';
+import rnpPulseService from '../services/rnpPulse.service.js';
+import financeReconciliationService from '../services/financeReconciliation.service.js';
 
 export async function getHomeDynamics(req, res) {
   const profileId = req.user?.profileId ?? null;
@@ -215,6 +217,28 @@ export async function getUnitEconomicsRask(req, res) {
     dateTo,
     marketplace,
     limit,
+  });
+  return res.json({ ok: true, data });
+}
+
+/** РНП: метрики + задачи + гипотезы за период. */
+export async function getRnpPulse(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { dateFrom, dateTo } = req.query || {};
+  const data = await rnpPulseService.getPulse({ profileId, dateFrom, dateTo });
+  return res.json({ ok: true, data });
+}
+
+/** Сверка финансов по строкам финотчётов. */
+export async function getFinanceReconciliation(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { dateFrom, dateTo, marketplace, scheme } = req.query || {};
+  const data = await financeReconciliationService.getReport({
+    profileId,
+    dateFrom,
+    dateTo,
+    marketplace,
+    scheme,
   });
   return res.json({ ok: true, data });
 }

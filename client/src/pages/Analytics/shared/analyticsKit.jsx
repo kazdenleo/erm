@@ -101,7 +101,15 @@ export function formatDateRu(ymd) {
 }
 
 export function errorMessage(e, fallback) {
-  return e?.response?.data?.message || e?.response?.data?.error || e?.message || fallback;
+  const fromApi = e?.response?.data?.message || e?.response?.data?.error;
+  if (fromApi) return fromApi;
+  if (e?.code === 'ECONNABORTED' || /timeout/i.test(String(e?.message || ''))) {
+    return 'Превышено время ожидания. Обновите отчёт ещё раз.';
+  }
+  if (e?.code === 'ERR_NETWORK' || /network error/i.test(String(e?.message || ''))) {
+    return 'Нет связи с сервером. Проверьте интернет и нажмите «Обновить».';
+  }
+  return e?.message || fallback;
 }
 
 export function SummaryCards({ cards }) {
