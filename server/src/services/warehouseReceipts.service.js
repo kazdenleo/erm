@@ -69,6 +69,71 @@ class WarehouseReceiptsService {
     return byProduct;
   }
 
+  /** Как _normalizeReceiptLines, но сохраняет ячейки (для межскладского перемещения в адрес). */
+  _normalizeTransferLines(lines) {
+    const byKey = new Map();
+    for (const line of lines || []) {
+      const productId =
+        typeof line.productId === 'string'
+          ? parseInt(line.productId, 10)
+          : typeof line.product_id === 'string'
+            ? parseInt(line.product_id, 10)
+            : line.productId ?? line.product_id;
+      if (!productId) continue;
+      const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
+      const cost = line.cost != null && line.cost !== '' ? parseFloat(line.cost) : null;
+      const toLocationId = (() => {
+        const raw = line.toLocationId ?? line.to_location_id ?? null;
+        if (raw == null || raw === '') return null;
+        const n = Number(raw);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      })();
+      const fromLocationId = (() => {
+        const raw = line.fromLocationId ?? line.from_location_id ?? null;
+        if (raw == null || raw === '') return null;
+        const n = Number(raw);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      })();
+      const key = `${productId}:${fromLocationId || 0}:${toLocationId || 0}`;
+      if (byKey.has(key)) {
+        const prev = byKey.get(key);
+        prev.quantity += quantity;
+        if (cost != null && !Number.isNaN(cost)) prev.cost = cost;
+      } else {
+        byKey.set(key, {
+          productId: Number(productId),
+          quantity,
+          cost: Number.isNaN(cost) ? null : cost,
+          toLocationId,
+          fromLocationId,
+        });
+      }
+    }
+    return byKey;
+  }
+
+  async _placeInboundToLocationQuiet(warehouseId, productId, quantity, locationId, note, { force = false } = {}) {
+    try {
+      return await addressStorageService.placeInboundToLocation(
+        warehouseId,
+        productId,
+        quantity,
+        locationId,
+        { note, force }
+      );
+    } catch (e) {
+      logger.warn('[AddressStorage] placeInboundToLocation failed', {
+        warehouseId,
+        productId,
+        quantity,
+        locationId,
+        message: e?.message || String(e),
+      });
+      if (e?.statusCode >= 400 && e?.statusCode < 500) throw e;
+      return { placed: false, reason: 'error' };
+    }
+  }
+
   _receiptLinesToProductMap(lines) {
     return this._normalizeReceiptLines(
       (lines || []).map((line) => ({
@@ -953,6 +1018,7 @@ class WarehouseReceiptsService {
     fromWarehouseId = null,
     toWarehouseId = null,
     lines = [],
+    userId = null,
   }) {
     if (!lines.length) {
       const err = new Error('Добавьте хотя бы одну позицию в перемещение');
@@ -970,7 +1036,7 @@ class WarehouseReceiptsService {
     const fromWhId = await this._requireReceiptWarehouseId(scope.fromWarehouseId);
     const toWhId = await this._requireReceiptWarehouseId(scope.toWarehouseId);
 
-    const byProduct = this._normalizeReceiptLines(lines);
+    const byProduct = this._normalizeTransferLines(lines);
     if (!byProduct.size) {
       const err = new Error('Не удалось определить товары в позициях перемещения (productId)');
       err.statusCode = 400;
@@ -978,7 +1044,18 @@ class WarehouseReceiptsService {
     }
 
     for (const [, row] of byProduct) {
-      const { productId, quantity } = row;
+      const { productId, quantity, toLocationId } = row;
+      if (toLocationId) {
+        const locCheck = await query(
+          `SELECT id FROM storage_locations WHERE id = $1 AND warehouse_id = $2 AND is_active IS DISTINCT FROM FALSE`,
+          [toLocationId, toWhId]
+        );
+        if (!locCheck.rows[0]) {
+          const err = new Error('Ячейка назначения должна принадлежать складу «куда»');
+          err.statusCode = 400;
+          throw err;
+        }
+      }
       const isKit = await isKitProductId(productId);
       let onHand;
       if (isKit) {
@@ -1016,9 +1093,10 @@ class WarehouseReceiptsService {
     const receiptNumber = receipt.receipt_number || `ПМ-${receipt.id}`;
     const movementReason = `Перемещение ${receiptNumber}`;
     const transferId = `tr_doc_${receipt.id}_${Date.now()}`;
+    const placements = [];
 
     for (const [, row] of byProduct) {
-      const { productId, quantity } = row;
+      const { productId, quantity, toLocationId, fromLocationId } = row;
       const cost = await this._resolveLineCost(productId, row.cost);
 
       await this.receiptsRepo.addLine({
@@ -1027,6 +1105,21 @@ class WarehouseReceiptsService {
         quantity,
         cost: cost != null && cost >= 0 ? cost : null,
       });
+
+      // Явная ячейка-источник: сначала снять с ячейки в «без адреса», затем складской transfer.
+      if (fromLocationId) {
+        await addressStorageService.moveStock(
+          fromWhId,
+          {
+            productId,
+            quantity,
+            fromLocationId,
+            toLocationId: null,
+            note: `${movementReason}: снятие с ячейки перед перемещением`,
+          },
+          { userId }
+        );
+      }
 
       await stockMovementsService.transfer(productId, {
         fromWarehouseId: fromWhId,
@@ -1039,13 +1132,28 @@ class WarehouseReceiptsService {
           transfer_id: transferId,
           organization_id: scope.organizationId,
           ui: 'warehouse_transfer',
+          ...(toLocationId ? { to_location_id: toLocationId } : {}),
+          ...(fromLocationId ? { from_location_id: fromLocationId } : {}),
         },
       });
+
+      if (toLocationId) {
+        const placed = await this._placeInboundToLocationQuiet(
+          toWhId,
+          productId,
+          quantity,
+          toLocationId,
+          `${movementReason}: в ячейку`,
+          { force: false }
+        );
+        placements.push({ productId, quantity, toLocationId, ...placed });
+      }
     }
 
     return {
       receipt,
       linesCount: byProduct.size,
+      placements,
     };
   }
 

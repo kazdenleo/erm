@@ -173,10 +173,21 @@ export const receiptsApi = {
       body: { supplierId, organizationId },
       timeoutMs: 60000,
     }).then(unwrap),
+  create: (payload) =>
+    request('/receipts', { method: 'POST', body: payload, timeoutMs: 120000 }).then(unwrap),
 };
+
+const addressWh = (id) => `/address-storage/warehouses/${encodeURIComponent(id)}`;
 
 export const addressStorageApi = {
   listWarehouses: () => request('/address-storage/warehouses').then(listOf),
+  listLocations: (warehouseId) => request(`${addressWh(warehouseId)}/locations`).then(listOf),
+  resolveScan: (warehouseId, code) =>
+    request(`${addressWh(warehouseId)}/resolve`, { params: { code } }).then(unwrap),
+  moveStock: (warehouseId, body) =>
+    request(`${addressWh(warehouseId)}/moves`, { method: 'POST', body }).then(unwrap),
+  productLocations: (productId) =>
+    request(`/address-storage/products/${encodeURIComponent(productId)}`).then(unwrap),
   lookup: (productIds) =>
     request('/address-storage/lookup', {
       method: 'POST',

@@ -67,6 +67,7 @@ class WarehouseReceiptsController {
           fromWarehouseId: whRaw,
           toWarehouseId: req.body.toWarehouseId ?? req.body.to_warehouse_id ?? null,
           lines: linesArr,
+          userId: req.user?.id ?? null,
         });
         return res.status(200).json({ ok: true, data: result });
       }

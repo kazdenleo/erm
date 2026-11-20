@@ -94,6 +94,18 @@ export default function HomeScreen() {
         accent={colors.primary}
         onPress={() => router.push('/packaging-print')}
       />
+      <Tile
+        title="Ячейка → ячейка"
+        subtitle="Скан ячейки откуда и куда — переместить товар внутри склада"
+        accent={colors.primary}
+        onPress={() => router.push('/address-moves')}
+      />
+      <Tile
+        title="С другого склада"
+        subtitle="Скан ячейки куда — перемещение с другого склада в эту ячейку"
+        accent={colors.success}
+        onPress={() => router.push('/address-transfer')}
+      />
       <View style={styles.spacer} />
     </ScrollView>
   );

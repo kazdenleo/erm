@@ -229,7 +229,11 @@ export function MovesTab({ warehouseId, settings, locations, reloadLocations, on
         </div>
       ) : (
         <section className="address-moves__form">
-          <h4 className="address-settings__title">Перемещение</h4>
+          <h4 className="address-settings__title">Перемещение по ячейкам</h4>
+          <p className="muted-hint" style={{ marginBottom: 10 }}>
+            Сценарий: отсканируйте ячейку «откуда» (или товар) → затем ячейку «куда» → «Переместить».
+            Между складами — вкладка «С другого склада».
+          </p>
           <BarcodeScanField
             id="address-move-scan"
             onScan={handleScan}
@@ -238,7 +242,7 @@ export function MovesTab({ warehouseId, settings, locations, reloadLocations, on
             hint={
               product
                 ? `Следующая отсканированная ячейка — «${cellTarget === 'from' ? 'Откуда' : 'Куда'}»`
-                : 'Начните со скана товара или ячейки, откуда берёте'
+                : 'Начните со скана ячейки, откуда берёте, или товара'
             }
           />
           {scannedCell && !product ? (

@@ -1067,6 +1067,93 @@ class AddressStorageService {
     return transaction(run);
   }
 
+  /**
+   * После прихода на склад: положить qty из «без адреса» в конкретную ячейку этого склада.
+   * Используется при межскладском перемещении с указанием ячейки назначения.
+   */
+  async placeInboundToLocation(
+    warehouseId,
+    productId,
+    quantity,
+    locationId,
+    { userId = null, note = null, force = false, client = null } = {}
+  ) {
+    const wid = toPosInt(warehouseId);
+    const pid = toPosInt(productId);
+    const qty = toPosInt(quantity);
+    const lid = toPosInt(locationId);
+    if (!wid || !pid || !qty || !lid) return { placed: false, reason: 'bad_args' };
+
+    const run = async (db) => {
+      const settings = await this.getSettings(wid);
+      if (!settings.enabled || !settings.trackQuantities) return { placed: false, reason: 'disabled' };
+
+      const loc = await db.query(
+        `SELECT id, code, capacity, is_active FROM storage_locations WHERE id = $1 AND warehouse_id = $2`,
+        [lid, wid]
+      );
+      if (!loc.rows[0]) throw httpError('Ячейка назначения не найдена на складе', 404);
+      if (loc.rows[0].is_active === false) throw httpError('Ячейка назначения неактивна', 400);
+      const code = String(loc.rows[0].code);
+      const capacity = loc.rows[0].capacity != null ? Number(loc.rows[0].capacity) : null;
+
+      const pws = await db.query(
+        `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
+        [pid, wid]
+      );
+      const whQty = Number(pws.rows[0]?.quantity) || 0;
+      const placedR = await db.query(
+        `SELECT COALESCE(SUM(quantity), 0)::int AS s FROM product_location_stock
+         WHERE product_id = $1 AND warehouse_id = $2`,
+        [pid, wid]
+      );
+      const unplaced = whQty - Number(placedR.rows[0].s);
+      if (unplaced < qty) {
+        throw httpError(`После перемещения без адреса только ${Math.max(0, unplaced)} шт`, 409);
+      }
+
+      if (capacity != null && !force) {
+        const inCell = await db.query(
+          `SELECT COALESCE(SUM(quantity), 0)::int AS s FROM product_location_stock WHERE location_id = $1`,
+          [lid]
+        );
+        if (Number(inCell.rows[0].s) + qty > capacity) {
+          const e = httpError(
+            `Ячейка ${code} переполнится: вместимость ${capacity}, будет ${Number(inCell.rows[0].s) + qty}`,
+            409
+          );
+          e.details = { code: 'LOCATION_OVER_CAPACITY' };
+          throw e;
+        }
+      }
+
+      await db.query(
+        `INSERT INTO product_location_stock (product_id, location_id, warehouse_id, quantity)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (product_id, location_id) DO UPDATE SET
+           quantity = product_location_stock.quantity + EXCLUDED.quantity, updated_at = CURRENT_TIMESTAMP`,
+        [pid, lid, wid, qty]
+      );
+      await db.query(
+        `INSERT INTO storage_location_movements
+           (product_id, warehouse_id, from_location_id, to_location_id, quantity, kind, user_id, note)
+         VALUES ($1, $2, NULL, $3, $4, 'move', $5, $6)`,
+        [
+          pid,
+          wid,
+          lid,
+          qty,
+          userId,
+          note ? String(note).slice(0, 300) : 'Приход в ячейку при перемещении',
+        ]
+      );
+      return { placed: true, code, locationId: lid };
+    };
+
+    if (client) return run(client);
+    return transaction(run);
+  }
+
   /** Разместить весь остаток «без адреса» в закреплённые ячейки (первичный переход на учёт по ячейкам). */
   async placeUnplacedToAssigned(warehouseId, { userId = null } = {}) {
     return transaction(async (client) => {
