@@ -117,6 +117,7 @@ export function parsePricePushSettings(raw) {
   const pushFbs = parseBoolFlag(src.pushFbs ?? src.push_fbs, true);
   const pushFbo = parseBoolFlag(src.pushFbo ?? src.push_fbo, true);
   const mpFlags = parseMarketplaceFlags(src);
+  const priceModes = parsePushPriceModes(src);
   return {
     scope,
     categoryIds: parseCategoryIdList(src.categoryIds),
@@ -127,12 +128,37 @@ export function parsePricePushSettings(raw) {
     pushOzon: mpFlags.pushOzon,
     pushWb: mpFlags.pushWb,
     pushYm: mpFlags.pushYm,
+    pushMinPrice: priceModes.pushMinPrice,
+    pushSellingPrice: priceModes.pushSellingPrice,
     minMarkupRules: parseMinMarkupRules(src.minMarkupRules ?? src.min_markup_rules),
     highDrrPercent: clampHighDrrPercent(
       src.highDrrPercent ?? src.high_drr_percent,
       HIGH_DRR_DEFAULT_PERCENT
     ),
   };
+}
+
+/**
+ * Что пушить на МП: мин. цена и/или продажная.
+ * Legacy syncSellingPriceToMin=true → оба вкл.; false → только мин.
+ */
+function parsePushPriceModes(src) {
+  const hasNew =
+    'pushMinPrice' in src ||
+    'push_min_price' in src ||
+    'pushSellingPrice' in src ||
+    'push_selling_price' in src;
+  if (hasNew) {
+    return {
+      pushMinPrice: parseBoolFlag(src.pushMinPrice ?? src.push_min_price, true),
+      pushSellingPrice: parseBoolFlag(src.pushSellingPrice ?? src.push_selling_price, false),
+    };
+  }
+  if ('syncSellingPriceToMin' in src || 'sync_selling_price_to_min' in src) {
+    const sync = parseBoolFlag(src.syncSellingPriceToMin ?? src.sync_selling_price_to_min, false);
+    return { pushMinPrice: true, pushSellingPrice: sync };
+  }
+  return { pushMinPrice: true, pushSellingPrice: false };
 }
 
 export function mergePricePushSettings(current, incoming) {
@@ -176,6 +202,35 @@ export function mergePricePushSettings(current, incoming) {
     if (patch.pushYm !== undefined || patch.push_ym !== undefined) {
       next.pushYm = parseBoolFlag(patch.pushYm ?? patch.push_ym, next.pushYm);
     }
+  }
+  const patchHasNewModes =
+    patch.pushMinPrice !== undefined ||
+    patch.push_min_price !== undefined ||
+    patch.pushSellingPrice !== undefined ||
+    patch.push_selling_price !== undefined;
+  if (patchHasNewModes) {
+    if (patch.pushMinPrice !== undefined || patch.push_min_price !== undefined) {
+      next.pushMinPrice = parseBoolFlag(
+        patch.pushMinPrice ?? patch.push_min_price,
+        next.pushMinPrice
+      );
+    }
+    if (patch.pushSellingPrice !== undefined || patch.push_selling_price !== undefined) {
+      next.pushSellingPrice = parseBoolFlag(
+        patch.pushSellingPrice ?? patch.push_selling_price,
+        next.pushSellingPrice
+      );
+    }
+  } else if (
+    patch.syncSellingPriceToMin !== undefined ||
+    patch.sync_selling_price_to_min !== undefined
+  ) {
+    const sync = parseBoolFlag(
+      patch.syncSellingPriceToMin ?? patch.sync_selling_price_to_min,
+      false
+    );
+    next.pushMinPrice = true;
+    next.pushSellingPrice = sync;
   }
   if (patch.minMarkupRules !== undefined || patch.min_markup_rules !== undefined) {
     next.minMarkupRules = parseMinMarkupRules(patch.minMarkupRules ?? patch.min_markup_rules);
@@ -325,6 +380,12 @@ export function describePricePushSchemes(settings) {
 export function hasPricePushSchemeEnabled(settings) {
   const s = parsePricePushSettings(settings);
   return s.pushFbs === true || s.pushFbo === true;
+}
+
+/** Есть ли что отправлять: мин. цена и/или продажная. */
+export function hasPricePushContentEnabled(settings) {
+  const s = parsePricePushSettings(settings);
+  return s.pushMinPrice === true || s.pushSellingPrice === true;
 }
 
 /** Список включённых МП для пуша: ozon / wb / ym. */

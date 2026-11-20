@@ -1,9 +1,10 @@
 /**
  * Пуш цен ERP → маркетплейсы.
  *
- * Временный режим (по умолчанию): цена продажи = рассчитанный минимум.
- * Позже: отдельная цена продажи + min_price / пол как нижний порог
- * (MARKETPLACE_SYNC_PRICE_TO_MIN=0 → только не давать продавать ниже пола).
+ * Режимы из настроек профиля:
+ * - pushMinPrice: поле минимальной цены (Ozon min_price)
+ * - pushSellingPrice: продажная цена на МП
+ * Можно включать независимо. WB/YM поддерживают только продажную (нет отдельного min).
  */
 
 import fetch from 'node-fetch';
@@ -35,13 +36,40 @@ export function isMinPricePushEnabled() {
 }
 
 /**
- * true — ставить текущую цену продажи равной ERP-минимуму (временный режим).
- * false — только поднимать цену/пол, если на МП ниже рассчитанного минимума.
+ * Нормализует флаги «что пушить».
+ * Legacy: syncSellingPriceToMin / boolean → оба или только мин.
  */
-export function isSyncSellingPriceToMinEnabled() {
+export function resolvePushPriceModes(opts) {
+  if (opts && typeof opts === 'object') {
+    const hasNew = 'pushMinPrice' in opts || 'pushSellingPrice' in opts;
+    if (hasNew) {
+      return {
+        pushMinPrice: opts.pushMinPrice !== false,
+        pushSellingPrice: opts.pushSellingPrice === true,
+      };
+    }
+    if ('syncSellingPriceToMin' in opts) {
+      return {
+        pushMinPrice: true,
+        pushSellingPrice: opts.syncSellingPriceToMin === true,
+      };
+    }
+  }
+  if (typeof opts === 'boolean') {
+    return { pushMinPrice: true, pushSellingPrice: opts };
+  }
   const v = process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-  if (v == null || String(v).trim() === '') return true;
-  return !/^(0|false|no|off)$/i.test(String(v).trim());
+  if (v != null && String(v).trim() !== '') {
+    const sync = !/^(0|false|no|off)$/i.test(String(v).trim());
+    return { pushMinPrice: true, pushSellingPrice: sync };
+  }
+  return { pushMinPrice: true, pushSellingPrice: false };
+}
+
+/** @deprecated Используйте resolvePushPriceModes — true = пушим и мин., и продажную. */
+export function isSyncSellingPriceToMinEnabled(explicit) {
+  const m = resolvePushPriceModes(explicit);
+  return m.pushMinPrice && m.pushSellingPrice;
 }
 
 /** Округление пола вверх до целых рублей (как обычно на МП). */
@@ -85,56 +113,119 @@ export function wbPriceToMeetFloor(floor, discountPercent) {
   return Math.ceil(f / denom);
 }
 
-export function needsOzonMinPricePush({ erpFloor, mpMinPrice, mpPrice }) {
+export function needsOzonMinPricePush({
+  erpFloor,
+  mpMinPrice,
+  mpPrice,
+  sellingTarget = null,
+  pushMinPrice,
+  pushSellingPrice,
+  syncSellingPriceToMin,
+}) {
+  const modes = resolvePushPriceModes({
+    pushMinPrice,
+    pushSellingPrice,
+    syncSellingPriceToMin,
+  });
+  if (!modes.pushMinPrice && !modes.pushSellingPrice) return false;
+
   const floor = floorRub(erpFloor);
-  if (floor == null) return false;
-  const minOk = pricesRoughlyEqual(mpMinPrice, floor);
-  if (isSyncSellingPriceToMinEnabled()) {
-    // Цена продажи и min_price на Ozon = ERP-минимум.
+  const minOk =
+    floor == null ||
+    (mpMinPrice != null &&
+      Number.isFinite(Number(mpMinPrice)) &&
+      pricesRoughlyEqual(mpMinPrice, floor));
+
+  if (modes.pushSellingPrice) {
+    const target = floorRub(sellingTarget) ?? floor;
+    if (target == null) return false;
     const priceOk =
-      mpPrice != null && Number.isFinite(Number(mpPrice)) && pricesRoughlyEqual(mpPrice, floor);
-    return !(minOk && priceOk);
+      mpPrice != null && Number.isFinite(Number(mpPrice)) && pricesRoughlyEqual(mpPrice, target);
+    if (modes.pushMinPrice) {
+      return !(minOk && priceOk);
+    }
+    return !priceOk;
   }
-  // Режим порога: min_price = пол; price не ниже пола.
-  const priceOk = mpPrice == null || !Number.isFinite(Number(mpPrice)) || Number(mpPrice) >= floor - 0.5;
-  return !(minOk && priceOk);
+
+  // Только min_price: продажную не трогаем; Ozon требует min_price < price.
+  if (floor == null) return false;
+  if (mpPrice == null || !Number.isFinite(Number(mpPrice)) || Number(mpPrice) <= floor + 0.009) {
+    return false;
+  }
+  return !minOk;
 }
 
-export function needsWbFloorPush({ erpFloor, price, discount }) {
-  const floor = floorRub(erpFloor);
-  if (floor == null) return false;
+export function needsWbFloorPush({
+  erpFloor,
+  price,
+  discount,
+  sellingTarget = null,
+  pushMinPrice,
+  pushSellingPrice,
+  syncSellingPriceToMin,
+}) {
+  const modes = resolvePushPriceModes({
+    pushMinPrice,
+    pushSellingPrice,
+    syncSellingPriceToMin,
+  });
+  // WB без отдельного поля минимума — только продажная.
+  if (!modes.pushSellingPrice) return false;
+  const target = floorRub(sellingTarget) ?? floorRub(erpFloor);
+  if (target == null) return false;
   const eff = wbEffectivePrice(price, discount);
   if (eff == null) return false;
-  if (isSyncSellingPriceToMinEnabled()) {
-    return !pricesRoughlyEqual(eff, floor);
-  }
-  return eff < floor - 0.5;
+  return !pricesRoughlyEqual(eff, target);
 }
 
-export function needsYmFloorPush({ erpFloor, currentPrice }) {
-  const floor = floorRub(erpFloor);
-  if (floor == null) return false;
+export function needsYmFloorPush({
+  erpFloor,
+  currentPrice,
+  sellingTarget = null,
+  pushMinPrice,
+  pushSellingPrice,
+  syncSellingPriceToMin,
+}) {
+  const modes = resolvePushPriceModes({
+    pushMinPrice,
+    pushSellingPrice,
+    syncSellingPriceToMin,
+  });
+  if (!modes.pushSellingPrice) return false;
+  const target = floorRub(sellingTarget) ?? floorRub(erpFloor);
+  if (target == null) return false;
   const cur = Number(currentPrice);
   if (!Number.isFinite(cur) || cur <= 0) return false;
-  if (isSyncSellingPriceToMinEnabled()) {
-    return !pricesRoughlyEqual(cur, floor);
-  }
-  return cur < floor - 0.5;
-}
-
-/** Цена для Ozon import/prices: в режиме sync-to-min = пол, иначе max(факт, пол). */
-export function resolveOzonPushTargetPrice(floor, sellingTarget) {
-  const floorVal = floorRub(floor);
-  if (floorVal == null) return null;
-  if (isSyncSellingPriceToMinEnabled()) return floorVal;
-  const selling = floorRub(sellingTarget) ?? floorVal;
-  return Math.max(selling, floorVal);
+  return !pricesRoughlyEqual(cur, target);
 }
 
 /**
- * Payload для Ozon import/prices (price >= min_price).
- * declared_price (объявленная стоимость для возмещения/страховки, с 28.09.2026) —
- * только если передан явно; в обычный пуш мин. цен / ERP не кладём, чтобы не затирать кабинет.
+ * Целевая продажная для Ozon.
+ * Только мин. → текущая на МП; продажная → ERP selling (не ниже пола, если пушим и мин.).
+ */
+export function resolveOzonPushTargetPrice(
+  floor,
+  sellingTarget,
+  modesOrSync,
+  currentMpPrice = null
+) {
+  const modes = resolvePushPriceModes(modesOrSync);
+  const floorVal = floorRub(floor);
+  if (modes.pushSellingPrice) {
+    let target = floorRub(sellingTarget) ?? floorVal;
+    if (target == null) return null;
+    if (modes.pushMinPrice && floorVal != null && target < floorVal) target = floorVal;
+    return target;
+  }
+  if (modes.pushMinPrice) {
+    return floorRub(currentMpPrice);
+  }
+  return null;
+}
+
+/**
+ * Payload для Ozon import/prices.
+ * pushMinPrice / pushSellingPrice независимы; declared_price — только если передан явно.
  */
 export function buildOzonPriceImportEntry({
   floor,
@@ -146,10 +237,27 @@ export function buildOzonPriceImportEntry({
   netPrice = null,
   /** Объявленная стоимость → prices.declared_price (опционально) */
   declaredPrice = null,
+  /** Текущая цена продажи на Ozon (если продажную не пушим) */
+  currentMpPrice = null,
+  pushMinPrice,
+  pushSellingPrice,
+  syncSellingPriceToMin,
 }) {
+  const modes = resolvePushPriceModes({
+    pushMinPrice,
+    pushSellingPrice,
+    syncSellingPriceToMin,
+  });
+  if (!modes.pushMinPrice && !modes.pushSellingPrice) return null;
+
   const floorVal = floorRub(floor);
-  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
-  if (floorVal == null || targetPrice == null) return null;
+  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget, modes, currentMpPrice);
+  if (targetPrice == null) return null;
+
+  if (modes.pushMinPrice && !modes.pushSellingPrice) {
+    // Ozon: min_price строго меньше price.
+    if (floorVal == null || floorVal >= targetPrice) return null;
+  }
 
   const entry = {
     price: String(targetPrice),
@@ -157,10 +265,14 @@ export function buildOzonPriceImportEntry({
     // auto_action_enabled / manage_elastic_boosting_through_price — устарели в import/prices (11.09.2026)
     auto_add_to_ozon_actions_list_enabled: 'DISABLED',
   };
-  if (floorVal <= targetPrice) {
-    entry.min_price = String(floorVal);
+  if (modes.pushMinPrice && floorVal != null) {
+    if (floorVal < targetPrice) {
+      entry.min_price = String(floorVal);
+    } else if (modes.pushSellingPrice && floorVal <= targetPrice) {
+      entry.min_price = String(floorVal);
+    }
   }
-  const before = floorRub(priceBeforeDiscount);
+  const before = modes.pushSellingPrice ? floorRub(priceBeforeDiscount) : null;
   if (before != null && before > targetPrice + 0.009) {
     entry.old_price = String(before);
   }
@@ -178,15 +290,26 @@ export function buildOzonPriceImportEntry({
   return entry;
 }
 
-/** price + discount для WB upload/task (effective >= floor). */
+/** price + discount для WB upload/task (effective = ERP selling или пол). */
 export function buildWbPriceUploadPayload({
   floor,
   sellingTarget,
   priceBeforeDiscount = null,
   discountPercent = null,
   currentWbDiscount = 0,
+  pushMinPrice,
+  pushSellingPrice,
+  syncSellingPriceToMin,
 }) {
-  const targetEff = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
+  const modes = resolvePushPriceModes({
+    pushMinPrice,
+    pushSellingPrice,
+    syncSellingPriceToMin,
+  });
+  if (!modes.pushSellingPrice) return null;
+
+  const targetEff =
+    floorRub(sellingTarget) ?? floorRub(floor);
   if (targetEff == null) return null;
 
   const erpBefore = floorRub(priceBeforeDiscount);
@@ -204,12 +327,9 @@ export function buildWbPriceUploadPayload({
       erpDiscount != null && erpDiscount > 0
         ? erpDiscount
         : Math.max(1, Math.min(99, Math.round((1 - targetEff / erpBefore) * 100)));
-    if (isSyncSellingPriceToMinEnabled()) {
-      const price = wbPriceToMeetFloor(targetEff, discount);
-      if (price == null) return null;
-      return { price, discount, targetEff };
-    }
-    return { price: erpBefore, discount, targetEff };
+    const price = wbPriceToMeetFloor(targetEff, discount);
+    if (price == null) return null;
+    return { price, discount, targetEff };
   }
 
   if (erpDiscount != null && erpDiscount > 0) {
@@ -218,14 +338,7 @@ export function buildWbPriceUploadPayload({
     return { price, discount: erpDiscount, targetEff };
   }
 
-  if (isSyncSellingPriceToMinEnabled()) {
-    return { price: targetEff, discount: 0, targetEff };
-  }
-
-  const d = Math.max(0, Math.min(99, Math.round(Number(currentWbDiscount) || 0)));
-  const price = wbPriceToMeetFloor(targetEff, d);
-  if (price == null) return null;
-  return { price, discount: d, targetEff };
+  return { price: targetEff, discount: 0, targetEff };
 }
 
 /**
@@ -489,7 +602,11 @@ function resolveYmOfferId(productSkus, product) {
   return normalizeMpOfferId(row?.sku || product?.sku || null);
 }
 
-async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
+async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId, modes) {
+  const priceModes = resolvePushPriceModes(modes);
+  if (!priceModes.pushMinPrice && !priceModes.pushSellingPrice) {
+    return { marketplace: 'ozon', skipped: true, reason: 'content_disabled' };
+  }
   const cfg = await integrationsService.getMarketplaceConfig('ozon', {
     organizationId: orgId,
     profileId,
@@ -504,10 +621,6 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'ozon', skipped: true, reason: 'not_linked' };
   }
 
-  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
-  if (targetPrice == null) {
-    return { marketplace: 'ozon', skipped: true, reason: 'invalid_floor' };
-  }
   const ozonApiOpts = { ozonOverride: { client_id: clientId, api_key: apiKey } };
   let mpMin = null;
   let mpPrice = null;
@@ -533,13 +646,43 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     logger.warn('[MP MinPrice Push] Ozon read failed', { message: e?.message || String(e) });
   }
 
+  if (!priceModes.pushSellingPrice) {
+    if (mpPrice == null || !Number.isFinite(mpPrice)) {
+      return { marketplace: 'ozon', skipped: true, reason: 'unknown_current' };
+    }
+    const floorVal = floorRub(floor);
+    if (priceModes.pushMinPrice) {
+      if (floorVal == null) {
+        return { marketplace: 'ozon', skipped: true, reason: 'invalid_floor' };
+      }
+      if (floorVal >= mpPrice) {
+        return {
+          marketplace: 'ozon',
+          skipped: true,
+          reason: 'selling_not_above_min',
+          floor: floorVal,
+          selling: mpPrice,
+        };
+      }
+    }
+  }
+
+  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget, priceModes, mpPrice);
+  if (targetPrice == null) {
+    return { marketplace: 'ozon', skipped: true, reason: 'invalid_floor' };
+  }
+
   const entry = buildOzonPriceImportEntry({
     floor,
     sellingTarget,
     ozonProductId,
     offerId,
-    priceBeforeDiscount: ctx.priceBeforeDiscount?.ozon ?? null,
+    priceBeforeDiscount: priceModes.pushSellingPrice
+      ? ctx.priceBeforeDiscount?.ozon ?? null
+      : null,
     netPrice: ctx.product?.cost ?? null,
+    currentMpPrice: mpPrice,
+    ...priceModes,
   });
   if (!entry) {
     return { marketplace: 'ozon', skipped: true, reason: 'invalid_entry' };
@@ -550,7 +693,17 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const netPriceOk =
     !entry.net_price ||
     (Number.isFinite(mpNetPrice) && pricesRoughlyEqual(mpNetPrice, Number(entry.net_price)));
-  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice }) && oldPriceOk && netPriceOk) {
+  if (
+    !needsOzonMinPricePush({
+      erpFloor: floor,
+      mpMinPrice: mpMin,
+      mpPrice,
+      sellingTarget,
+      ...priceModes,
+    }) &&
+    oldPriceOk &&
+    netPriceOk
+  ) {
     return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
@@ -567,13 +720,30 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     productId: ctx.product.id,
     floor,
     selling: targetPrice,
+    pushMinPrice: priceModes.pushMinPrice,
+    pushSellingPrice: priceModes.pushSellingPrice,
     ozonProductId,
     offerId,
   });
-  return { marketplace: 'ozon', ok: true, floor, selling: targetPrice, raisedPrice: true };
+  return {
+    marketplace: 'ozon',
+    ok: true,
+    floor,
+    selling: targetPrice,
+    raisedPrice: priceModes.pushSellingPrice,
+    minOnly: priceModes.pushMinPrice && !priceModes.pushSellingPrice,
+  };
 }
 
-async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
+async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId, modes) {
+  const priceModes = resolvePushPriceModes(modes);
+  if (!priceModes.pushSellingPrice) {
+    return {
+      marketplace: 'wb',
+      skipped: true,
+      reason: priceModes.pushMinPrice ? 'min_only_unsupported' : 'content_disabled',
+    };
+  }
   const cfg = await integrationsService.getMarketplaceConfig('wildberries', {
     organizationId: orgId,
     profileId,
@@ -636,6 +806,7 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     priceBeforeDiscount: ctx.priceBeforeDiscount?.wb ?? null,
     discountPercent: ctx.discountPercent?.wb ?? null,
     currentWbDiscount: discount,
+    ...priceModes,
   });
   if (!uploadPack) {
     return { marketplace: 'wb', skipped: true, reason: 'invalid_floor' };
@@ -643,6 +814,17 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
 
   const targetEff = uploadPack.targetEff;
   const currentEff = wbEffectivePrice(price, discount);
+  if (
+    !needsWbFloorPush({
+      erpFloor: floor,
+      price,
+      discount,
+      sellingTarget,
+      ...priceModes,
+    })
+  ) {
+    return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor, selling: targetEff };
+  }
   const priceMatch =
     Math.round(Number(price)) === Math.round(uploadPack.price) &&
     Math.round(Number(discount) || 0) === Math.round(uploadPack.discount);
@@ -698,7 +880,15 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   };
 }
 
-async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
+async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId, modes) {
+  const priceModes = resolvePushPriceModes(modes);
+  if (!priceModes.pushSellingPrice) {
+    return {
+      marketplace: 'ym',
+      skipped: true,
+      reason: priceModes.pushMinPrice ? 'min_only_unsupported' : 'content_disabled',
+    };
+  }
   const cfg = await integrationsService.getMarketplaceConfig('yandex', {
     organizationId: orgId,
     profileId,
@@ -718,7 +908,8 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'ym', skipped: true, reason: 'not_linked' };
   }
 
-  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
+  const targetPrice =
+    floorRub(sellingTarget) ?? floorRub(floor);
   const useBusiness = Boolean(businessId);
   const pricesPath = useBusiness
     ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices`
@@ -768,7 +959,15 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'ym', skipped: true, reason: 'invalid_floor' };
   }
   const needsBefore = priceObj.discountBase != null;
-  if (!needsYmFloorPush({ erpFloor: floor, currentPrice }) && !needsBefore) {
+  if (
+    !needsYmFloorPush({
+      erpFloor: floor,
+      currentPrice,
+      sellingTarget,
+      ...priceModes,
+    }) &&
+    !needsBefore
+  ) {
     return { marketplace: 'ym', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
@@ -906,12 +1105,25 @@ export async function pushForProduct(productId, opts = {}) {
     });
   }
 
+  const priceModes = {
+    pushMinPrice: pushSchemes.pushMinPrice !== false,
+    pushSellingPrice: pushSchemes.pushSellingPrice === true,
+  };
+  if (!priceModes.pushMinPrice && !priceModes.pushSellingPrice) {
+    return {
+      skipped: true,
+      reason: 'content_disabled',
+      productId: Number(productId),
+    };
+  }
   const results = [];
 
   if (ctx.floors.ozon != null && allowed('ozon')) {
     try {
       const selling = ctx.selling?.ozon ?? ctx.floors.ozon;
-      results.push(await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId));
+      results.push(
+        await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId, priceModes)
+      );
     } catch (e) {
       results.push({ marketplace: 'ozon', ok: false, error: e?.message || String(e) });
     }
@@ -919,7 +1131,9 @@ export async function pushForProduct(productId, opts = {}) {
   if (ctx.floors.wb != null && allowed('wb')) {
     try {
       const selling = ctx.selling?.wb ?? ctx.floors.wb;
-      results.push(await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId));
+      results.push(
+        await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId, priceModes)
+      );
     } catch (e) {
       results.push({ marketplace: 'wb', ok: false, error: e?.message || String(e) });
     }
@@ -927,7 +1141,9 @@ export async function pushForProduct(productId, opts = {}) {
   if (ctx.floors.ym != null && allowed('ym')) {
     try {
       const selling = ctx.selling?.ym ?? ctx.floors.ym;
-      results.push(await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId));
+      results.push(
+        await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId, priceModes)
+      );
     } catch (e) {
       results.push({ marketplace: 'ym', ok: false, error: e?.message || String(e) });
     }
@@ -1232,6 +1448,7 @@ export async function pushForOrganization(organizationId, { limit = null } = {})
 
 export default {
   isMinPricePushEnabled,
+  resolvePushPriceModes,
   isSyncSellingPriceToMinEnabled,
   floorRub,
   normalizeMpOfferId,

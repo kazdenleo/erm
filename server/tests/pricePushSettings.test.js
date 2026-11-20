@@ -12,13 +12,38 @@ import {
 } from '../src/utils/pricePushSettings.js';
 
 describe('pricePushSettings', () => {
-  it('parsePricePushSettings defaults both schemes enabled', () => {
+  it('parsePricePushSettings defaults both schemes enabled and min-only content', () => {
     const s = parsePricePushSettings({});
     expect(s.pushFbs).toBe(true);
     expect(s.pushFbo).toBe(true);
     expect(s.pushOzon).toBe(true);
     expect(s.pushWb).toBe(true);
     expect(s.pushYm).toBe(true);
+    expect(s.pushMinPrice).toBe(true);
+    expect(s.pushSellingPrice).toBe(false);
+  });
+
+  it('parses and merges pushMinPrice / pushSellingPrice', () => {
+    expect(
+      parsePricePushSettings({ pushMinPrice: false, pushSellingPrice: true })
+    ).toMatchObject({ pushMinPrice: false, pushSellingPrice: true });
+    expect(
+      mergePricePushSettings(
+        { pushMinPrice: true, pushSellingPrice: false },
+        { pushSellingPrice: true }
+      )
+    ).toMatchObject({ pushMinPrice: true, pushSellingPrice: true });
+  });
+
+  it('migrates legacy syncSellingPriceToMin to two toggles', () => {
+    expect(parsePricePushSettings({ syncSellingPriceToMin: true })).toMatchObject({
+      pushMinPrice: true,
+      pushSellingPrice: true,
+    });
+    expect(parsePricePushSettings({ syncSellingPriceToMin: false })).toMatchObject({
+      pushMinPrice: true,
+      pushSellingPrice: false,
+    });
   });
 
   it('parses marketplace flags and marketplaces array', () => {

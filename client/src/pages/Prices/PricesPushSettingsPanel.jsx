@@ -38,7 +38,9 @@ function buildScopePayload(
   selectedProducts,
   showFbsOption,
   showFboOption,
-  excludedProducts = []
+  excludedProducts = [],
+  pushMinPrice = true,
+  pushSellingPrice = false
 ) {
   return {
     scope,
@@ -47,6 +49,8 @@ function buildScopePayload(
     pushOzon: pushOzon === true,
     pushWb: pushWb === true,
     pushYm: pushYm === true,
+    pushMinPrice: pushMinPrice === true,
+    pushSellingPrice: pushSellingPrice === true,
     categoryIds:
       scope === SCOPES.categories || scope === SCOPES.categoriesAndProducts
         ? [...pickedCategoryIds]
@@ -89,7 +93,11 @@ function buildScopeSummaryText(settings) {
   if (settings.excludeProductIds?.length) {
     scopeText += `, −${settings.excludeProductIds.length} искл.`;
   }
-  return `${scopeText}, мин. ${schemeText}, ${mpText}`;
+  const modeParts = [];
+  if (settings.pushMinPrice !== false) modeParts.push('мин. цена');
+  if (settings.pushSellingPrice === true) modeParts.push('продажные');
+  const modeText = modeParts.length ? modeParts.join(' + ') : 'ничего';
+  return `${scopeText}, схемы ${schemeText}, ${mpText}, ${modeText}`;
 }
 
 function productLabel(p) {
@@ -129,6 +137,8 @@ export function PricesPushSettingsPanel({
   const [pushOzon, setPushOzon] = useState(true);
   const [pushWb, setPushWb] = useState(true);
   const [pushYm, setPushYm] = useState(true);
+  const [pushMinPrice, setPushMinPrice] = useState(true);
+  const [pushSellingPrice, setPushSellingPrice] = useState(false);
   const [pickedCategoryIds, setPickedCategoryIds] = useState(() => new Set());
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [excludedProducts, setExcludedProducts] = useState([]);
@@ -161,6 +171,8 @@ export function PricesPushSettingsPanel({
       setPushOzon(data?.pushOzon !== false);
       setPushWb(data?.pushWb !== false);
       setPushYm(data?.pushYm !== false);
+      setPushMinPrice(data?.pushMinPrice !== false);
+      setPushSellingPrice(data?.pushSellingPrice === true);
       setPickedCategoryIds(new Set((data?.categoryIds || []).map(String)));
       setOrgToggles(data?.organizations || []);
 
@@ -332,7 +344,9 @@ export function PricesPushSettingsPanel({
         selectedProducts,
         showFbsOption,
         showFboOption,
-        excludedProducts
+        excludedProducts,
+        pushMinPrice,
+        pushSellingPrice
       );
       await pricesApi.updatePushSettings(payload);
       setMessage('Настройки сохранены');
@@ -356,6 +370,7 @@ export function PricesPushSettingsPanel({
   const hasScheme =
     (showFbsOption ? pushFbs === true : false) || (showFboOption ? pushFbo === true : false);
   const hasMarketplace = pushOzon === true || pushWb === true || pushYm === true;
+  const hasContent = pushMinPrice === true || pushSellingPrice === true;
 
   const scopeValid =
     scope === SCOPES.all ||
@@ -365,14 +380,22 @@ export function PricesPushSettingsPanel({
       pickedCategoryIds.size > 0 &&
       selectedProducts.length > 0);
 
-  // Обе схемы или все МП выкл. — валидный режим «не отправлять»; область тогда не обязательна.
-  const canSaveScope = hasScheme && hasMarketplace ? scopeValid : true;
+  // Схемы / МП / контент выкл. — валидный режим «не отправлять»; область тогда не обязательна.
+  const canSaveScope = hasScheme && hasMarketplace && hasContent ? scopeValid : true;
 
   const canPushNow =
-    canSaveScope && hasScheme && hasMarketplace && hasEnabledOrg && typeof onPushNow === 'function';
+    canSaveScope &&
+    hasScheme &&
+    hasMarketplace &&
+    hasContent &&
+    hasEnabledOrg &&
+    typeof onPushNow === 'function';
 
   const pushDisabledReason = (() => {
     if (!hasEnabledOrg) return 'Включите отправку хотя бы для одной организации.';
+    if (!hasContent) {
+      return 'Включите «Минимальная цена» и/или «Продажные».';
+    }
     if (!hasScheme) {
       return 'FBS и FBO выключены — цены на маркетплейсы не отправляются. Включите хотя бы одну схему или оставьте так, если пуш не нужен.';
     }
@@ -406,7 +429,9 @@ export function PricesPushSettingsPanel({
       selectedProducts,
       showFbsOption,
       showFboOption,
-      excludedProducts
+      excludedProducts,
+      pushMinPrice,
+      pushSellingPrice
     );
     const enabledOrgs = orgList.filter((o) => o.autoPushMarketplacePrices === true);
     if (!enabledOrgs.length) {
@@ -444,7 +469,9 @@ export function PricesPushSettingsPanel({
           selectedProducts,
           showFbsOption,
           showFboOption,
-          excludedProducts
+          excludedProducts,
+          pushMinPrice,
+          pushSellingPrice
         )
       ),
     [
@@ -454,6 +481,8 @@ export function PricesPushSettingsPanel({
       pushOzon,
       pushWb,
       pushYm,
+      pushMinPrice,
+      pushSellingPrice,
       pickedCategoryIds,
       selectedProducts,
       excludedProducts,
@@ -593,14 +622,14 @@ export function PricesPushSettingsPanel({
         <>
           <h2 className="h6 mb-1">Отправка цен на маркетплейсы</h2>
           <p className="text-muted small mb-3">
-            Управляет автоматической и ручной отправкой сохранённых цен на Ozon, Wildberries и Яндекс.Маркет.
-            Отправляются только товары с рассчитанными мин. ценами.
+            Управляет автоматической и ручной отправкой цен на Ozon, Wildberries и Яндекс.Маркет.
+            Минимальную и продажную можно включать отдельно.
           </p>
         </>
       )}
       {embedInModal && (
         <p className="text-muted small mb-3">
-          Автоматическая и ручная отправка сохранённых мин. цен на Ozon, Wildberries и Яндекс.Маркет.
+          Автоматическая и ручная отправка цен. Минимальную и продажную можно включать отдельно.
         </p>
       )}
 
@@ -687,6 +716,48 @@ export function PricesPushSettingsPanel({
         {!hasMarketplace && (
           <p className="small mt-2 mb-0" style={{ color: 'var(--warning, #eab308)' }}>
             Отправка выключена: ни один маркетплейс не выбран.
+          </p>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <strong className="small d-block mb-2">Что отправлять</strong>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="prices-push-min-price"
+              checked={pushMinPrice === true}
+              onChange={(e) => setPushMinPrice(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="prices-push-min-price">
+              Минимальная цена
+            </label>
+          </div>
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="prices-push-selling-price"
+              checked={pushSellingPrice === true}
+              onChange={(e) => setPushSellingPrice(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="prices-push-selling-price">
+              Продажные
+            </label>
+          </div>
+        </div>
+        <p className="text-muted small mt-2 mb-0">
+          Минимальная цена — поле минимума на Ozon (продажную не трогает). Продажные — цена продажи
+          из ERP на Ozon / WB / Я.Маркет. Можно включить оба. Если оба выключены — пуш не
+          выполняется.
+        </p>
+        {!pushMinPrice && !pushSellingPrice && (
+          <p className="small mt-2 mb-0" style={{ color: 'var(--warning, #eab308)' }}>
+            Отправка выключена: не выбрано ни минимальная, ни продажная цена.
           </p>
         )}
       </div>

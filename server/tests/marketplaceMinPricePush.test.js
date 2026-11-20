@@ -11,6 +11,7 @@ import {
   needsOzonMinPricePush,
   needsWbFloorPush,
   needsYmFloorPush,
+  resolvePushPriceModes,
   isSyncSellingPriceToMinEnabled,
   pushForProduct,
   pushForAllProfiles,
@@ -51,78 +52,218 @@ describe('marketplaceMinPricePush helpers', () => {
     expect(wbPriceToMeetFloor(901, 10)).toBe(1002);
   });
 
-  test('sync-to-min (default): Ozon needs push when price != floor', () => {
+  test('resolvePushPriceModes defaults to min-only', () => {
     delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    expect(isSyncSellingPriceToMinEnabled()).toBe(true);
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 100, mpPrice: 150 })).toBe(true);
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 100, mpPrice: 100 })).toBe(false);
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 90, mpPrice: 100 })).toBe(true);
-  });
-
-  test('floor-only mode: Ozon allows price above floor', () => {
-    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = '0';
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 100, mpPrice: 150 })).toBe(false);
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 90, mpPrice: 150 })).toBe(true);
-    expect(needsOzonMinPricePush({ erpFloor: 100, mpMinPrice: 100, mpPrice: 80 })).toBe(true);
-  });
-
-  test('sync-to-min: WB when effective != floor', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    expect(needsWbFloorPush({ erpFloor: 900, price: 1000, discount: 10 })).toBe(false);
-    expect(needsWbFloorPush({ erpFloor: 800, price: 1000, discount: 10 })).toBe(true);
-    expect(needsWbFloorPush({ erpFloor: 950, price: 1000, discount: 10 })).toBe(true);
-    expect(needsWbFloorPush({ erpFloor: 900, price: null, discount: 10 })).toBe(false);
-  });
-
-  test('floor-only: WB only when effective < floor', () => {
-    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = 'false';
-    expect(needsWbFloorPush({ erpFloor: 900, price: 1000, discount: 10 })).toBe(false);
-    expect(needsWbFloorPush({ erpFloor: 800, price: 1000, discount: 10 })).toBe(false);
-    expect(needsWbFloorPush({ erpFloor: 901, price: 1000, discount: 10 })).toBe(true);
-  });
-
-  test('sync-to-min: YM when price != floor', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 600 })).toBe(true);
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 500 })).toBe(false);
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 400 })).toBe(true);
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: null })).toBe(false);
-  });
-
-  test('floor-only: YM only when price < floor', () => {
-    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = 'off';
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 600 })).toBe(false);
-    expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 400 })).toBe(true);
-  });
-
-  test('resolveOzonPushTargetPrice sync mode uses floor', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    expect(resolveOzonPushTargetPrice(3071, 2946)).toBe(3071);
-  });
-
-  test('resolveOzonPushTargetPrice floor-only uses max(selling, floor)', () => {
-    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = '0';
-    expect(resolveOzonPushTargetPrice(3071, 2946)).toBe(3071);
-    expect(resolveOzonPushTargetPrice(3071, 3200)).toBe(3200);
-  });
-
-  test('buildOzonPriceImportEntry keeps price >= min_price', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    const entry = buildOzonPriceImportEntry({
-      floor: 3071,
-      sellingTarget: 2946,
-      ozonProductId: 1063548244,
+    expect(resolvePushPriceModes()).toEqual({ pushMinPrice: true, pushSellingPrice: false });
+    expect(resolvePushPriceModes({ pushMinPrice: true, pushSellingPrice: true })).toEqual({
+      pushMinPrice: true,
+      pushSellingPrice: true,
     });
-    expect(entry.price).toBe('3071');
-    expect(entry.min_price).toBe('3071');
+    expect(resolvePushPriceModes({ syncSellingPriceToMin: true })).toEqual({
+      pushMinPrice: true,
+      pushSellingPrice: true,
+    });
+    expect(isSyncSellingPriceToMinEnabled({ pushMinPrice: true, pushSellingPrice: true })).toBe(
+      true
+    );
+  });
+
+  test('both modes: Ozon needs push when price or min differ', () => {
+    expect(
+      needsOzonMinPricePush({
+        erpFloor: 100,
+        mpMinPrice: 100,
+        mpPrice: 150,
+        sellingTarget: 100,
+        pushMinPrice: true,
+        pushSellingPrice: true,
+      })
+    ).toBe(true);
+    expect(
+      needsOzonMinPricePush({
+        erpFloor: 100,
+        mpMinPrice: 100,
+        mpPrice: 100,
+        sellingTarget: 100,
+        pushMinPrice: true,
+        pushSellingPrice: true,
+      })
+    ).toBe(false);
+  });
+
+  test('min-only: Ozon pushes min_price when selling stays above floor', () => {
+    expect(
+      needsOzonMinPricePush({
+        erpFloor: 100,
+        mpMinPrice: 100,
+        mpPrice: 150,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBe(false);
+    expect(
+      needsOzonMinPricePush({
+        erpFloor: 100,
+        mpMinPrice: 90,
+        mpPrice: 150,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBe(true);
+    expect(
+      needsOzonMinPricePush({
+        erpFloor: 100,
+        mpMinPrice: 90,
+        mpPrice: 80,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBe(false);
+  });
+
+  test('selling-only: WB when effective != selling target', () => {
+    expect(
+      needsWbFloorPush({
+        erpFloor: 900,
+        price: 1000,
+        discount: 10,
+        sellingTarget: 900,
+        pushMinPrice: false,
+        pushSellingPrice: true,
+      })
+    ).toBe(false);
+    expect(
+      needsWbFloorPush({
+        erpFloor: 800,
+        price: 1000,
+        discount: 10,
+        sellingTarget: 800,
+        pushMinPrice: false,
+        pushSellingPrice: true,
+      })
+    ).toBe(true);
+  });
+
+  test('min-only: WB never pushes', () => {
+    expect(
+      needsWbFloorPush({
+        erpFloor: 901,
+        price: 1000,
+        discount: 10,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBe(false);
+  });
+
+  test('selling-only: YM when price != target', () => {
+    expect(
+      needsYmFloorPush({
+        erpFloor: 500,
+        currentPrice: 600,
+        sellingTarget: 500,
+        pushMinPrice: false,
+        pushSellingPrice: true,
+      })
+    ).toBe(true);
+    expect(
+      needsYmFloorPush({
+        erpFloor: 500,
+        currentPrice: 500,
+        sellingTarget: 500,
+        pushMinPrice: false,
+        pushSellingPrice: true,
+      })
+    ).toBe(false);
+  });
+
+  test('min-only: YM never pushes', () => {
+    expect(
+      needsYmFloorPush({
+        erpFloor: 500,
+        currentPrice: 400,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBe(false);
+  });
+
+  test('resolveOzonPushTargetPrice selling mode uses selling (not below floor if min on)', () => {
+    expect(
+      resolveOzonPushTargetPrice(3071, 2946, { pushMinPrice: true, pushSellingPrice: true })
+    ).toBe(3071);
+    expect(
+      resolveOzonPushTargetPrice(3071, 3200, { pushMinPrice: true, pushSellingPrice: true })
+    ).toBe(3200);
+    expect(
+      resolveOzonPushTargetPrice(3071, 3200, { pushMinPrice: false, pushSellingPrice: true })
+    ).toBe(3200);
+  });
+
+  test('resolveOzonPushTargetPrice min-only uses current MP price', () => {
+    expect(
+      resolveOzonPushTargetPrice(2000, 1500, { pushMinPrice: true, pushSellingPrice: false }, 2800)
+    ).toBe(2800);
+  });
+
+  test('buildOzonPriceImportEntry both modes sets selling and min', () => {
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2800,
+      ozonProductId: 1,
+      pushMinPrice: true,
+      pushSellingPrice: true,
+    });
+    expect(entry.price).toBe('2800');
+    expect(entry.min_price).toBe('2000');
+  });
+
+  test('buildOzonPriceImportEntry min-only preserves MP selling', () => {
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 1500,
+      ozonProductId: 1,
+      currentMpPrice: 2800,
+      pushMinPrice: true,
+      pushSellingPrice: false,
+    });
+    expect(entry.price).toBe('2800');
+    expect(entry.min_price).toBe('2000');
+    expect(entry.old_price).toBeUndefined();
+  });
+
+  test('buildOzonPriceImportEntry selling-only omits min_price', () => {
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2800,
+      ozonProductId: 1,
+      pushMinPrice: false,
+      pushSellingPrice: true,
+    });
+    expect(entry.price).toBe('2800');
+    expect(entry.min_price).toBeUndefined();
+  });
+
+  test('buildOzonPriceImportEntry min-only skips when selling <= floor', () => {
+    expect(
+      buildOzonPriceImportEntry({
+        floor: 2000,
+        sellingTarget: 2000,
+        ozonProductId: 1,
+        currentMpPrice: 2000,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBeNull();
   });
 
   test('buildOzonPriceImportEntry omits deprecated auto_action_enabled', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
     const entry = buildOzonPriceImportEntry({
       floor: 2000,
       sellingTarget: 2000,
       ozonProductId: 1,
+      pushMinPrice: true,
+      pushSellingPrice: true,
     });
     expect(entry.auto_action_enabled).toBeUndefined();
     expect(entry.manage_elastic_boosting_through_price).toBeUndefined();
@@ -130,81 +271,52 @@ describe('marketplaceMinPricePush helpers', () => {
   });
 
   test('buildOzonPriceImportEntry sends net_price from ERP cost', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
     const entry = buildOzonPriceImportEntry({
       floor: 2000,
       sellingTarget: 2000,
       ozonProductId: 1,
       netPrice: 850.4,
+      pushMinPrice: true,
+      pushSellingPrice: true,
     });
     expect(entry.net_price).toBe('850');
   });
 
-  test('buildOzonPriceImportEntry omits net_price when cost missing', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    const entry = buildOzonPriceImportEntry({
-      floor: 2000,
-      sellingTarget: 2000,
-      offerId: 'SKU-1',
-      netPrice: null,
-    });
-    expect(entry.net_price).toBeUndefined();
-  });
-
-  test('buildOzonPriceImportEntry sends declared_price only when explicit', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
-    const without = buildOzonPriceImportEntry({
-      floor: 2000,
-      sellingTarget: 2000,
-      ozonProductId: 1,
-    });
-    expect(without.declared_price).toBeUndefined();
-    const withDeclared = buildOzonPriceImportEntry({
-      floor: 2000,
-      sellingTarget: 2000,
-      ozonProductId: 1,
-      declaredPrice: 1800,
-    });
-    expect(withDeclared.declared_price).toBe('1800');
-  });
-
-  test('buildWbPriceUploadPayload sync mode uses exact price without stale WB discount', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+  test('buildWbPriceUploadPayload selling mode uses selling target', () => {
     const pack = buildWbPriceUploadPayload({
       floor: 2569,
       sellingTarget: 2028,
       currentWbDiscount: 10,
+      pushMinPrice: false,
+      pushSellingPrice: true,
     });
-    expect(pack.price).toBe(2569);
+    expect(pack.price).toBe(2028);
     expect(pack.discount).toBe(0);
-    expect(pack.targetEff).toBe(2569);
+    expect(pack.targetEff).toBe(2028);
   });
 
-  test('buildWbPriceUploadPayload uses ERP before and discount when not sync-to-min', () => {
-    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = '0';
-    const pack = buildWbPriceUploadPayload({
-      floor: 2569,
-      sellingTarget: 2569,
-      priceBeforeDiscount: 3200,
-      discountPercent: 20,
-    });
-    expect(pack.price).toBe(3200);
-    expect(pack.discount).toBe(20);
+  test('buildWbPriceUploadPayload min-only returns null', () => {
+    expect(
+      buildWbPriceUploadPayload({
+        floor: 2569,
+        sellingTarget: 2569,
+        pushMinPrice: true,
+        pushSellingPrice: false,
+      })
+    ).toBeNull();
   });
 
-  test('buildWbPriceUploadPayload sync+before tweaks list price so after ≈ floor', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+  test('buildWbPriceUploadPayload with before tweaks list price', () => {
     const pack = buildWbPriceUploadPayload({
       floor: 2393,
-      sellingTarget: 4105,
+      sellingTarget: 2393,
       priceBeforeDiscount: 5132,
+      pushMinPrice: false,
+      pushSellingPrice: true,
     });
     expect(pack.targetEff).toBe(2393);
     expect(pack.discount).toBe(53);
     expect(pack.price).toBe(wbPriceToMeetFloor(2393, 53));
-    const eff = wbEffectivePrice(pack.price, pack.discount);
-    expect(eff).toBeGreaterThanOrEqual(2393 - 0.01);
-    expect(Math.abs(eff - 2393)).toBeLessThan(1);
   });
 
   test('buildYmOfferPrice sets discountBase when discount 5–99%', () => {

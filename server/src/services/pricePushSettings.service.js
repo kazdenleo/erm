@@ -43,6 +43,8 @@ class PricePushSettingsService {
       pushOzon: settings.pushOzon,
       pushWb: settings.pushWb,
       pushYm: settings.pushYm,
+      pushMinPrice: settings.pushMinPrice !== false,
+      pushSellingPrice: settings.pushSellingPrice === true,
       minMarkupRules: settings.minMarkupRules,
       highDrrPercent: settings.highDrrPercent,
       organizations: (orgs || []).map((o) => ({
@@ -69,6 +71,8 @@ class PricePushSettingsService {
       pushOzon: settings.pushOzon,
       pushWb: settings.pushWb,
       pushYm: settings.pushYm,
+      pushMinPrice: settings.pushMinPrice !== false,
+      pushSellingPrice: settings.pushSellingPrice === true,
       minMarkupRules: settings.minMarkupRules,
       highDrrPercent: settings.highDrrPercent,
     };
