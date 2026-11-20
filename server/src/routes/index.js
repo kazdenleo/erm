@@ -61,6 +61,7 @@ import inquiriesRoutes from './inquiries.routes.js';
 import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
 import * as platformMarketplaceNotificationsController from '../controllers/platformMarketplaceNotifications.controller.js';
 import platformMarketplaceNewsRoutes from './platformMarketplaceNews.routes.js';
+import marketplaceNewsRoutes from './marketplaceNews.routes.js';
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
@@ -88,6 +89,8 @@ import { createProductExcelImportUpload } from '../middleware/uploads.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
 import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
+import secureUploadsRoutes from './secureUploads.routes.js';
+import { requirePlanFeature } from '../middleware/planFeatureAccess.js';
 
 const purchaseExcelImportUpload = createProductExcelImportUpload();
 
@@ -99,6 +102,8 @@ router.get('/config', (req, res) => {
     ok: true,
     data: {
       printHelperUrl: config.printHelperUrl || '',
+      publicSignupEnabled: !!config.auth?.publicSignupEnabled,
+      turnstileSiteKey: config.auth?.turnstileSiteKey || '',
     },
   });
 });
@@ -106,54 +111,68 @@ router.get('/config', (req, res) => {
 // Справочник идентификаторов товара на МП (без JSON — обычная HTML-страница для браузера)
 router.get('/help/marketplace-product-identifiers', marketplaceProductIdentifiersHelp);
 
-// Публичные маршруты этикеток — без авторизации, чтобы Print Helper (exe) мог скачать файл по URL
-router.get('/orders/:orderId/label', validateOrderId, wrapAsync(ordersController.getLabel.bind(ordersController)));
-router.get('/orders/:orderId/label/print', validateOrderId, wrapAsync(ordersController.getLabelPrint.bind(ordersController)));
-router.get('/orders/:orderId/label/status', validateOrderId, wrapAsync(ordersController.getLabelStatus.bind(ordersController)));
-
-// Публичные: QR поставки WB — window.open и <img> не передают Bearer (как этикетки заказов).
-router.get(
-  '/shipments/:id/qr-sticker/print',
-  wrapAsync(shipmentsController.getQrStickerPrintPublic.bind(shipmentsController))
-);
-router.get(
-  '/shipments/:id/qr-sticker',
-  wrapAsync(shipmentsController.getQrStickerPublic.bind(shipmentsController))
-);
-
 // Публичные: APK и QR мобильного приложения (скан с телефона без логина)
 router.get('/mobile-app', wrapAsync(mobileAppController.getInfo.bind(mobileAppController)));
 router.get('/mobile-app/qr.png', wrapAsync(mobileAppController.getQr.bind(mobileAppController)));
 router.get('/mobile-app/download', wrapAsync(mobileAppController.download.bind(mobileAppController)));
 
-// Публичные: этикетки товаров — Print Helper без Bearer; optionalAuth подставляет req.user при токене в браузере
+// Опциональная авторизация для всех /api (устанавливает req.user при наличии токена;
+// для Print Helper — access_token в query)
+router.use(optionalAuth);
+
+// Этикетки заказов / QR поставок / этикетки товаров — только с JWT (Bearer или ?access_token=)
+router.get(
+  '/orders/:orderId/label',
+  requireAuth,
+  validateOrderId,
+  wrapAsync(ordersController.getLabel.bind(ordersController))
+);
+router.get(
+  '/orders/:orderId/label/print',
+  requireAuth,
+  validateOrderId,
+  wrapAsync(ordersController.getLabelPrint.bind(ordersController))
+);
+router.get(
+  '/orders/:orderId/label/status',
+  requireAuth,
+  validateOrderId,
+  wrapAsync(ordersController.getLabelStatus.bind(ordersController))
+);
+router.get(
+  '/shipments/:id/qr-sticker/print',
+  requireAuth,
+  wrapAsync(shipmentsController.getQrStickerPrint.bind(shipmentsController))
+);
+router.get(
+  '/shipments/:id/qr-sticker',
+  requireAuth,
+  wrapAsync(shipmentsController.getQrSticker.bind(shipmentsController))
+);
 router.get(
   '/products/:id/label',
+  requireAuth,
   validateProductId,
-  optionalAuth,
   wrapAsync(productLabelsController.getLabel.bind(productLabelsController))
 );
 router.get(
   '/products/:id/label/print',
+  requireAuth,
   validateProductId,
-  optionalAuth,
   wrapAsync(productLabelsController.getLabelPrint.bind(productLabelsController))
 );
 router.get(
   '/products/:id/packaging-label',
+  requireAuth,
   validateProductId,
-  optionalAuth,
   wrapAsync(productLabelsController.getPackagingLabel.bind(productLabelsController))
 );
 router.get(
   '/products/:id/packaging-label/print',
+  requireAuth,
   validateProductId,
-  optionalAuth,
   wrapAsync(productLabelsController.getPackagingLabelPrint.bind(productLabelsController))
 );
-
-// Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)
-router.use(optionalAuth);
 
 // Пока действует временный пароль — доступ только к смене пароля, /auth/me и чтение своего пользователя (кабинет)
 router.use((req, res, next) => {
@@ -265,8 +284,10 @@ router.post(
 router.post('/hooks/ozon', wrapAsync(platformMarketplaceNotificationsController.ingestOzonPush));
 router.use('/platform/marketplace-notifications', platformMarketplaceNotificationsRoutes);
 router.use('/platform/marketplace-news', platformMarketplaceNewsRoutes);
+router.use('/marketplace-news', marketplaceNewsRoutes);
 router.use('/reviews', reviewsRoutes);
 router.use('/downloads', downloadsRoutes);
+router.use('/secure-uploads', secureUploadsRoutes);
 router.use('/marketplace-inventory', marketplaceInventoryRoutes);
 router.use('/sales-analytics', salesAnalyticsRoutes);
 router.use('/ai', aiRoutes);
@@ -385,7 +406,7 @@ router.use('/shipments', shipmentsRoutes);
 
 // Сборка заказов (поиск по штрихкоду)
 router.use('/assembly', assemblyRoutes);
-router.use('/production', productionRoutes);
+router.use('/production', requirePlanFeature('production', { label: 'Производство' }), productionRoutes);
 
 // Атрибуты товаров (настройки → атрибуты)
 router.use('/product-attributes', productAttributesRoutes);
@@ -433,7 +454,7 @@ router.post(
   wrapAsync(purchasesController.importFromExcel.bind(purchasesController))
 );
 // Закупки (ожидание) и приёмки по закупкам — остальные методы
-router.use('/purchases', purchasesRoutes);
+router.use('/purchases', requirePlanFeature('purchases', { label: 'Закупки' }), purchasesRoutes);
 // Грузоместа закупок: приёмка мест и товара из них (мобильное приложение склада)
 router.use('/purchase-cargo', purchaseCargoPlacesRoutes);
 // Грузоместа без закупки: пакет → места → товар → оформление на склад
@@ -447,7 +468,7 @@ router.get(
 );
 
 // Поставки FBO на склады маркетплейсов
-router.use('/fbo-supplies', fboSuppliesRoutes);
+router.use('/fbo-supplies', requirePlanFeature('fbo', { label: 'FBO-поставки' }), fboSuppliesRoutes);
 
 // Инвентаризация — явные маршруты (вложенный Router у части окружений не матчил POST /apply)
 router.get(

@@ -68,7 +68,18 @@ export function Shipments() {
   }, []);
 
   const openStickerPrintPage = (shipmentId) => {
-    window.open(getQrStickerPrintUrl(shipmentId), '_blank', 'noopener,noreferrer');
+    let url = getQrStickerPrintUrl(shipmentId);
+    try {
+      const token = localStorage.getItem('token') || '';
+      if (token) {
+        const u = new URL(url, window.location.origin);
+        u.searchParams.set('access_token', token);
+        url = u.toString();
+      }
+    } catch {
+      /* ignore */
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const printShipmentSticker = useCallback(
@@ -87,6 +98,16 @@ export function Shipments() {
         labelUrl = new URL(labelUrl, window.location.origin).toString();
       } catch {
         /* relative is enough for same-origin fallback */
+      }
+      try {
+        const token = localStorage.getItem('token') || '';
+        if (token) {
+          const u = new URL(labelUrl);
+          u.searchParams.set('access_token', token);
+          labelUrl = u.toString();
+        }
+      } catch {
+        /* ignore */
       }
       const printed = await printViaPrintHelper({
         printHelperUrl: helperUrl,

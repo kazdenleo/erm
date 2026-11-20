@@ -43,13 +43,9 @@ async function validateManualOrderWarehouseId(profileId, warehouseId, accessScop
   if (!Number.isFinite(wid) || wid < 1) {
     return 'Укажите склад списания для ручного заказа.';
   }
-  const wh = await warehousesRepo?.findById?.(wid);
+  const wh = await warehousesRepo?.findById?.(wid, profileId);
   if (!wh || String(wh.type || '').toLowerCase() !== 'warehouse') {
     return 'Склад не найден.';
-  }
-  const whProfile = wh.profile_id ?? wh.profileId ?? null;
-  if (profileId != null && whProfile != null && Number(whProfile) !== Number(profileId)) {
-    return 'Склад не принадлежит вашему аккаунту.';
   }
   if (accessScope && !isWarehouseAllowed(accessScope, wid)) {
     return 'Нет доступа к выбранному складу.';
@@ -1087,7 +1083,8 @@ class OrdersController {
       const { orderId } = req.params;
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const order = await ordersLabelsService.findOrderById(orderId);
+      const profileId = req.user?.profileId ?? null;
+      const order = await ordersLabelsService.findOrderById(orderId, { profileId });
       const filePath = await ordersLabelsService.ensureLabelFile(order, { organizationId });
       const stat = fs.statSync(filePath);
       if (!stat || stat.size === 0) {
@@ -1127,10 +1124,16 @@ class OrdersController {
       const { orderId } = req.params;
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const order = await ordersLabelsService.findOrderById(orderId);
+      const profileId = req.user?.profileId ?? null;
+      const order = await ordersLabelsService.findOrderById(orderId, { profileId });
       await ordersLabelsService.ensureLabelFile(order, { organizationId });
       const baseUrl = `${req.protocol}://${req.get('host') || ''}${req.baseUrl || ''}`.replace(/\/$/, '');
-      const labelUrl = `${baseUrl}/${encodeURIComponent(orderId)}/label`;
+      const tokenRaw =
+        req.query?.access_token ?? req.query?.accessToken ?? req.query?.token ?? null;
+      const token =
+        tokenRaw != null && String(tokenRaw).trim() !== '' ? String(tokenRaw).trim() : '';
+      const tokenQs = token ? `?access_token=${encodeURIComponent(token)}` : '';
+      const labelUrl = `${baseUrl}/${encodeURIComponent(orderId)}/label${tokenQs}`;
       const jsUrl = `${baseUrl}/label/print.js`;
       const html = `<!DOCTYPE html>
 <html>
@@ -1178,7 +1181,8 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
       const { orderId } = req.params;
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const order = await ordersLabelsService.findOrderById(orderId);
+      const profileId = req.user?.profileId ?? null;
+      const order = await ordersLabelsService.findOrderById(orderId, { profileId });
       const status = await ordersLabelsService.getLabelStatus(order, { organizationId });
       return res.status(200).json({ ok: true, data: status });
     } catch (error) {
@@ -1191,7 +1195,8 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
       const { orderId } = req.params;
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const order = await ordersLabelsService.findOrderById(orderId);
+      const profileId = req.user?.profileId ?? null;
+      const order = await ordersLabelsService.findOrderById(orderId, { profileId });
       const status = await ordersLabelsService.refreshLabel(order, { organizationId });
       return res.status(200).json({ ok: true, data: status });
     } catch (error) {

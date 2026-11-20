@@ -98,13 +98,13 @@ class SuppliersRepositoryPG {
    */
   async findById(id, profileId = null) {
     const pid = normalizeProfileId(profileId);
-    const result = pid
-      ? await query('SELECT * FROM suppliers WHERE id = $1 AND profile_id = $2', [id, pid])
-      : await query('SELECT * FROM suppliers WHERE id = $1', [id]);
+    // Fail-closed: без profileId не отдаём строку (изоляция тенантов).
+    if (!pid) return null;
+    const result = await query('SELECT * FROM suppliers WHERE id = $1 AND profile_id = $2', [id, pid]);
     if (!result.rows[0]) {
       return null;
     }
-    
+
     const row = result.rows[0];
     let apiConfig = {};
     try {
@@ -130,19 +130,14 @@ class SuppliersRepositoryPG {
   async findByCode(code, profileId = null) {
     const pid = normalizeProfileId(profileId);
     const aliases = supplierCodeLookupAliases(code);
-    const result = pid
-      ? await query(
-          `SELECT * FROM suppliers
-           WHERE LOWER(TRIM(code)) = ANY($1::text[]) AND profile_id = $2
-           LIMIT 1`,
-          [aliases, pid]
-        )
-      : await query(
-          `SELECT * FROM suppliers
-           WHERE LOWER(TRIM(code)) = ANY($1::text[])
-           LIMIT 1`,
-          [aliases]
-        );
+    // Fail-closed: без profileId не ищем по всей БД.
+    if (!pid) return null;
+    const result = await query(
+      `SELECT * FROM suppliers
+       WHERE LOWER(TRIM(code)) = ANY($1::text[]) AND profile_id = $2
+       LIMIT 1`,
+      [aliases, pid]
+    );
     if (!result.rows[0]) {
       return null;
     }

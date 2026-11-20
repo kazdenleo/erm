@@ -1,11 +1,22 @@
 /**
- * Тексты оферты и политики ПДн (шаблоны).
- * Реквизиты подставляются из env или плейсхолдеров — правятся позже.
+ * Тексты оферты и политики ПДн.
+ * Реквизиты — только из env LEGAL_* (см. docs/saas-closed-beta-checklist.md).
  */
 
 function env(name, fallback) {
   const v = process.env[name];
   return v != null && String(v).trim() !== '' ? String(v).trim() : fallback;
+}
+
+/** true, если на VPS заполнены основные реквизиты (не плейсхолдеры). */
+export function isLegalConfigured() {
+  const company = env('LEGAL_COMPANY', '');
+  const inn = env('LEGAL_INN', '');
+  const email = env('LEGAL_EMAIL', '');
+  if (!company || company.includes('Название')) return false;
+  if (!inn || inn.includes('______')) return false;
+  if (!email || email.includes('example.com')) return false;
+  return true;
 }
 
 export function getLegalParty() {
@@ -19,6 +30,7 @@ export function getLegalParty() {
     telegram: env('LEGAL_TELEGRAM', '@example_support'),
     domain: env('LEGAL_DOMAIN', 'dttrade.ru'),
     revisedAt: env('LEGAL_REVISED_AT', '2026-10-30'),
+    configured: isLegalConfigured(),
   };
 }
 
@@ -71,8 +83,9 @@ export function buildOfferDocument() {
         body: `${p.company}\n${p.inn}\n${p.ogrn}\nАдрес: ${p.address}\nEmail: ${p.email}\nTelegram: ${p.telegram}\nСайт: ${site}`,
       },
     ],
-    disclaimer:
-      'Текст является шаблоном и подлежит проверке юристом перед коммерческим запуском. Реквизиты будут уточнены.',
+    disclaimer: isLegalConfigured()
+      ? 'Документ действует с указанной даты редакции. При расхождении с условиями тарифа приоритет у страницы «Тарифы» и личного кабинета.'
+      : 'ВНИМАНИЕ: реквизиты не заполнены (LEGAL_* на сервере). Перед продажей доступа укажите LEGAL_COMPANY, LEGAL_INN, LEGAL_EMAIL и согласуйте текст с юристом.',
   };
 }
 
@@ -117,7 +130,8 @@ export function buildPrivacyDocument() {
         body: `По вопросам ПДн: ${p.email}, Telegram ${p.telegram}.`,
       },
     ],
-    disclaimer:
-      'Шаблон политики. Перед запуском согласуйте формулировки с юристом под вашу модель (оператор / обработчик).',
+    disclaimer: isLegalConfigured()
+      ? 'Политика действует с указанной даты редакции.'
+      : 'ВНИМАНИЕ: реквизиты оператора не заполнены (LEGAL_*). Перед запуском заполните env и согласуйте формулировки с юристом.',
   };
 }

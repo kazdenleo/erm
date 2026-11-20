@@ -64,6 +64,14 @@ export const authController = {
    */
   async registerAccount(req, res, next) {
     try {
+      if (!config.auth?.publicSignupEnabled) {
+        return res.status(403).json({
+          ok: false,
+          code: 'PUBLIC_SIGNUP_DISABLED',
+          message:
+            'Публичная регистрация временно закрыта. Доступ выдаёт администратор платформы.',
+        });
+      }
       if (!config.database.usePostgreSQL) {
         return res.status(503).json({
           ok: false,
@@ -71,7 +79,64 @@ export const authController = {
         });
       }
 
-      const { accountName, email, phone, fullName, password, birthDate, birth_date: birthDateSnake } = req.body || {};
+      const {
+        accountName,
+        email,
+        phone,
+        fullName,
+        password,
+        birthDate,
+        birth_date: birthDateSnake,
+        acceptOffer,
+        turnstileToken,
+        website, // honeypot
+      } = req.body || {};
+
+      // Honeypot: боты заполняют скрытое поле
+      if (website != null && String(website).trim() !== '') {
+        return res.status(400).json({ ok: false, message: 'Некорректный запрос' });
+      }
+
+      const offerOk =
+        acceptOffer === true ||
+        acceptOffer === 1 ||
+        String(acceptOffer).toLowerCase() === 'true' ||
+        String(acceptOffer) === '1';
+      if (!offerOk) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Нужно принять оферту и политику конфиденциальности',
+        });
+      }
+
+      const turnstileSecret = config.auth?.turnstileSecretKey || '';
+      if (turnstileSecret) {
+        const token = String(turnstileToken || '').trim();
+        if (!token) {
+          return res.status(400).json({ ok: false, message: 'Пройдите проверку «я не робот»' });
+        }
+        try {
+          const form = new URLSearchParams();
+          form.set('secret', turnstileSecret);
+          form.set('response', token);
+          const ip = req.ip || req.headers['x-forwarded-for'];
+          if (ip) form.set('remoteip', String(ip).split(',')[0].trim());
+          const tr = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+            method: 'POST',
+            body: form,
+          });
+          const tj = await tr.json().catch(() => ({}));
+          if (!tj?.success) {
+            return res.status(400).json({ ok: false, message: 'Проверка «я не робот» не пройдена' });
+          }
+        } catch (e) {
+          return res.status(502).json({
+            ok: false,
+            message: 'Не удалось проверить captcha. Попробуйте позже.',
+          });
+        }
+      }
+
       const name = String(accountName || '').trim();
       const emailParsed = parseOptionalEmail(email);
       if (emailParsed.error) {

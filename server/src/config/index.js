@@ -69,15 +69,26 @@ const configSchema = z.object({
   API_RATE_LIMIT_ENABLED: z.string().optional(),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   
-  // JWT (for future use)
+  // JWT
   JWT_SECRET: z.string().min(32).optional(),
   JWT_EXPIRES_IN: z.string().default('24h'),
 
-  /** AES-256 ключ для секретов интеграций (64 hex или base64 на 32 байта). Без него — scrypt(JWT_SECRET). */
+  /** AES-256 ключ для секретов интеграций (64 hex или base64 на 32 байта). Без него — scrypt(JWT_SECRET). В production обязателен. */
   SECRETS_ENCRYPTION_KEY: z.string().optional(),
 
   // Auth
   DISABLE_AUTH: z.string().optional(),
+  /**
+   * Публичная регистрация аккаунтов (POST /auth/register-account и /register).
+   * Закрытая бета: по умолчанию выключена. Включить: PUBLIC_SIGNUP_ENABLED=1
+   */
+  PUBLIC_SIGNUP_ENABLED: z.string().optional(),
+  /** Cloudflare Turnstile secret (опционально; при PUBLIC_SIGNUP_ENABLED проверяет captcha) */
+  TURNSTILE_SECRET_KEY: z.string().optional().default(''),
+  /** Cloudflare Turnstile site key для фронта (отдаётся в GET /api/config) */
+  TURNSTILE_SITE_KEY: z.string().optional().default(''),
+  /** Sentry DSN (опциональный мониторинг ошибок) */
+  SENTRY_DSN: z.string().optional().default(''),
   /**
    * role=admin без profile_id: отдавать все строки в мультитенантных списках (старое поведение).
    * В production по умолчанию выключено (безопасно). Явно: GLOBAL_ADMIN_UNFILTERED_LISTS=1
@@ -124,6 +135,32 @@ let config;
 
 try {
   const parsed = configSchema.parse(process.env);
+
+  const isProduction = parsed.NODE_ENV === 'production';
+  const disableAuthRaw = String(parsed.DISABLE_AUTH || '').toLowerCase();
+  const authDisabled = disableAuthRaw === '1' || disableAuthRaw === 'true';
+
+  if (isProduction && authDisabled) {
+    console.error('❌ DISABLE_AUTH запрещён при NODE_ENV=production');
+    process.exit(1);
+  }
+  if (isProduction) {
+    const jwt = String(parsed.JWT_SECRET || '').trim();
+    if (!jwt || jwt === 'change-this-secret-in-production' || jwt.length < 32) {
+      console.error('❌ В production обязателен JWT_SECRET (минимум 32 символа, не дефолтный)');
+      process.exit(1);
+    }
+    const secretsKey = String(parsed.SECRETS_ENCRYPTION_KEY || '').trim();
+    if (!secretsKey) {
+      console.error('❌ В production обязателен SECRETS_ENCRYPTION_KEY (64 hex или base64 на 32 байта)');
+      process.exit(1);
+    }
+  }
+
+  const publicSignupFlag = String(parsed.PUBLIC_SIGNUP_ENABLED ?? '').trim().toLowerCase();
+  // Закрытая бета: signup выключен, пока явно не включён PUBLIC_SIGNUP_ENABLED=1
+  const publicSignupEnabled =
+    publicSignupFlag === '1' || publicSignupFlag === 'true';
   
   config = {
     // Server
@@ -195,13 +232,16 @@ try {
     
     // JWT
     jwt: {
-      secret: parsed.JWT_SECRET || 'change-this-secret-in-production',
+      secret: parsed.JWT_SECRET || (isProduction ? '' : 'change-this-secret-in-production'),
       expiresIn: parsed.JWT_EXPIRES_IN,
     },
 
     // Auth
     auth: {
-      disabled: String(parsed.DISABLE_AUTH || '').toLowerCase() === '1' || String(parsed.DISABLE_AUTH || '').toLowerCase() === 'true',
+      disabled: authDisabled,
+      publicSignupEnabled,
+      turnstileSecretKey: String(parsed.TURNSTILE_SECRET_KEY || '').trim(),
+      turnstileSiteKey: String(parsed.TURNSTILE_SITE_KEY || '').trim(),
       /**
        * Супер-админ без привязки к профилю видит все заказы/склады/…
        * По умолчанию: true только в development; в production — false, пока не задано GLOBAL_ADMIN_UNFILTERED_LISTS=1
@@ -212,6 +252,8 @@ try {
           : String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === '1' ||
             String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === 'true',
     },
+
+    sentryDsn: String(parsed.SENTRY_DSN || '').trim(),
     
     // API Keys
     apiKeys: {
@@ -261,6 +303,8 @@ try {
       secretKey: String(parsed.YOOKASSA_SECRET_KEY || '').trim(),
       returnUrl: String(parsed.YOOKASSA_RETURN_URL || '').trim(),
     },
+
+    secretsEncryptionKey: String(parsed.SECRETS_ENCRYPTION_KEY || '').trim(),
   };
 } catch (error) {
   if (error instanceof z.ZodError) {

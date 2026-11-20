@@ -211,7 +211,7 @@ export async function processAssemblyShipmentsInBackground(orderIds, { profileId
     const uniq = [...new Set((orderIds || []).map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))];
     for (const oid of uniq) {
       ordersLabelsService
-        .findOrderById(oid)
+        .findOrderById(oid, { profileId })
         .then(async (order) => {
           if (!order) return;
           const mp = String(order.marketplace || '').toLowerCase();

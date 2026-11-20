@@ -128,6 +128,24 @@ process.on('SIGTERM', () => {
 // Запуск сервера
 async function startServer() {
   try {
+    if (config.sentryDsn) {
+      try {
+        const Sentry = await import('@sentry/node').catch(() => null);
+        if (Sentry?.init) {
+          Sentry.init({
+            dsn: config.sentryDsn,
+            environment: config.nodeEnv,
+            tracesSampleRate: 0.05,
+          });
+          logger.info('Sentry initialized');
+        } else {
+          logger.warn('SENTRY_DSN задан, но пакет @sentry/node не установлен — мониторинг пропущен');
+        }
+      } catch (e) {
+        logger.warn('Sentry init failed:', e?.message || e);
+      }
+    }
+
     const usePg = config.database.usePostgreSQL || repositoryFactory.isUsingPostgreSQL();
     if (repositoryFactory.isUsingPostgreSQL() && !usePg) {
       logger.error(

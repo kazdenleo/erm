@@ -91,8 +91,15 @@ app.get('/api/health', wrapAsync(getHealth));
 // Браузер всегда запрашивает favicon — без маршрута попадает в 404 и шумит errorHandler
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-// Static uploads (product images)
-app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
+// Uploads: публично только то, что качают маркетплейсы (фото товаров / rich / covers).
+// certificates, inquiries, tmp — через /api с авторизацией (см. routes/secureUploads).
+const uploadsRoot = path.resolve(__dirname, '../uploads');
+app.use('/uploads/products', express.static(path.join(uploadsRoot, 'products')));
+app.use('/uploads/rich-content', express.static(path.join(uploadsRoot, 'rich-content')));
+app.use('/uploads/video-covers', express.static(path.join(uploadsRoot, 'video-covers')));
+app.use('/uploads', (req, res) => {
+  res.status(404).json({ ok: false, message: 'Файл недоступен без авторизации' });
+});
 
 // Static client build (если nginx проксирует весь трафик на Node).
 // /api остаётся API, а всё остальное отдаём как SPA.

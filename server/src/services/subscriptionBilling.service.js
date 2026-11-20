@@ -602,13 +602,7 @@ export async function getAdminOpsSummary({ trialDays = 3, activeDays = 7 } = {})
   activeEnding.sort(sortByEnd);
 
   const party = getLegalParty();
-  const legalPlaceholder =
-    !process.env.LEGAL_COMPANY ||
-    String(process.env.LEGAL_COMPANY).includes('Название') ||
-    !process.env.LEGAL_INN ||
-    String(process.env.LEGAL_INN).includes('______') ||
-    !process.env.LEGAL_EMAIL ||
-    String(process.env.LEGAL_EMAIL).includes('example.com');
+  const legalPlaceholder = party.configured !== true;
 
   const pendingRequests = await requestsRepo.listAll({ status: 'pending', limit: 50 });
 

@@ -12,7 +12,8 @@ export const LANDING = {
   heroSupport:
     'Товары, склад, заказы, цены и аналитика в одном кабинете — от Wildberries и Ozon до своего магазина.',
 
-  ctaPrimary: { label: 'Создать аккаунт', to: '/register' },
+  /** Закрытая бета: регистрация выключена (PUBLIC_SIGNUP_ENABLED=0), аккаунты через /platform */
+  ctaPrimary: { label: 'Тарифы и доступ', to: '/pricing' },
   ctaSecondary: { label: 'Войти', to: '/login' },
 
   featuresTitle: 'Что умеет система',
@@ -231,8 +232,8 @@ export const LANDING = {
   howTitle: 'Как начать',
   howSteps: [
     {
-      title: 'Регистрация',
-      text: 'Создайте аккаунт — 7 дней полного доступа (как «Бизнес»), вход по телефону или email.',
+      title: 'Доступ',
+      text: 'Сейчас закрытая бета: аккаунт выдаёт администратор. После открытия регистрации — 7 дней trial (как «Бизнес»).',
     },
     {
       title: 'Онбординг',
@@ -267,7 +268,7 @@ export const LANDING = {
     { label: 'Контакты', href: '#contacts' },
     { label: 'Оферта', to: '/offer' },
     { label: 'Конфиденциальность', to: '/privacy' },
-    { label: 'Регистрация', to: '/register' },
+    { label: 'Запросить доступ', to: '/pricing' },
     { label: 'Вход', to: '/login' },
   ],
 };

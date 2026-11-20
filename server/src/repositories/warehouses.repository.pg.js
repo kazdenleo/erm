@@ -143,10 +143,14 @@ class WarehousesRepositoryPG {
   /**
    * Получить склад по ID
    */
+  /**
+   * Склад по ID в рамках профиля (обязателен profileId — иначе null).
+   */
   async findById(id, profileId = null) {
     const pid = normalizeProfileId(profileId);
-    const result = pid
-      ? await query(`
+    // Fail-closed: без profileId не отдаём чужой склад.
+    if (!pid) return null;
+    const result = await query(`
       SELECT 
         w.*,
         s.name as supplier_name,
@@ -159,8 +163,21 @@ class WarehousesRepositoryPG {
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
       WHERE w.id = $1 AND w.profile_id = $2
-    `, [id, pid])
-      : await query(`
+    `, [id, pid]);
+    
+    if (!result.rows[0]) {
+      return null;
+    }
+    
+    return mapWarehouseRow(result.rows[0]);
+  }
+
+  /**
+   * Внутренний lookup без профиля (только для job/mapping после проверки ownership).
+   * HTTP-контроллеры должны использовать findById(id, profileId).
+   */
+  async findByIdAny(id) {
+    const result = await query(`
       SELECT 
         w.*,
         s.name as supplier_name,
@@ -174,11 +191,7 @@ class WarehousesRepositoryPG {
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
       WHERE w.id = $1
     `, [id]);
-    
-    if (!result.rows[0]) {
-      return null;
-    }
-    
+    if (!result.rows[0]) return null;
     return mapWarehouseRow(result.rows[0]);
   }
   

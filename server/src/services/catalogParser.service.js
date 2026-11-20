@@ -12,7 +12,13 @@ import { DATA_DIR } from '../utils/storage.js';
 const APP_DIR = join(DATA_DIR, 'catalog-parser');
 const SETUP_PATH = join(APP_DIR, 'SborshikKatalogov-setup.exe');
 const META_PATH = join(APP_DIR, 'meta.json');
-const ALLOWED_PROFILE_NAME = 'автолюбитель';
+/** Через env можно расширить список; по умолчанию — исторический тенант. */
+const ALLOWED_PROFILE_NAMES = new Set(
+  String(process.env.CATALOG_PARSER_ALLOWED_PROFILES || 'автолюбитель')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 function readMetaFile() {
   try {
@@ -52,7 +58,7 @@ export async function isCatalogParserAllowed(user) {
     const name = String(result.rows[0]?.name || '')
       .trim()
       .toLowerCase();
-    return name === ALLOWED_PROFILE_NAME;
+    return ALLOWED_PROFILE_NAMES.has(name);
   } catch {
     return false;
   }

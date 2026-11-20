@@ -217,7 +217,8 @@ class WarehousesService {
       typeof this.repository.setMainWarehouseLinks === 'function'
     ) {
       await this.repository.setMainWarehouseLinks(created.id, mainWarehouseIdsValue);
-      return (await this.repository.findById(created.id)) || created;
+      const pid = profileId ?? payload.profile_id ?? created.profile_id ?? created.profileId;
+      return (await this.repository.findById(created.id, pid)) || created;
     }
     return created;
   }

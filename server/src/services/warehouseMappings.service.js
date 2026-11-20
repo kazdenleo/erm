@@ -89,10 +89,12 @@ class WarehouseMappingsService {
     assertMarketplaceWarehouseId(mp, mw);
 
     // Проверяем, что склад существует в этом аккаунте и является "своим"
-    const w =
-      profileId != null && profileId !== ''
-        ? await this.warehousesRepo.findById(wid, profileId)
-        : await this.warehousesRepo.findById(wid);
+    if (profileId == null || profileId === '') {
+      const err = new Error('Требуется контекст аккаунта (profileId)');
+      err.statusCode = 403;
+      throw err;
+    }
+    const w = await this.warehousesRepo.findById(wid, profileId);
     if (!w || w.type !== 'warehouse' || w.supplier_id != null) {
       const err = new Error('Склад не найден или не является вашим складом (type=warehouse без поставщика)');
       err.statusCode = 400;
@@ -173,7 +175,12 @@ class WarehouseMappingsService {
     const targetMw =
       updates.marketplace_warehouse_id ??
       normalizeMarketplaceWarehouseId(targetMarketplace, existing.marketplace_warehouse_id);
-    const targetWarehouse = await this.warehousesRepo.findById(targetWarehouseId);
+    const targetWarehouse =
+      profileId != null && profileId !== ''
+        ? await this.warehousesRepo.findById(targetWarehouseId, profileId)
+        : typeof this.warehousesRepo.findByIdAny === 'function'
+          ? await this.warehousesRepo.findByIdAny(targetWarehouseId)
+          : null;
     await this.assertMarketplaceWarehouseFree({
       warehouseId: targetWarehouseId,
       marketplace: targetMarketplace,

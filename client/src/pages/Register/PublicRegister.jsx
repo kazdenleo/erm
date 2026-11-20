@@ -1,12 +1,14 @@
 /**
  * Публичная регистрация аккаунта: название, телефон, ФИО, пароль.
  * Email необязателен. Вход — по телефону и паролю.
+ * При PUBLIC_SIGNUP_ENABLED=0 показывается сообщение о закрытой бете.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { authApi } from '../../services/auth.api.js';
 import { Button } from '../../components/common/Button/Button';
+import api from '../../services/api.js';
 import '../Login/Login.css';
 
 export function PublicRegister() {
@@ -20,11 +22,73 @@ export function PublicRegister() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [signupEnabled, setSignupEnabled] = useState(null);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/config');
+        const data = res?.data?.data || res?.data || {};
+        if (cancelled) return;
+        setSignupEnabled(data.publicSignupEnabled === true);
+        setTurnstileSiteKey(String(data.turnstileSiteKey || '').trim());
+      } catch {
+        if (!cancelled) setSignupEnabled(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!turnstileSiteKey || !signupEnabled) return undefined;
+    const w = window;
+    if (w.turnstile) {
+      try {
+        w.turnstile.render('#erm-turnstile', {
+          sitekey: turnstileSiteKey,
+          callback: (token) => setTurnstileToken(token || ''),
+        });
+      } catch {
+        /* ignore */
+      }
+      return undefined;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.onload = () => {
+      try {
+        window.turnstile?.render('#erm-turnstile', {
+          sitekey: turnstileSiteKey,
+          callback: (token) => setTurnstileToken(token || ''),
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    document.body.appendChild(script);
+    return () => {
+      try {
+        script.remove();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [turnstileSiteKey, signupEnabled]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setSuccess('');
+    if (!signupEnabled) {
+      setError('Публичная регистрация временно закрыта.');
+      return;
+    }
     if (!phone.trim()) {
       setError('Укажите номер телефона');
       return;
@@ -41,6 +105,10 @@ export function PublicRegister() {
       setError('Нужно принять оферту и политику конфиденциальности');
       return;
     }
+    if (turnstileSiteKey && !turnstileToken) {
+      setError('Пройдите проверку «я не робот»');
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await authApi.registerAccount({
@@ -49,6 +117,9 @@ export function PublicRegister() {
         phone: phone.trim(),
         fullName: fullName.trim(),
         password,
+        acceptOffer: true,
+        turnstileToken: turnstileToken || undefined,
+        website: '', // honeypot
       });
       if (res?.ok) {
         setSuccess(res.message || 'Аккаунт создан. Войдите по телефону или email.');
@@ -58,6 +129,7 @@ export function PublicRegister() {
         setFullName('');
         setPassword('');
         setPassword2('');
+        setAcceptOffer(false);
       } else {
         setError(res?.message || 'Не удалось зарегистрироваться');
       }
@@ -72,6 +144,38 @@ export function PublicRegister() {
       setSubmitting(false);
     }
   };
+
+  if (signupEnabled === null) {
+    return (
+      <div className="login-page">
+        <div className="login-card card" style={{ maxWidth: 440 }}>
+          <h1 className="login-title">Регистрация</h1>
+          <p className="login-subtitle">Загрузка…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!signupEnabled) {
+    return (
+      <div className="login-page">
+        <div className="login-card card" style={{ maxWidth: 440 }}>
+          <h1 className="login-title">Регистрация закрыта</h1>
+          <p className="login-subtitle">
+            Сейчас идёт закрытая бета. Аккаунт создаёт администратор платформы.
+            Напишите в поддержку или{' '}
+            <Link to="/pricing">посмотрите тарифы</Link>.
+          </p>
+          <p className="login-footer-text">
+            Уже есть аккаунт? <Link to="/login">Вход</Link>
+          </p>
+          <p className="login-footer-text">
+            <Link to="/">← На главную</Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="login-page">
@@ -91,6 +195,17 @@ export function PublicRegister() {
               {success}
             </div>
           )}
+          {/* honeypot */}
+          <input
+            type="text"
+            name="website"
+            value=""
+            readOnly
+            tabIndex={-1}
+            autoComplete="off"
+            aria-hidden="true"
+            style={{ position: 'absolute', left: '-9999px', height: 0, width: 0, opacity: 0 }}
+          />
           <label className="login-label">
             Название аккаунта
             <input
@@ -179,6 +294,7 @@ export function PublicRegister() {
               <Link to="/privacy">политику конфиденциальности</Link>
             </span>
           </label>
+          {turnstileSiteKey ? <div id="erm-turnstile" style={{ margin: '8px 0' }} /> : null}
           <Button type="submit" disabled={submitting} className="login-submit">
             {submitting ? 'Отправка…' : 'Зарегистрироваться'}
           </Button>

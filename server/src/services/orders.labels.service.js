@@ -527,9 +527,18 @@ class OrdersLabelsService {
 
   /**
    * Утилита: найти заказ по orderId в локальном хранилище.
+   * profileId обязателен для HTTP (изоляция тенантов); без него — 404.
+   * @param {string|number} orderId
+   * @param {{ profileId?: unknown }} [opts]
    */
-  async findOrderById(orderId) {
-    const order = await ordersService.getByOrderId(orderId);
+  async findOrderById(orderId, opts = {}) {
+    const profileId = opts?.profileId ?? null;
+    if (profileId == null || profileId === '') {
+      const error = new Error('Order not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    const order = await ordersService.getByOrderId(orderId, { profileId });
     if (!order) {
       const error = new Error('Order not found');
       error.statusCode = 404;
