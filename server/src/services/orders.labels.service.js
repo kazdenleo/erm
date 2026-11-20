@@ -123,8 +123,53 @@ function keyFp(raw) {
 const backgroundLabelFetches = new Set();
 const backgroundLabelCooldownUntil = new Map();
 const BACKGROUND_LABEL_COOLDOWN_MS = 30_000;
+/** После NO_POSTINGS/429 не долбим Ozon каждые 20–30 с — иначе rate limit и «вечные часики». */
+const BACKGROUND_LABEL_COOLDOWN_NO_POSTINGS_MS = 120_000;
+const BACKGROUND_LABEL_COOLDOWN_RATE_LIMIT_MS = 60_000;
 /** Почему этикетка не загрузилась в последний раз — показываем сборщику на кнопке ожидания. */
 const labelLastError = new Map();
+
+function backgroundCooldownMsForError(err) {
+  const msg = String(err?.message || err || '');
+  if (/NO_POSTINGS_FOR_BATCH_DOWNLOAD/i.test(msg)) return BACKGROUND_LABEL_COOLDOWN_NO_POSTINGS_MS;
+  if (err?.statusCode === 429 || /rate limit/i.test(msg)) return BACKGROUND_LABEL_COOLDOWN_RATE_LIMIT_MS;
+  return BACKGROUND_LABEL_COOLDOWN_MS;
+}
+
+/**
+ * Ozon отдаёт PDF только после «Ожидает отгрузки». Перед package-label
+ * доталкиваем постинг в поставку / awaiting-delivery (как на кнопке «часы»).
+ */
+async function ensureOzonInAwaitingDeliverForLabel(order, { organizationId = null } = {}) {
+  const { default: shipmentsService } = await import('./shipments.service.js');
+  const profileId = orderProfileId(order);
+  const orgId = organizationId ?? order?.organizationId ?? order?.organization_id ?? null;
+  let ship = await shipmentsService.findLocalShipmentContainingOrder('ozon', order.orderId, {
+    profileId,
+  });
+  if (!ship || ship.closed) {
+    const marketplaceWarehouseId = order?.deliveryAddress ?? order?.delivery_address ?? null;
+    const warehouseId = order?.warehouseId ?? order?.warehouse_id ?? null;
+    const openShip = await shipmentsService.getOrCreateOpenShipment('ozon', {
+      profileId,
+      organizationId: orgId,
+      warehouseId,
+      marketplaceWarehouseId,
+    });
+    ship = await shipmentsService.addOrdersToShipment(openShip.id, [String(order.orderId)], {
+      profileId,
+      organizationId: orgId ?? openShip.organizationId ?? null,
+    });
+    logLabelEvent(`[Ozon] ensure awaiting-deliver: заказ ${order.orderId} в поставку ${ship?.id || openShip.id}`);
+  } else {
+    await shipmentsService.addOrdersToShipment(ship.id, [String(order.orderId)], {
+      profileId,
+      organizationId: orgId ?? ship.organizationId ?? null,
+    });
+    logLabelEvent(`[Ozon] ensure awaiting-deliver: повторный ship ${order.orderId} поставка ${ship.id}`);
+  }
+  return ship;
+}
 
 class OrdersLabelsService {
   hasLabelCached(order) {
@@ -216,12 +261,26 @@ class OrdersLabelsService {
       // Делаем несколько попыток с бэкоффом, чтобы «На сборке» почти всегда прогревало этикетку.
       setTimeout(async () => {
         let ok = false;
+        let lastErr = null;
         try {
           const isWB = mp === 'wildberries';
           const isOzon = mp === 'ozon';
           const isYandex = mp === 'yandex';
           const maxAttempts = isWB ? 4 : isOzon ? 3 : isYandex ? 2 : 1;
           const org = normalizeOrgId(organizationId);
+          if (isOzon) {
+            try {
+              await ensureOzonInAwaitingDeliverForLabel(order, { organizationId });
+              // После ship Ozon часто отдаёт PDF не сразу.
+              await new Promise((r) => setTimeout(r, 2500));
+            } catch (e) {
+              lastErr = e;
+              labelLastError.set(filePath, e?.message || String(e));
+              logLabelEvent(
+                `Error(status) ozon ship ${order.orderId}${org ? ` org=${org}` : ''} -> ${e?.message || String(e)}`
+              );
+            }
+          }
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               const out = await fetchMarketplaceLabel(order, { organizationId });
@@ -243,6 +302,7 @@ class OrdersLabelsService {
               }
               return;
             } catch (e) {
+              lastErr = e;
               const status = e?.statusCode;
               labelLastError.set(filePath, e?.message || String(e));
               logLabelEvent(
@@ -252,12 +312,22 @@ class OrdersLabelsService {
               const retryable =
                 status === 409 || status === 429 || (isOzon && (status === 502 || status === 504));
               if (!retryable) return;
+              // При NO_POSTINGS ещё раз доталкиваем ship перед следующей попыткой.
+              if (isOzon && /NO_POSTINGS_FOR_BATCH_DOWNLOAD/i.test(String(e?.message || ''))) {
+                try {
+                  await ensureOzonInAwaitingDeliverForLabel(order, { organizationId });
+                } catch (shipErr) {
+                  logLabelEvent(
+                    `Error(status) ozon re-ship ${order.orderId} -> ${shipErr?.message || String(shipErr)}`
+                  );
+                }
+              }
               const delayMs = isOzon
                 ? attempt === 1
-                  ? 2000
+                  ? 3000
                   : attempt === 2
-                    ? 5000
-                    : 10000
+                    ? 8000
+                    : 15000
                 : attempt === 1
                   ? 5000
                   : attempt === 2
@@ -268,7 +338,12 @@ class OrdersLabelsService {
           }
         } finally {
           backgroundLabelFetches.delete(filePath);
-          if (!ok) backgroundLabelCooldownUntil.set(filePath, Date.now() + BACKGROUND_LABEL_COOLDOWN_MS);
+          if (!ok) {
+            backgroundLabelCooldownUntil.set(
+              filePath,
+              Date.now() + backgroundCooldownMsForError(lastErr)
+            );
+          }
         }
       }, 0);
     }
@@ -311,20 +386,26 @@ class OrdersLabelsService {
     }
     backgroundLabelCooldownUntil.delete(filePath);
 
-    if (mp === 'wildberries' || mp === 'ozon') {
+    if (mp === 'ozon') {
+      try {
+        await ensureOzonInAwaitingDeliverForLabel(order, { organizationId });
+      } catch (e) {
+        labelLastError.set(filePath, `Поставка Ozon: ${e?.message || String(e)}`);
+        logLabelEvent(`Refresh ozon supply ${order.orderId} -> ${e?.message || String(e)}`);
+      }
+    } else if (mp === 'wildberries') {
       try {
         const { default: shipmentsService } = await import('./shipments.service.js');
         const profileId = orderProfileId(order);
         const orgId = organizationId ?? order?.organizationId ?? order?.organization_id ?? null;
-        const code = mp === 'wildberries' ? 'wildberries' : 'ozon';
-        let ship = await shipmentsService.findLocalShipmentContainingOrder(code, order.orderId, {
+        let ship = await shipmentsService.findLocalShipmentContainingOrder('wildberries', order.orderId, {
           profileId,
         });
         if (!ship || ship.closed) {
           const marketplaceWarehouseId =
             order?.deliveryAddress ?? order?.delivery_address ?? null;
           const warehouseId = order?.warehouseId ?? order?.warehouse_id ?? null;
-          const openShip = await shipmentsService.getOrCreateOpenShipment(code, {
+          const openShip = await shipmentsService.getOrCreateOpenShipment('wildberries', {
             profileId,
             organizationId: orgId,
             warehouseId,
@@ -335,24 +416,22 @@ class OrdersLabelsService {
             organizationId: orgId ?? openShip.organizationId ?? null,
           });
           logLabelEvent(
-            `[${mp === 'wildberries' ? 'WB' : 'Ozon'}] refresh: заказ ${order.orderId} в поставку ${ship?.id || openShip.id}`
+            `[WB] refresh: заказ ${order.orderId} в поставку ${ship?.id || openShip.id}`
           );
-        } else if (mp === 'wildberries' && ship.localWbOnly === true) {
+        } else if (ship.localWbOnly === true) {
           await shipmentsService.syncWildberriesShipmentToMarketplace(ship.id, {
             profileId,
             organizationId: orgId ?? ship.organizationId ?? null,
           });
         } else {
-          // Повторный push/ship: для Ozon — awaiting-delivery, для WB — add to supply.
           await shipmentsService.addOrdersToShipment(ship.id, [String(order.orderId)], {
             profileId,
             organizationId: orgId ?? ship.organizationId ?? null,
           });
         }
       } catch (e) {
-        const prefix = mp === 'wildberries' ? 'Поставка WB' : 'Поставка Ozon';
-        labelLastError.set(filePath, `${prefix}: ${e?.message || String(e)}`);
-        logLabelEvent(`Refresh ${mp} supply ${order.orderId} -> ${e?.message || String(e)}`);
+        labelLastError.set(filePath, `Поставка WB: ${e?.message || String(e)}`);
+        logLabelEvent(`Refresh wildberries supply ${order.orderId} -> ${e?.message || String(e)}`);
       }
     }
 
@@ -376,8 +455,15 @@ class OrdersLabelsService {
           mp === 'ozon' &&
           (e?.statusCode === 409 || /NO_POSTINGS_FOR_BATCH_DOWNLOAD/i.test(String(error)));
         if (!retryable || attempt >= maxTries) {
-          backgroundLabelCooldownUntil.set(filePath, Date.now() + BACKGROUND_LABEL_COOLDOWN_MS);
+          backgroundLabelCooldownUntil.set(filePath, Date.now() + backgroundCooldownMsForError(e));
           break;
+        }
+        if (mp === 'ozon' && /NO_POSTINGS_FOR_BATCH_DOWNLOAD/i.test(String(error))) {
+          try {
+            await ensureOzonInAwaitingDeliverForLabel(order, { organizationId });
+          } catch (shipErr) {
+            logLabelEvent(`Refresh ozon re-ship ${order.orderId} -> ${shipErr?.message || String(shipErr)}`);
+          }
         }
         await new Promise((r) => setTimeout(r, attempt === 1 ? 2500 : attempt === 2 ? 5000 : 8000));
       }
