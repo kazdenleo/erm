@@ -908,6 +908,57 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
   }
 }
 
+/** campaignId из числа, строки или «216944994 — Склад». */
+function parseYmCampaignId(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.trunc(raw);
+  const s = String(raw).trim();
+  if (!s) return null;
+  const asNum = Number(s);
+  if (Number.isFinite(asNum) && asNum > 0) return Math.trunc(asNum);
+  const m = s.match(/^(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Найти кампанию, в которой есть заказ (GET v2/campaigns/{id}/orders/{orderId}).
+ * Как fetchYandexOrderDetailRaw: без сужения по campaign_id из интеграции.
+ */
+async function resolveYmOrderCampaignId(apiKey, orderIdNum, campaignIds, agent) {
+  const ids = (campaignIds || []).filter((n) => Number.isFinite(n) && n > 0);
+  for (const campaignId of ids) {
+    try {
+      const url = `https://api.partner.market.yandex.ru/v2/campaigns/${campaignId}/orders/${orderIdNum}`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Api-Key': apiKey,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        ...(agent && { agent })
+      });
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 403) continue;
+        continue;
+      }
+      const data = await response.json();
+      const ymOrder = data?.order ?? data?.result?.order ?? data;
+      const fromBody = parseYmCampaignId(
+        ymOrder?.campaignId ?? ymOrder?.campaign_id ?? ymOrder?.shopId ?? ymOrder?.shop_id
+      );
+      const resolved = fromBody || campaignId;
+      logLabelEvent(`[YM] getOrder нашёл заказ ${orderIdNum} в кампании ${resolved}`);
+      return resolved;
+    } catch (_) {
+      /* пробуем следующую кампанию */
+    }
+  }
+  return null;
+}
+
 /**
  * PDF этикетки Яндекс Маркет (FBS/DBS/Express): GET v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels
  * @see https://yandex.ru/dev/market/partner-api/doc/en/reference/orders/generateOrderLabels
@@ -942,7 +993,10 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
     throw new Error('Некорректный номер заказа Яндекс.Маркета');
   }
 
-  const { orderGroups, campaignIds } = await getYandexBusinessAndCampaigns(ym || {});
+  // Как getOrder: все кампании ключа — иначе узкий campaign_id из настроек даёт ложный 404.
+  const { orderGroups, campaignIds } = await getYandexBusinessAndCampaigns(ym || {}, {
+    skipCampaignNarrowing: true
+  });
   const campaignsFlat = [];
   if (Array.isArray(orderGroups) && orderGroups.length > 0) {
     for (const g of orderGroups) {
@@ -959,17 +1013,8 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
     order.deliveryAddress ??
     order.delivery_address ??
     null;
-  const orderCampaignId = (() => {
-    if (orderCampaignRaw == null || String(orderCampaignRaw).trim() === '') return null;
-    const n = Number(String(orderCampaignRaw).trim());
-    return Number.isFinite(n) && n > 0 ? n : null;
-  })();
-
-  const configuredCampaignIdRaw = ym?.campaign_id ?? ym?.campaignId ?? null;
-  const configuredCampaignId =
-    configuredCampaignIdRaw != null && String(configuredCampaignIdRaw).trim() !== ''
-      ? Number(configuredCampaignIdRaw)
-      : null;
+  const orderCampaignId = parseYmCampaignId(orderCampaignRaw);
+  const configuredCampaignId = parseYmCampaignId(ym?.campaign_id ?? ym?.campaignId ?? null);
 
   const uniqSet = new Set(campaignsFlat.filter((n) => !Number.isNaN(n) && n > 0));
   // Приоритет: кампания заказа → доступные по ключу → (устаревший) campaign_id из интеграции.
@@ -991,11 +1036,21 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
   }
 
   const agent = getYandexHttpsAgent();
+
+  // Сначала находим кампанию через getOrder — labels сразу бьём в нужный partnerId.
+  const resolvedCampaignId = await resolveYmOrderCampaignId(api_key, orderIdNum, unique, agent);
+  if (resolvedCampaignId) {
+    const rest = unique.filter((c) => c !== resolvedCampaignId);
+    unique.length = 0;
+    unique.push(resolvedCampaignId, ...rest);
+  }
+
   /** Близко к 58×40 мм, как стикеры WB */
   const format = 'A9_HORIZONTALLY';
 
   let lastErr = '';
   let saw403 = false;
+  let allTriedWere404 = unique.length > 0;
   for (const campaignId of unique) {
     const bases = [
       `https://api.partner.market.yandex.ru/v2/campaigns/${campaignId}/orders/${orderIdNum}/delivery/labels?format=${encodeURIComponent(format)}`,
@@ -1023,6 +1078,7 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
           return buf;
         }
         lastErr = 'пустой или не-PDF ответ';
+        allTriedWere404 = false;
         continue;
       }
 
@@ -1036,6 +1092,7 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
       if (response.status === 403) {
         // Неверный/устаревший campaign_id в интеграции часто даёт 403 — пробуем следующую кампанию.
         saw403 = true;
+        allTriedWere404 = false;
         tryNextCampaign = true;
         break;
       }
@@ -1043,15 +1100,20 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
         tryNextCampaign = true;
         break;
       }
+      allTriedWere404 = false;
       if (response.status === 400) {
-        // Чаще всего это "кампания не поддерживает генерацию этикеток" (FBY и пр.).
-        // Важно прокинуть 501/понятное сообщение вместо 502.
+        // FBY/FBO и пр.: labels FBS недоступны. Не уходим в «чужую» FBS-кампанию с ложным 404.
         try {
           const parsed = JSON.parse(text);
-          const code = parsed?.errors?.[0]?.code || parsed?.code || '';
-          if (String(code).toUpperCase() === 'CAMPAIGN_TYPE_NOT_SUPPORTED') {
-            tryNextCampaign = true;
-            break;
+          const code = String(parsed?.errors?.[0]?.code || parsed?.code || '').toUpperCase();
+          if (code === 'CAMPAIGN_TYPE_NOT_SUPPORTED') {
+            // Не пробуем следующую FBS-кампанию: она даёт ложный 404 «Order not found».
+            const err = new Error(
+              `Яндекс.Маркет: заказ ${orderIdNum} в кампании ${campaignId} (FBY/FBO или иная модель без FBS-этикеток). ` +
+                `Стикер FBS здесь недоступен — для FBO используйте этикетки в поставке FBO.`
+            );
+            err.statusCode = 400;
+            throw err;
           }
         } catch (e) {
           if (e?.statusCode) throw e;
@@ -1071,11 +1133,19 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
     throw err;
   }
 
-  const err = new Error(
-    `Яндекс.Маркет: этикетка не получена (заказ ${orderIdNum}). ${lastErr || 'Проверьте статус заказа и привязку кампании.'}`
-  );
-  // 404 → этикетки нет; иначе считаем временной недоступностью/условиями Маркета.
-  err.statusCode = String(lastErr || '').trim().startsWith('404:') ? 404 : 409;
+  const is404 = String(lastErr || '').trim().startsWith('404:');
+  let message;
+  if (is404 && allTriedWere404) {
+    message =
+      `Яндекс.Маркет: заказ ${orderIdNum} не найден ни в одной кампании Api-Key ` +
+      `(проверено: ${unique.join(', ') || '—'}). Проверьте наличие заказа в ЛК Маркета и статус; ` +
+      `при нескольких магазинах на одном ключе — что заказ не в другом кабинете. ${lastErr}`;
+  } else {
+    message = `Яндекс.Маркет: этикетка не получена (заказ ${orderIdNum}). ${lastErr || 'Проверьте статус заказа и привязку кампании.'}`;
+  }
+  const err = new Error(message);
+  // 404 → этикетки нет / заказ не в этих кампаниях; иначе временная недоступность.
+  err.statusCode = is404 ? 404 : 409;
   throw err;
 }
 
