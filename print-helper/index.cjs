@@ -37,7 +37,20 @@ const { PDFDocument } = require('pdf-lib');
 
 const PORT = Number(process.env.PRINT_HELPER_PORT) || 9100;
 const app = express();
-app.use(cors());
+// Chrome Private Network Access: HTTPS-сайт → http://127.0.0.1 требует этот заголовок в preflight.
+app.use((req, res, next) => {
+  if (String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true') {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
+  next();
+});
+app.use(
+  cors({
+    origin: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 app.use(
   express.raw({
     type: ['application/pdf', 'application/octet-stream', 'image/png'],

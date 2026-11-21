@@ -315,7 +315,7 @@ function readStoredAssemblySort() {
   return { field: 'name', dir: 'asc' };
 }
 
-/** Части строки состава: название можно сделать ссылкой на карточку товара в ERP */
+/** Части строки состава: название можно сделать ссылкой на карточку товара в MySell */
 function assemblyCompositionParts(item, quantityOverride) {
   const externalId = String(item.offerId ?? item.orderLineId ?? '').trim();
   const name = item.productName || item.product_name || '—';
@@ -794,10 +794,10 @@ export function Assembly() {
     }
 
     let warmedBlob = null;
-    // Print Helper сам качает PDF с сервера — в браузер blob не тянем (skipBrowserWarm / labelAlreadyCached),
-    // кроме HTTPS: тогда POST blob надёжнее, чем GET labelUrl без Authorization.
-    const canSkipBrowserWarm =
-      labelAlreadyCached || (skipBrowserWarm && willUseHelperNavigate);
+    // HTTP (navigate): Print Helper сам качает PDF — warm в браузере можно пропустить.
+    // HTTPS (fetch): всегда прогреваем через api с Bearer и шлём POST blob — иначе Chrome PNA /
+    // labelUrl+access_token часто валятся → ложный fallback с окном печати Windows.
+    const canSkipBrowserWarm = willUseHelperNavigate && (labelAlreadyCached || skipBrowserWarm);
     if (!canSkipBrowserWarm) {
       try {
         let status = 0;
@@ -945,6 +945,17 @@ export function Assembly() {
         labelSize,
         timeoutMs: PRINT_HELPER_FETCH_MS,
       });
+    }
+    // Fetch на 127.0.0.1 с HTTPS иногда режется — top-level navigate часто проходит.
+    if (!printed.ok && willUseHelperFetch) {
+      const nav = printViaPrintHelperNavigation({
+        printHelperUrl: base,
+        kind: 'order',
+        labelUrl: labelUrlForHelper,
+        orderId: id,
+        labelSize,
+      });
+      if (nav.ok) return;
     }
     if (printed.ok) return;
     const msg = printed.message || 'Принтер не ответил';
