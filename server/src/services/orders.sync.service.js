@@ -1091,6 +1091,20 @@ class OrdersSyncService {
         if (ymResult?.errors?.length) {
           results.yandex.errors = ymResult.errors;
         }
+        const fbyIds = ymResult?.fbyCampaignIds || [];
+        if (fbyIds.length > 0) {
+          try {
+            const moved = await removeYandexFbyOrdersFromFbsPipeline(fbyIds, profileId);
+            if (moved > 0) {
+              logger.info(
+                `[Orders Sync] YM FBY: убрано из FBS-очереди ${moved} заказ(ов) (кампании ${fbyIds.join(', ')})`
+              );
+              results.yandex.fbyRemovedFromAssembly = moved;
+            }
+          } catch (e) {
+            logger.warn(`[Orders Sync] YM FBY cleanup: ${e?.message || e}`);
+          }
+        }
       } else {
         ymReason = 'API-ключ Яндекс.Маркета не настроен (Интеграции → Яндекс, активная интеграция)';
         results.yandex.reason = ymReason;
@@ -3215,6 +3229,50 @@ function getYandexCampaignBusinessId(c) {
   return Number.isNaN(n) ? null : n;
 }
 
+/** Тип размещения YM: FBS / FBY / DBS / EXPRESS … */
+function getYandexCampaignPlacementType(c) {
+  return String(c?.type ?? c?.placementType ?? c?.campaignType ?? '')
+    .trim()
+    .toUpperCase();
+}
+
+/** FBY/FBO Маркета — склад МП, в FBS-сборку не импортируем. */
+function isYandexFbyLikeCampaign(c) {
+  const t = getYandexCampaignPlacementType(c);
+  if (!t) return false;
+  return t === 'FBY' || t === 'FBO' || t.includes('FBY') || t.includes('FBO');
+}
+
+/**
+ * Уже попавшие FBY-заказы: уводим из new/in_assembly в in_transit
+ * (исполняет склад Маркета, FBS-сборка не нужна).
+ */
+async function removeYandexFbyOrdersFromFbsPipeline(fbyCampaignIds, profileId = null) {
+  const ids = [...new Set((fbyCampaignIds || []).map((n) => String(n).trim()).filter(Boolean))];
+  if (ids.length === 0) return 0;
+  if (!repositoryFactory.isUsingPostgreSQL()) return 0;
+  const { query } = await import('../config/database.js');
+  const params = [ids];
+  let sql = `
+    UPDATE orders
+    SET status = 'in_transit',
+        updated_at = NOW()
+    WHERE LOWER(TRIM(marketplace::text)) IN ('ym', 'yandex', 'yandexmarket')
+      AND status IN ('new', 'in_assembly', 'wb_assembly', 'in_procurement', 'unknown')
+      AND (
+        TRIM(delivery_address) = ANY($1::text[])
+        OR TRIM(SPLIT_PART(delivery_address, ' ', 1)) = ANY($1::text[])
+        OR TRIM(SPLIT_PART(delivery_address, '—', 1)) = ANY($1::text[])
+        OR TRIM(SPLIT_PART(delivery_address, '-', 1)) = ANY($1::text[])
+      )`;
+  if (profileId != null && String(profileId).trim() !== '') {
+    params.push(Number(profileId));
+    sql += ` AND profile_id = $2`;
+  }
+  const r = await query(sql, params);
+  return Number(r?.rowCount) || 0;
+}
+
 /** Нормализация Api-Key Яндекс.Маркета (пробелы, BOM, переносы) — как в integrations.service */
 function normalizeYandexApiKey(apiKey) {
   if (apiKey == null) return '';
@@ -3319,12 +3377,16 @@ async function getYandexBusinessAndCampaigns(config, options = {}) {
   const campaign_id = config?.campaign_id ?? config?.campaignId;
   const configBusinessId = config?.business_id ?? config?.businessId;
   const skipCampaignNarrowing = options.skipCampaignNarrowing === true;
-  const cacheKey = `${api_key}|${String(campaign_id ?? '')}|${String(configBusinessId ?? '')}|narrow=${skipCampaignNarrowing ? 0 : 1}`;
+  const excludeFbyCampaigns = options.excludeFbyCampaigns === true;
+  const cacheKey = `${api_key}|${String(campaign_id ?? '')}|${String(configBusinessId ?? '')}|narrow=${skipCampaignNarrowing ? 0 : 1}|nofby=${excludeFbyCampaigns ? 1 : 0}`;
   const hit = yandexCampaignsCache.get(cacheKey);
   if (hit && Date.now() - hit.at < YANDEX_CAMPAIGNS_CACHE_MS) {
     return hit.value;
   }
-  const value = await resolveYandexBusinessAndCampaigns(config, { skipCampaignNarrowing });
+  const value = await resolveYandexBusinessAndCampaigns(config, {
+    skipCampaignNarrowing,
+    excludeFbyCampaigns
+  });
   yandexCampaignsCache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
@@ -3334,7 +3396,7 @@ async function resolveYandexBusinessAndCampaigns(config, options = {}) {
   const api_key = normalizeYandexApiKey(rawKey);
   const campaign_id = config?.campaign_id ?? config?.campaignId;
   const configBusinessId = config?.business_id ?? config?.businessId;
-  const out = { businessId: null, campaignIds: [], orderGroups: [] };
+  const out = { businessId: null, campaignIds: [], orderGroups: [], fbyCampaignIds: [] };
 
   const agent = getYandexHttpsAgent();
   logger.info('[YM Orders] Запрос GET v2/campaigns...');
@@ -3423,6 +3485,20 @@ async function resolveYandexBusinessAndCampaigns(config, options = {}) {
 
   out.businessId = businessId;
 
+  const excludeFbyCampaigns = options.excludeFbyCampaigns === true;
+  const fbyCampaignIds = [];
+  for (const c of campaigns) {
+    if (!isYandexFbyLikeCampaign(c)) continue;
+    const cid = getCampaignId(c);
+    if (!Number.isNaN(cid) && cid >= 1) fbyCampaignIds.push(cid);
+  }
+  out.fbyCampaignIds = [...new Set(fbyCampaignIds)];
+  if (excludeFbyCampaigns && out.fbyCampaignIds.length > 0) {
+    logger.info(
+      `[YM Orders] FBY/FBO кампании не импортируем в FBS: ${out.fbyCampaignIds.join(', ')}`
+    );
+  }
+
   // У одного Api-Key может быть несколько businessId (разные договоры/кабинеты). Заказы запрашиваются
   // POST .../v1/businesses/{businessId}/orders — кампании с «чужим» businessId нельзя отбрасывать.
   const bucketByBusiness = new Map();
@@ -3436,6 +3512,7 @@ async function resolveYandexBusinessAndCampaigns(config, options = {}) {
   };
 
   for (const c of campaigns) {
+    if (excludeFbyCampaigns && isYandexFbyLikeCampaign(c)) continue;
     const cid = getCampaignId(c);
     const cb = getYandexCampaignBusinessId(c);
     const bidForRow = cb != null && !Number.isNaN(cb) && cb >= 1 ? cb : businessId;
@@ -3443,7 +3520,14 @@ async function resolveYandexBusinessAndCampaigns(config, options = {}) {
   }
   if (campaign_id != null && String(campaign_id).trim() !== '') {
     const cfg = Number(campaign_id);
-    if (!Number.isNaN(cfg) && cfg >= 1) addCamp(businessId, cfg);
+    const cfgCamp = campaigns.find((c) => getCampaignId(c) === cfg);
+    if (excludeFbyCampaigns && cfgCamp && isYandexFbyLikeCampaign(cfgCamp)) {
+      logger.warn(
+        `[YM Orders] campaign_id=${cfg} в интеграции — FBY/FBO; в FBS-синк не берём. Укажите FBS-кампанию.`
+      );
+    } else if (!Number.isNaN(cfg) && cfg >= 1) {
+      addCamp(businessId, cfg);
+    }
   }
 
   if (bucketByBusiness.size === 0) {
@@ -3643,18 +3727,24 @@ async function fetchYandexFBSOrders(config, options = {}) {
   const skipCampaignNarrowing = options.skipCampaignNarrowing === true;
   try {
     logger.info(
-      `[YM Orders] fetch started (creation ${creationDaysBack}д${updateDaysBack > 0 ? `, update ${updateDaysBack}д` : ''}${skipCampaignNarrowing ? ', все кампании' : ''})`
+      `[YM Orders] fetch started (creation ${creationDaysBack}д${updateDaysBack > 0 ? `, update ${updateDaysBack}д` : ''}${skipCampaignNarrowing ? ', все кампании FBS' : ''})`
     );
     const api_key = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
 
     if (!api_key) {
       logger.info('[YM Orders] No API key configured');
-      return { orders: [], reason: 'No API key' };
+      return { orders: [], reason: 'No API key', fbyCampaignIds: [] };
     }
 
-    const { businessId, campaignIds, orderGroups } = await getYandexBusinessAndCampaigns(config, {
-      skipCampaignNarrowing
-    });
+    // FBS-синк: FBY/FBO по тому же Api-Key не тянем (иначе заказы склада Маркета попадают в сборку).
+    const { businessId, campaignIds, orderGroups, fbyCampaignIds } = await getYandexBusinessAndCampaigns(
+      config,
+      {
+        skipCampaignNarrowing,
+        excludeFbyCampaigns: true
+      }
+    );
+    const fbyIds = Array.isArray(fbyCampaignIds) ? fbyCampaignIds.filter((n) => Number(n) > 0) : [];
     const groups =
       Array.isArray(orderGroups) && orderGroups.length > 0
         ? orderGroups.filter(g => g && g.businessId >= 1 && Array.isArray(g.campaignIds) && g.campaignIds.length > 0)
@@ -3664,7 +3754,7 @@ async function fetchYandexFBSOrders(config, options = {}) {
 
     if (groups.length === 0) {
       logger.info('[YM Orders] Нет пар businessId+campaignIds. Проверьте api_key, business_id и campaign_id в интеграции Яндекс.');
-      return { orders: [], reason: 'businessId/campaigns not found' };
+      return { orders: [], reason: 'businessId/campaigns not found', fbyCampaignIds: fbyIds };
     }
 
     const allOrders = [];
@@ -3722,7 +3812,14 @@ async function fetchYandexFBSOrders(config, options = {}) {
       // ignore
     }
 
-    const mapped = dedupedRaw.flatMap(order => mapYandexBusinessOrderToInternal(order));
+    const fbySet = new Set(fbyIds.map((n) => Number(n)));
+    const mapped = dedupedRaw
+      .filter((order) => {
+        const cid = Number(order?.campaignId ?? order?.campaign_id ?? order?.shopId ?? order?.shop_id);
+        if (fbySet.size > 0 && Number.isFinite(cid) && fbySet.has(cid)) return false;
+        return true;
+      })
+      .flatMap((order) => mapYandexBusinessOrderToInternal(order));
     if (mapped.length > 0) {
       logger.info(`[YM Orders] Загружено заказов: ${mapped.length}`);
     }
@@ -3743,7 +3840,7 @@ async function fetchYandexFBSOrders(config, options = {}) {
       String(configuredCampaignId).trim() !== ''
     ) {
       logger.warn(
-        `[YM Orders] 0 заказов при campaign_id=${configuredCampaignId} — повторный запрос по всем кампаниям ключа`
+        `[YM Orders] 0 заказов при campaign_id=${configuredCampaignId} — повторный запрос по остальным FBS-кампаниям ключа (без FBY)`
       );
       return fetchYandexFBSOrders(config, {
         ...options,
@@ -3752,13 +3849,18 @@ async function fetchYandexFBSOrders(config, options = {}) {
       });
     }
 
-    return { orders: mapped, reason, errors: fetchErrors.length ? fetchErrors : undefined };
+    return {
+      orders: mapped,
+      reason,
+      errors: fetchErrors.length ? fetchErrors : undefined,
+      fbyCampaignIds: fbyIds
+    };
   } catch (error) {
     logger.error('[YM Orders] Fetch error:', error.message);
     const reason = error.message && /request to .* failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network/i.test(error.message)
       ? `Сеть: ${error.message}. Проверьте доступность api.partner.market.yandex.ru с сервера (firewall, VPN). При работе через прокси задайте HTTPS_PROXY.`
       : `Error: ${error.message}`;
-    return { orders: [], reason };
+    return { orders: [], reason, fbyCampaignIds: [] };
   }
 }
 
