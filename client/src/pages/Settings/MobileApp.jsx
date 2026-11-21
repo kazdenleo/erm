@@ -130,7 +130,7 @@ export function MobileApp() {
     <div className="page settings-mobile-app">
       <h1 className="title">Приложение</h1>
       <p className="subtitle">
-        Мобильное приложение «ERM Склад» для сборки и приёмки. Отсканируйте QR-код камерой телефона, чтобы
+        Мобильное приложение «MySell Склад» для сборки и приёмки. Отсканируйте QR-код камерой телефона, чтобы
         скачать последнюю версию.
       </p>
 
@@ -146,10 +146,10 @@ export function MobileApp() {
       {!loading && info?.available ? (
         <div className="settings-mobile-card">
           <div className="settings-mobile-qr-wrap">
-            <img className="settings-mobile-qr" src={qrSrc} alt="QR-код для скачивания ERM Склад" />
+            <img className="settings-mobile-qr" src={qrSrc} alt="QR-код для скачивания MySell Склад" />
           </div>
           <div className="settings-mobile-meta">
-            <div className="settings-mobile-name">{info.name || 'ERM Склад'}</div>
+            <div className="settings-mobile-name">{info.name || 'MySell Склад'}</div>
             {versionLabel ? (
               <div className="settings-mobile-row">
                 <span className="settings-mobile-label">Версия</span>

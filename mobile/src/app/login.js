@@ -41,7 +41,7 @@ function LoginForm({ initialServer }) {
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={styles.header}>
-            <Text style={styles.title}>ERM Склад</Text>
+            <Text style={styles.title}>MySell Склад</Text>
             <Text style={styles.subtitle}>Сборка заказов и приёмка товара</Text>
           </View>
 

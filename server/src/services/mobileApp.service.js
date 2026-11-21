@@ -71,7 +71,7 @@ export function getReleaseInfo(req) {
   }
   return {
     available,
-    name: 'ERM Склад',
+    name: 'MySell Склад',
     version: meta.version != null ? String(meta.version) : null,
     versionCode: meta.versionCode != null ? Number(meta.versionCode) : null,
     updatedAt: meta.updatedAt || null,

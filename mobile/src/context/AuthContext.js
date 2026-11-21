@@ -42,7 +42,7 @@ export function AuthProvider({ children }) {
   const loadSession = useCallback(async (preferredOrgId) => {
     const me = await authApi.me();
     if (me?.mustChangePassword) {
-      throw new ApiError('Сначала смените временный пароль в веб-версии ERP.', 403, 'MUST_CHANGE_PASSWORD');
+      throw new ApiError('Сначала смените временный пароль в веб-версии MySell.', 403, 'MUST_CHANGE_PASSWORD');
     }
     const pid = profileIdOf(me);
     configureApi({ accountId: pid, organizationId: null });

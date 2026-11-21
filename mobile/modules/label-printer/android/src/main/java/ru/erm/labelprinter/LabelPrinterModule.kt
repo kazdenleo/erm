@@ -293,7 +293,7 @@ class LabelPrinterModule : Module() {
     paint.style = Paint.Style.FILL
     paint.typeface = Typeface.DEFAULT_BOLD
     paint.textSize = h * 0.15f
-    canvas.drawText("ERM Склад", m + 14f, m + h * 0.22f, paint)
+    canvas.drawText("MySell Склад", m + 14f, m + h * 0.22f, paint)
     paint.typeface = Typeface.DEFAULT
     paint.textSize = h * 0.09f
     canvas.drawText("Тест ${formatMm(o.widthMm)}×${formatMm(o.heightMm)} мм", m + 14f, m + h * 0.38f, paint)

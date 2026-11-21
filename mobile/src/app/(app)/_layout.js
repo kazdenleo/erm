@@ -12,7 +12,7 @@ export default function AppLayout() {
         headerBackTitle: 'Назад',
       }}
     >
-      <Stack.Screen name="index" options={{ title: 'ERM Склад' }} />
+      <Stack.Screen name="index" options={{ title: 'MySell Склад' }} />
       <Stack.Screen name="assembly" options={{ title: 'Сборка заказов' }} />
       <Stack.Screen name="send-to-assembly" options={{ title: 'Новые заказы' }} />
       <Stack.Screen name="receipt/index" options={{ title: 'Приёмка' }} />

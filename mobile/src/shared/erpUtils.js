@@ -1,4 +1,4 @@
-// Общие чистые функции веб-клиента ERP (подключены через watchFolders в metro.config.js).
+// Общие чистые функции веб-клиента MySell (подключены через watchFolders в metro.config.js).
 export {
   applyAssemblyBarcodeScan,
   applyAssemblyPickScan,

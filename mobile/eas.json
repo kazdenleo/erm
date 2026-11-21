@@ -11,13 +11,13 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://dttrade.ru"
+        "EXPO_PUBLIC_API_URL": "https://mysell.su"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://dttrade.ru"
+        "EXPO_PUBLIC_API_URL": "https://mysell.su"
       }
     }
   },
