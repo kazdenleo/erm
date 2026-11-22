@@ -237,100 +237,144 @@ function looksLikeWbSrid(value) {
   return /[._]/.test(s);
 }
 
+/** Ядро srid для нечёткого матча: `ebZ.i63b8….0.0` → `63b8…`, `ex.d198….2.0` → `d198…`. */
+function wbSridCore(srid) {
+  const s = String(srid ?? '').trim();
+  if (!s) return '';
+  const parts = s.split('.').filter(Boolean);
+  if (parts.length >= 2) {
+    const mid = String(parts[1] || '').replace(/^[ri]/i, '');
+    if (/^[a-f0-9]{16,}$/i.test(mid) || /^\d{10,}$/.test(mid)) return mid;
+  }
+  const underscored = s.match(/^[A-Za-z0-9]+_(\d+)(?:\.\d+)*$/);
+  if (underscored) return underscored[1];
+  return s;
+}
+
+function pickNumericOrderId(rows, sridKey) {
+  for (const r of rows || []) {
+    const oid = r?.order_id != null ? String(r.order_id).trim() : '';
+    if (oid && /^\d+$/.test(oid) && oid !== sridKey) return oid;
+    const assembly =
+      r?.assembly_id != null
+        ? String(r.assembly_id).trim()
+        : r?.raw_assembly != null
+          ? String(r.raw_assembly).trim()
+          : '';
+    if (assembly && /^\d+$/.test(assembly) && assembly !== '0') return assembly;
+  }
+  for (const r of rows || []) {
+    const oid = r?.order_id != null ? String(r.order_id).trim() : '';
+    if (oid && oid !== sridKey && !looksLikeWbSrid(oid)) return oid;
+  }
+  return null;
+}
+
+async function resolveWbOrderIdFromOrdersTable(profileId, hint = {}) {
+  const nmId = hint?.nmId != null ? String(hint.nmId).trim() : '';
+  const orderDt = hint?.orderDt ? new Date(hint.orderDt) : null;
+  if (!nmId || !orderDt || Number.isNaN(orderDt.getTime())) return null;
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return null;
+  const priceHint = hint?.price != null && Number.isFinite(Number(hint.price)) ? Number(hint.price) : null;
+
+  try {
+    const byNm = await query(
+      `SELECT order_id, created_at, price
+       FROM orders
+       WHERE profile_id = $1
+         AND marketplace IN ('wb', 'wildberries')
+         AND (
+           marketplace_sku::text = $2
+           OR offer_id = $2
+         )
+         AND created_at IS NOT NULL
+         AND created_at BETWEEN ($3::timestamptz - INTERVAL '14 days')
+                            AND ($3::timestamptz + INTERVAL '14 days')
+         AND order_id IS NOT NULL
+         AND TRIM(order_id) <> ''
+         AND order_id ~ '^[0-9]+$'
+       ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamptz))) ASC
+       LIMIT 25`,
+      [pid, nmId, orderDt.toISOString()]
+    );
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const r of byNm.rows || []) {
+      const oid = r?.order_id != null ? String(r.order_id).trim() : '';
+      if (!oid || !/^\d+$/.test(oid)) continue;
+      const created = r.created_at ? new Date(r.created_at) : null;
+      if (!created || Number.isNaN(created.getTime())) continue;
+      const days = Math.abs(created.getTime() - orderDt.getTime()) / 86400000;
+      const p = r.price != null ? Number(r.price) : NaN;
+      let pricePenalty = 0;
+      if (priceHint != null && priceHint > 0 && Number.isFinite(p) && p > 0) {
+        const rel = Math.abs(p - priceHint) / priceHint;
+        if (rel > 0.3) continue;
+        pricePenalty = rel * 8;
+      }
+      const score = days + pricePenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        best = oid;
+      }
+    }
+    return best;
+  } catch (e) {
+    logger.warn('[ReturnClaims] WB srid→order resolve orders failed', { error: e?.message });
+    return null;
+  }
+}
+
 /**
  * По srid из заявки на возврат найти человекочитаемый номер заказа (assembly_id / gNumber),
- * который уже есть в финансовых отчётах FBS/FBO.
+ * который уже есть в финансовых отчётах FBS/FBO или в orders.
  */
 async function resolveWbDisplayOrderIdBySrid(profileId, srid, hint = {}) {
   const key = String(srid ?? '').trim();
   if (!key || !profileId) return null;
   const pid = Number(profileId);
   if (!Number.isFinite(pid) || pid < 1) return null;
+  const core = wbSridCore(key);
 
-  const pick = (rows) => {
-    for (const r of rows || []) {
-      const oid = r?.order_id != null ? String(r.order_id).trim() : '';
-      if (oid && oid !== key && !looksLikeWbSrid(oid)) return oid;
-      if (oid && oid !== key) return oid;
-    }
-    return null;
-  };
+  const reportSql = (table) => `
+    SELECT order_id,
+           NULLIF(raw_json->>'assembly_id', '') AS raw_assembly,
+           operation_date,
+           id
+     FROM ${table}
+     WHERE profile_id = $1
+       AND LOWER(marketplace) IN ('wb', 'wildberries')
+       AND (
+         posting_number = $2
+         OR raw_json->>'srid' = $2
+         OR raw_json->>'rid' = $2
+         OR ($3 <> '' AND (
+           raw_json->>'order_uid' = $3
+           OR posting_number LIKE '%' || $3 || '%'
+           OR raw_json->>'srid' LIKE '%' || $3 || '%'
+         ))
+       )
+     ORDER BY operation_date DESC NULLS LAST, id DESC
+     LIMIT 10`;
 
   try {
-    const fbs = await query(
-      `SELECT order_id
-       FROM marketplace_fbs_report_lines
-       WHERE profile_id = $1
-         AND LOWER(marketplace) IN ('wb', 'wildberries')
-         AND (
-           posting_number = $2
-           OR raw_json->>'srid' = $2
-           OR raw_json->>'rid' = $2
-         )
-         AND order_id IS NOT NULL
-         AND TRIM(order_id) <> ''
-       ORDER BY operation_date DESC NULLS LAST, id DESC
-       LIMIT 5`,
-      [pid, key]
-    );
-    const fromFbs = pick(fbs.rows);
+    const fbs = await query(reportSql('marketplace_fbs_report_lines'), [pid, key, core]);
+    const fromFbs = pickNumericOrderId(fbs.rows, key);
     if (fromFbs) return fromFbs;
   } catch (e) {
     logger.warn('[ReturnClaims] WB srid→order resolve FBS failed', { error: e?.message });
   }
 
   try {
-    const fbo = await query(
-      `SELECT order_id
-       FROM marketplace_fbo_report_lines
-       WHERE profile_id = $1
-         AND LOWER(marketplace) IN ('wb', 'wildberries')
-         AND (
-           posting_number = $2
-           OR raw_json->>'srid' = $2
-           OR raw_json->>'rid' = $2
-         )
-         AND order_id IS NOT NULL
-         AND TRIM(order_id) <> ''
-       ORDER BY operation_date DESC NULLS LAST, id DESC
-       LIMIT 5`,
-      [pid, key]
-    );
-    const fromFbo = pick(fbo.rows);
+    const fbo = await query(reportSql('marketplace_fbo_report_lines'), [pid, key, core]);
+    const fromFbo = pickNumericOrderId(fbo.rows, key);
     if (fromFbo) return fromFbo;
   } catch (e) {
     logger.warn('[ReturnClaims] WB srid→order resolve FBO failed', { error: e?.message });
   }
 
-  // Запасной путь: nmId + дата заказа ≈ orders (номер сборочного задания).
-  const nmId = hint?.nmId != null ? String(hint.nmId).trim() : '';
-  const orderDt = hint?.orderDt ? new Date(hint.orderDt) : null;
-  if (nmId && orderDt && !Number.isNaN(orderDt.getTime())) {
-    try {
-      const byNm = await query(
-        `SELECT order_id
-         FROM orders
-         WHERE profile_id = $1
-           AND marketplace IN ('wb', 'wildberries')
-           AND (
-             marketplace_sku::text = $2
-             OR offer_id = $2
-           )
-           AND created_at IS NOT NULL
-           AND created_at BETWEEN ($3::timestamptz - INTERVAL '2 days')
-                              AND ($3::timestamptz + INTERVAL '2 days')
-         ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamptz))) ASC
-         LIMIT 1`,
-        [pid, nmId, orderDt.toISOString()]
-      );
-      const oid = byNm.rows[0]?.order_id != null ? String(byNm.rows[0].order_id).trim() : '';
-      if (oid && !looksLikeWbSrid(oid)) return oid;
-    } catch (e) {
-      logger.warn('[ReturnClaims] WB srid→order resolve orders failed', { error: e?.message });
-    }
-  }
-
-  return null;
+  return resolveWbOrderIdFromOrdersTable(pid, hint);
 }
 
 async function resolveWbDisplayOrderIdsBatch(profileId, srids) {
@@ -339,44 +383,54 @@ async function resolveWbDisplayOrderIdsBatch(profileId, srids) {
   if (!keys.length || !profileId) return map;
   const pid = Number(profileId);
   if (!Number.isFinite(pid) || pid < 1) return map;
+  const cores = keys.map(wbSridCore).filter(Boolean);
 
   const absorb = (rows) => {
     for (const r of rows || []) {
       const srid = String(r.srid || '').trim();
-      const oid = r?.order_id != null ? String(r.order_id).trim() : '';
-      if (!srid || !oid || oid === srid || map.has(srid)) continue;
+      if (!srid || map.has(srid)) continue;
+      const oid = pickNumericOrderId([r], srid);
+      if (!oid) continue;
       map.set(srid, oid);
     }
   };
 
+  const batchSql = (table) => `
+    SELECT DISTINCT ON (srid) srid, order_id, raw_assembly
+    FROM (
+      SELECT
+        COALESCE(
+          NULLIF(TRIM(raw_json->>'srid'), ''),
+          NULLIF(TRIM(posting_number), ''),
+          NULLIF(TRIM(raw_json->>'rid'), '')
+        ) AS srid,
+        order_id,
+        NULLIF(raw_json->>'assembly_id', '') AS raw_assembly,
+        operation_date,
+        id
+      FROM ${table}
+      WHERE profile_id = $1
+        AND LOWER(marketplace) IN ('wb', 'wildberries')
+        AND (
+          posting_number = ANY($2::text[])
+          OR raw_json->>'srid' = ANY($2::text[])
+          OR raw_json->>'rid' = ANY($2::text[])
+          OR (
+            CARDINALITY($3::text[]) > 0
+            AND (
+              raw_json->>'order_uid' = ANY($3::text[])
+              OR posting_number LIKE ANY(
+                SELECT '%' || c || '%' FROM unnest($3::text[]) AS c
+              )
+            )
+          )
+        )
+    ) t
+    WHERE srid IS NOT NULL AND TRIM(srid) <> ''
+    ORDER BY srid, operation_date DESC NULLS LAST, id DESC`;
+
   try {
-    const fbs = await query(
-      `SELECT DISTINCT ON (srid) srid, order_id
-       FROM (
-         SELECT
-           COALESCE(
-             NULLIF(TRIM(posting_number), ''),
-             NULLIF(TRIM(raw_json->>'srid'), ''),
-             NULLIF(TRIM(raw_json->>'rid'), '')
-           ) AS srid,
-           order_id,
-           operation_date,
-           id
-         FROM marketplace_fbs_report_lines
-         WHERE profile_id = $1
-           AND LOWER(marketplace) IN ('wb', 'wildberries')
-           AND order_id IS NOT NULL
-           AND TRIM(order_id) <> ''
-           AND (
-             posting_number = ANY($2::text[])
-             OR raw_json->>'srid' = ANY($2::text[])
-             OR raw_json->>'rid' = ANY($2::text[])
-           )
-       ) t
-       WHERE srid IS NOT NULL AND TRIM(srid) <> '' AND TRIM(order_id) <> TRIM(srid)
-       ORDER BY srid, operation_date DESC NULLS LAST, id DESC`,
-      [pid, keys]
-    );
+    const fbs = await query(batchSql('marketplace_fbs_report_lines'), [pid, keys, cores]);
     absorb(fbs.rows);
   } catch (e) {
     logger.warn('[ReturnClaims] WB srid batch FBS failed', { error: e?.message });
@@ -385,33 +439,8 @@ async function resolveWbDisplayOrderIdsBatch(profileId, srids) {
   const missing = keys.filter((k) => !map.has(k));
   if (missing.length) {
     try {
-      const fbo = await query(
-        `SELECT DISTINCT ON (srid) srid, order_id
-         FROM (
-           SELECT
-             COALESCE(
-               NULLIF(TRIM(posting_number), ''),
-               NULLIF(TRIM(raw_json->>'srid'), ''),
-               NULLIF(TRIM(raw_json->>'rid'), '')
-             ) AS srid,
-             order_id,
-             operation_date,
-             id
-           FROM marketplace_fbo_report_lines
-           WHERE profile_id = $1
-             AND LOWER(marketplace) IN ('wb', 'wildberries')
-             AND order_id IS NOT NULL
-             AND TRIM(order_id) <> ''
-             AND (
-               posting_number = ANY($2::text[])
-               OR raw_json->>'srid' = ANY($2::text[])
-               OR raw_json->>'rid' = ANY($2::text[])
-             )
-         ) t
-         WHERE srid IS NOT NULL AND TRIM(srid) <> '' AND TRIM(order_id) <> TRIM(srid)
-         ORDER BY srid, operation_date DESC NULLS LAST, id DESC`,
-        [pid, missing]
-      );
+      const missingCores = missing.map(wbSridCore).filter(Boolean);
+      const fbo = await query(batchSql('marketplace_fbo_report_lines'), [pid, missing, missingCores]);
       absorb(fbo.rows);
     } catch (e) {
       logger.warn('[ReturnClaims] WB srid batch FBO failed', { error: e?.message });
@@ -428,7 +457,10 @@ async function enrichMappedWbClaimOrderId(mapped, profileId) {
       : looksLikeWbSrid(mapped.order_id)
         ? String(mapped.order_id)
         : null;
-  if (!srid) return mapped;
+  if (!srid) {
+    if (looksLikeWbSrid(mapped.order_id)) mapped.order_id = null;
+    return mapped;
+  }
   if (mapped.order_id && !looksLikeWbSrid(mapped.order_id)) {
     mapped.meta = { ...(mapped.meta || {}), srid, resolvedOrderId: String(mapped.order_id) };
     return mapped;
@@ -436,13 +468,15 @@ async function enrichMappedWbClaimOrderId(mapped, profileId) {
   const resolved = await resolveWbDisplayOrderIdBySrid(profileId, srid, {
     nmId: mapped.meta?.nmId ?? mapped.sku_or_offer,
     orderDt: mapped.meta?.orderDt,
+    price: mapped.price,
   });
   mapped.meta = { ...(mapped.meta || {}), srid };
   if (resolved) {
     mapped.order_id = resolved;
     mapped.meta.resolvedOrderId = resolved;
-  } else if (looksLikeWbSrid(mapped.order_id)) {
-    mapped.order_id = srid;
+  } else {
+    // Не показываем служебный srid как «номер заказа».
+    mapped.order_id = null;
   }
   return mapped;
 }
@@ -456,12 +490,12 @@ async function enrichApiWbClaimsOrderIds(profileId, apiRows) {
     const srid = row?.meta?.srid != null ? String(row.meta.srid) : null;
     const oid = row?.orderId != null ? String(row.orderId) : null;
     if (oid && !looksLikeWbSrid(oid)) continue;
-    if (srid && looksLikeWbSrid(oid || srid)) need.push(srid);
+    if (srid) need.push(srid);
     else if (looksLikeWbSrid(oid)) need.push(oid);
   }
-  if (!need.length) return rows;
-  const resolvedMap = await resolveWbDisplayOrderIdsBatch(profileId, need);
+  const resolvedMap = need.length ? await resolveWbDisplayOrderIdsBatch(profileId, need) : new Map();
   const out = [];
+  const persist = [];
   for (const row of rows) {
     if (String(row?.marketplace || '').toLowerCase() !== 'wildberries') {
       out.push(row);
@@ -473,8 +507,12 @@ async function enrichApiWbClaimsOrderIds(profileId, apiRows) {
         : looksLikeWbSrid(row?.orderId)
           ? String(row.orderId)
           : null;
-    if (!srid || (row.orderId && !looksLikeWbSrid(row.orderId))) {
+    if (row.orderId && !looksLikeWbSrid(row.orderId)) {
       out.push(row);
+      continue;
+    }
+    if (!srid) {
+      out.push({ ...row, orderId: looksLikeWbSrid(row.orderId) ? null : row.orderId });
       continue;
     }
     let resolved = resolvedMap.get(srid) || null;
@@ -482,17 +520,30 @@ async function enrichApiWbClaimsOrderIds(profileId, apiRows) {
       resolved = await resolveWbDisplayOrderIdBySrid(profileId, srid, {
         nmId: row.meta?.nmId ?? row.skuOrOffer,
         orderDt: row.meta?.orderDt,
+        price: row.price,
       });
     }
-    if (!resolved) {
-      out.push(row);
-      continue;
+    if (resolved) {
+      if (row.id) persist.push({ id: row.id, orderId: resolved, srid });
+      out.push({
+        ...row,
+        orderId: resolved,
+        meta: { ...(row.meta || {}), srid, resolvedOrderId: resolved },
+      });
+    } else {
+      out.push({
+        ...row,
+        orderId: null,
+        meta: { ...(row.meta || {}), srid },
+      });
     }
-    out.push({
-      ...row,
-      orderId: resolved,
-      meta: { ...(row.meta || {}), srid, resolvedOrderId: resolved },
-    });
+  }
+  if (persist.length) {
+    try {
+      await marketplaceReturnClaimsRepo.persistResolvedWbOrderIds(profileId, persist);
+    } catch (e) {
+      logger.warn('[ReturnClaims] persist resolved WB order ids failed', { error: e?.message });
+    }
   }
   return out;
 }
@@ -518,8 +569,12 @@ function mapWbClaim(claim, profileId, scopeMeta = {}) {
     (claim.status_ex != null ? String(claim.status_ex) : claim.status != null ? String(claim.status) : null);
   const srid = claim.srid != null ? String(claim.srid) : null;
   // В API заявок WB нет номера сборочного задания — только srid. Резолвим отдельно.
-  const explicitOrderId =
+  const explicitRaw =
     claim.order_id ?? claim.orderId ?? claim.assembly_id ?? claim.assemblyId ?? null;
+  const explicitOrderId =
+    explicitRaw != null && String(explicitRaw).trim() !== '' && !looksLikeWbSrid(explicitRaw)
+      ? String(explicitRaw).trim()
+      : null;
   return {
     profile_id: profileId,
     marketplace: 'wildberries',
@@ -531,7 +586,7 @@ function mapWbClaim(claim, profileId, scopeMeta = {}) {
     reason: claim.origin_id_info ?? null,
     product_name: claim.imt_name ?? claim.imtName ?? null,
     sku_or_offer: claim.nm_id != null ? String(claim.nm_id) : null,
-    order_id: explicitOrderId != null ? String(explicitOrderId) : srid,
+    order_id: explicitOrderId,
     price: claim.price != null ? Number(claim.price) : null,
     currency: claim.currency_code != null ? String(claim.currency_code) : null,
     photos,

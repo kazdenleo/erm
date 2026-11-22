@@ -118,17 +118,16 @@ class MarketplaceReturnClaimsRepositoryPG {
         reason = EXCLUDED.reason,
         product_name = EXCLUDED.product_name,
         sku_or_offer = EXCLUDED.sku_or_offer,
-        -- Не затираем уже резолвнутый номер заказа служебным srid (ex./obr./…).
+        -- Числовой номер заказа приоритетнее; srid/пустое не затирают уже резолвнутый номер.
         order_id = CASE
-          WHEN EXCLUDED.order_id IS NULL OR TRIM(EXCLUDED.order_id) = '' THEN marketplace_return_claims.order_id
-          WHEN marketplace_return_claims.order_id IS NOT NULL
-            AND TRIM(marketplace_return_claims.order_id) <> ''
-            AND marketplace_return_claims.order_id !~ '^[0-9]+$'
+          WHEN EXCLUDED.order_id IS NOT NULL
+            AND TRIM(EXCLUDED.order_id) <> ''
             AND EXCLUDED.order_id ~ '^[0-9]+$' THEN EXCLUDED.order_id
           WHEN marketplace_return_claims.order_id IS NOT NULL
             AND TRIM(marketplace_return_claims.order_id) <> ''
-            AND marketplace_return_claims.order_id ~ '^[0-9]+$'
-            AND EXCLUDED.order_id !~ '^[0-9]+$' THEN marketplace_return_claims.order_id
+            AND marketplace_return_claims.order_id ~ '^[0-9]+$' THEN marketplace_return_claims.order_id
+          WHEN EXCLUDED.order_id IS NULL OR TRIM(EXCLUDED.order_id) = '' THEN NULL
+          WHEN EXCLUDED.order_id ~ '[._]' THEN NULL
           ELSE EXCLUDED.order_id
         END,
         price = EXCLUDED.price,
@@ -171,6 +170,49 @@ class MarketplaceReturnClaimsRepositoryPG {
       ]
     );
     return rowToApi(result.rows[0]);
+  }
+
+  /**
+   * Сохранить резолвнутые номера заказов WB (после матча srid → assembly id).
+   * @param {number|string} profileId
+   * @param {Array<{ id: number|string, orderId: string, srid?: string }>} items
+   */
+  async persistResolvedWbOrderIds(profileId, items = []) {
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+    const rows = (items || [])
+      .map((x) => ({
+        id: Number(x?.id),
+        orderId: x?.orderId != null ? String(x.orderId).trim() : '',
+        srid: x?.srid != null ? String(x.srid).trim() : '',
+      }))
+      .filter((x) => Number.isFinite(x.id) && x.id > 0 && /^\d+$/.test(x.orderId));
+    if (!rows.length) return 0;
+    let updated = 0;
+    for (const row of rows) {
+      const metaPatch = row.srid
+        ? { srid: row.srid, resolvedOrderId: row.orderId }
+        : { resolvedOrderId: row.orderId };
+      const result = await query(
+        `UPDATE marketplace_return_claims SET
+           order_id = $3,
+           meta = COALESCE(meta, '{}'::jsonb) || $4::jsonb,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+           AND profile_id = $2
+           AND marketplace = 'wildberries'
+           AND (
+             order_id IS NULL
+             OR TRIM(order_id) = ''
+             OR order_id !~ '^[0-9]+$'
+             OR order_id <> $3
+           )
+         RETURNING id`,
+        [row.id, pid, row.orderId, JSON.stringify(metaPatch)]
+      );
+      updated += (result.rows || []).length;
+    }
+    return updated;
   }
 
   async markDecided(id, profileId, { status, sellerComment, availableActions } = {}) {
