@@ -9,6 +9,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { decryptConfigSecrets } from '../utils/secretsCrypto.js';
 import logger from '../utils/logger.js';
 
 /** FBS/FBO заявки, по которым продавец должен ответить в кабинете Ozon. */
@@ -81,6 +82,20 @@ const YM_REASON_LABELS = {
 
 async function getClaimsMarketplaceConfig(type, profileId) {
   return integrationsService.getMarketplaceConfig(type, { profileId, organizationId: null });
+}
+
+/** Config из сырого SQL по marketplace_cabinets — обязательно расшифровать secrets. */
+function parseCabinetConfig(raw) {
+  let parsed = raw;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  return decryptConfigSecrets(parsed);
 }
 
 function normalizeMarketplaceFilter(mp) {
@@ -557,14 +572,7 @@ async function listWbClaimScopes(profileId) {
   const out = [];
   const seen = new Set();
   for (const row of result.rows || []) {
-    let parsed = row.config;
-    if (typeof parsed === 'string') {
-      try {
-        parsed = JSON.parse(parsed);
-      } catch {
-        parsed = null;
-      }
-    }
+    const parsed = parseCabinetConfig(row.config);
     const rawKey = parsed?.api_key ?? parsed?.apiKey ?? parsed?.token;
     const apiKey = integrationsService._normalizeWbToken(rawKey);
     if (!apiKey) continue;
@@ -971,14 +979,7 @@ async function listOzonClaimScopes(profileId) {
   const out = [];
   const seen = new Set();
   for (const row of result.rows || []) {
-    let parsed = row.config;
-    if (typeof parsed === 'string') {
-      try {
-        parsed = JSON.parse(parsed);
-      } catch {
-        parsed = null;
-      }
-    }
+    const parsed = parseCabinetConfig(row.config);
     const client_id = parsed?.client_id ?? parsed?.clientId;
     const api_key = parsed?.api_key ?? parsed?.apiKey;
     if (!client_id || !api_key) continue;
