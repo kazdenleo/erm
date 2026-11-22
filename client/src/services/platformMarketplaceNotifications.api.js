@@ -15,6 +15,11 @@ export const platformMarketplaceNotificationsApi = {
     return response.data;
   },
 
+  async testTelegram(data) {
+    const response = await api.post('/platform/marketplace-notifications/telegram/test', data || {});
+    return response.data;
+  },
+
   async listEvents({ limit = 50, offset = 0 } = {}) {
     const response = await api.get('/platform/marketplace-notifications/events', {
       params: { limit, offset },

@@ -175,8 +175,9 @@ export const authController = {
       const { newAccountTrialFields } = await import('../utils/profileSubscription.js');
       const trial = newAccountTrialFields();
 
+      let createdProfileId = null;
       try {
-        await transaction(async (client) => {
+        createdProfileId = await transaction(async (client) => {
           const pr = await client.query(
             `INSERT INTO profiles (
                name, contact_full_name, contact_email, contact_phone, tariff,
@@ -219,7 +220,7 @@ export const authController = {
               pid,
             ]
           );
-          return { profileId: pid };
+          return pid;
         });
       } catch (e) {
         if (e.code === '23505') {
@@ -234,6 +235,20 @@ export const authController = {
         }
         throw e;
       }
+
+      setImmediate(() => {
+        import('../services/telegramNotify.service.js')
+          .then((mod) =>
+            mod.notifyPlatformPublicSignup({
+              accountName: name,
+              fullName: fn,
+              phone: phoneFields.phone,
+              email: emailParsed.value,
+              profileId: createdProfileId,
+            })
+          )
+          .catch((err) => logger?.warn?.('[Telegram] signup notify:', err?.message || err));
+      });
 
       res.status(201).json({
         ok: true,

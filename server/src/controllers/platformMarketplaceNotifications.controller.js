@@ -14,6 +14,11 @@ import {
   normalizeOzonMessageType,
 } from '../utils/ozonPushWebhook.js';
 import logger from '../utils/logger.js';
+import {
+  parsePlatformTelegram,
+  platformTelegramForClient,
+  resolvePlatformTelegramSendTarget,
+} from '../utils/platformTelegramSettings.js';
 
 const ALLOWED_SOURCES = new Set(['ozon', 'wildberries', 'yandex', 'unknown']);
 const OZON_HOOK_PATH = '/api/hooks/ozon';
@@ -72,29 +77,56 @@ function defaultSecretsShape() {
     ozon: { webhookSecret: '', clientId: '', comment: '' },
     wildberries: { token: '', comment: '' },
     yandex: { webhookSecret: '', comment: '' },
+    telegram: parsePlatformTelegram(null, null),
   };
 }
 
-function mergeSecrets(incoming) {
+function mergeSecrets(incoming, previous = null) {
   const base = defaultSecretsShape();
-  if (!incoming || typeof incoming !== 'object') return base;
-  return {
+  const prev = previous && typeof previous === 'object' ? previous : {};
+  const src = incoming && typeof incoming === 'object' ? incoming : {};
+  const merged = {
     ...base,
-    ...incoming,
-    ozon: { ...base.ozon, ...(typeof incoming.ozon === 'object' ? incoming.ozon : {}) },
-    wildberries: { ...base.wildberries, ...(typeof incoming.wildberries === 'object' ? incoming.wildberries : {}) },
-    yandex: { ...base.yandex, ...(typeof incoming.yandex === 'object' ? incoming.yandex : {}) },
+    ...prev,
+    ...src,
+    ozon: {
+      ...base.ozon,
+      ...(typeof prev.ozon === 'object' ? prev.ozon : {}),
+      ...(typeof src.ozon === 'object' ? src.ozon : {}),
+    },
+    wildberries: {
+      ...base.wildberries,
+      ...(typeof prev.wildberries === 'object' ? prev.wildberries : {}),
+      ...(typeof src.wildberries === 'object' ? src.wildberries : {}),
+    },
+    yandex: {
+      ...base.yandex,
+      ...(typeof prev.yandex === 'object' ? prev.yandex : {}),
+      ...(typeof src.yandex === 'object' ? src.yandex : {}),
+    },
+    telegram: parsePlatformTelegram(
+      src.telegram !== undefined ? src.telegram : prev.telegram,
+      parsePlatformTelegram(prev.telegram, null)
+    ),
+  };
+  return merged;
+}
+
+function secretsForClient(secrets) {
+  const merged = mergeSecrets(secrets);
+  return {
+    ...merged,
+    telegram: platformTelegramForClient(merged.telegram),
   };
 }
 
 export async function getSettings(req, res, next) {
   try {
     const data = await platformMpNotificationsRepo.getSettings();
-    const secrets = mergeSecrets(data?.secrets);
     res.json({
       ok: true,
       data: {
-        secrets,
+        secrets: secretsForClient(data?.secrets),
         updatedAt: data?.updatedAt ?? null,
         hookPath: GENERIC_HOOK_PATH,
         ozonHookPath: OZON_HOOK_PATH,
@@ -116,17 +148,51 @@ export async function getSettings(req, res, next) {
 export async function putSettings(req, res, next) {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const secrets = mergeSecrets(body.secrets);
+    const current = await platformMpNotificationsRepo.getSettings();
+    const secrets = mergeSecrets(body.secrets, current?.secrets);
     const data = await platformMpNotificationsRepo.updateSettings(secrets);
     res.json({
       ok: true,
       data: {
-        secrets: mergeSecrets(data?.secrets),
+        secrets: secretsForClient(data?.secrets),
         updatedAt: data?.updatedAt ?? null,
         hookPath: GENERIC_HOOK_PATH,
         ozonHookPath: OZON_HOOK_PATH,
       },
     });
+  } catch (err) {
+    if (isMissingRelationError(err)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Таблицы не созданы. Выполните миграцию 092_platform_marketplace_notifications.sql',
+      });
+    }
+    next(err);
+  }
+}
+
+/** Проверочное сообщение суперадмину в Telegram. */
+export async function testTelegram(req, res, next) {
+  try {
+    const current = await platformMpNotificationsRepo.getSettings();
+    const stored = parsePlatformTelegram(current?.secrets?.telegram, null);
+    const { token, chatIds } = resolvePlatformTelegramSendTarget(stored, req.body || {});
+    if (!token) {
+      return res.status(400).json({ ok: false, message: 'Укажите токен бота' });
+    }
+    if (!chatIds.length) {
+      return res.status(400).json({ ok: false, message: 'Укажите chat id' });
+    }
+    const { sendTelegramMessage } = await import('../services/telegramNotify.service.js');
+    const result = await sendTelegramMessage(
+      token,
+      chatIds[0],
+      '<b>ERM</b>\nПроверка: уведомления суперадмину в Telegram работают.'
+    );
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, message: `Telegram: ${result.error}` });
+    }
+    res.json({ ok: true, message: 'Сообщение отправлено' });
   } catch (err) {
     if (isMissingRelationError(err)) {
       return res.status(400).json({

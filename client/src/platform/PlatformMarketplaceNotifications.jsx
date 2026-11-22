@@ -16,12 +16,39 @@ function formatDate(iso) {
   }
 }
 
+function emptyTelegram() {
+  return {
+    enabled: false,
+    botToken: '',
+    hasBotToken: false,
+    botTokenHint: '',
+    chatId: '',
+    events: { public_signup: true },
+  };
+}
+
 function emptyForm() {
   return {
     ingestKey: '',
     ozon: { webhookSecret: '', clientId: '', comment: '' },
     wildberries: { token: '', comment: '' },
     yandex: { webhookSecret: '', comment: '' },
+    telegram: emptyTelegram(),
+  };
+}
+
+function normalizeTelegramFromApi(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const chatIds = Array.isArray(src.chatIds) ? src.chatIds : [];
+  return {
+    enabled: src.enabled === true,
+    botToken: '',
+    hasBotToken: src.hasBotToken === true,
+    botTokenHint: typeof src.botTokenHint === 'string' ? src.botTokenHint : '',
+    chatId: chatIds.join(', '),
+    events: {
+      public_signup: src.events?.public_signup !== false,
+    },
   };
 }
 
@@ -38,6 +65,8 @@ export function PlatformMarketplaceNotifications() {
   const [offset, setOffset] = useState(0);
   const pageSize = 50;
   const [openId, setOpenId] = useState(null);
+  const [telegramTesting, setTelegramTesting] = useState(false);
+  const [telegramTestMessage, setTelegramTestMessage] = useState('');
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -45,7 +74,12 @@ export function PlatformMarketplaceNotifications() {
     try {
       const s = await platformMarketplaceNotificationsApi.getSettings();
       if (s?.ok && s?.data?.secrets) {
-        setForm({ ...emptyForm(), ...s.data.secrets });
+        const secrets = s.data.secrets;
+        setForm({
+          ...emptyForm(),
+          ...secrets,
+          telegram: normalizeTelegramFromApi(secrets.telegram),
+        });
         if (s.data.hookPath) setHookPath(s.data.hookPath);
         if (s.data.ozonHookPath) setOzonHookPath(s.data.ozonHookPath);
         setHint(s.data.hookHint || '');
@@ -74,14 +108,56 @@ export function PlatformMarketplaceNotifications() {
   const save = async () => {
     setSaving(true);
     setError('');
+    setTelegramTestMessage('');
     try {
-      await platformMarketplaceNotificationsApi.putSettings(form);
+      const tg = form.telegram || emptyTelegram();
+      const payload = {
+        ...form,
+        telegram: {
+          enabled: tg.enabled === true,
+          botToken: String(tg.botToken || '').trim(),
+          chatIds: String(tg.chatId || '')
+            .split(/[\s,;]+/)
+            .map((x) => x.trim())
+            .filter(Boolean),
+          events: {
+            public_signup: tg.events?.public_signup !== false,
+          },
+        },
+      };
+      await platformMarketplaceNotificationsApi.putSettings(payload);
       await loadAll();
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Не удалось сохранить');
     } finally {
       setSaving(false);
     }
+  };
+
+  const testTelegram = async () => {
+    const tg = form.telegram || emptyTelegram();
+    setTelegramTesting(true);
+    setTelegramTestMessage('');
+    setError('');
+    try {
+      const res = await platformMarketplaceNotificationsApi.testTelegram({
+        botToken: tg.botToken || '',
+        chatId: tg.chatId || '',
+      });
+      if (!res?.ok) throw new Error(res?.message || 'Не удалось отправить');
+      setTelegramTestMessage('Сообщение отправлено в Telegram.');
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Ошибка отправки в Telegram');
+    } finally {
+      setTelegramTesting(false);
+    }
+  };
+
+  const setTelegram = (patch) => {
+    setForm((f) => ({
+      ...f,
+      telegram: { ...(f.telegram || emptyTelegram()), ...patch },
+    }));
   };
 
   const originHint = useMemo(() => {
@@ -100,10 +176,9 @@ export function PlatformMarketplaceNotifications() {
 
   return (
     <div className="platform-page platform-mp-notifications">
-      <h1 className="title">Уведомления маркетплейсов</h1>
+      <h1 className="title">Уведомления</h1>
       <p className="platform-muted" style={{ marginBottom: '1rem', maxWidth: '52rem' }}>
-        Журнал входящих событий по API (вебхуки и push). Для Ozon укажите URL push ниже в кабинете продавца — платформа
-        мониторит доступность (TYPE_PING) и приостанавливает доставку при частых ошибках или ответах дольше 5 с.
+        Telegram суперадмину и журнал входящих событий маркетплейсов (вебхуки и push).
       </p>
 
       {error ? (
@@ -111,6 +186,84 @@ export function PlatformMarketplaceNotifications() {
           {error}
         </div>
       ) : null}
+
+      <section className="platform-mp-card" style={{ marginBottom: '1.25rem' }}>
+        <h2 className="platform-mp-card__title">Telegram суперадмина</h2>
+        <p className="platform-muted" style={{ marginBottom: '0.75rem', fontSize: '0.88rem' }}>
+          Когда на сайте включают публичную регистрацию и появляется новый аккаунт — придёт сообщение сюда.
+          Токен бота: @BotFather. Chat id: напишите боту /start или добавьте в группу (@userinfobot).
+        </p>
+        {(() => {
+          const tg = form.telegram || emptyTelegram();
+          return (
+            <div className="platform-mp-fields">
+              <label className="platform-mp-label" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={tg.enabled === true}
+                  onChange={(ev) => setTelegram({ enabled: ev.target.checked })}
+                />
+                <span>Отправлять уведомления в Telegram</span>
+              </label>
+              <label className="platform-mp-label">
+                Токен бота
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  className="platform-mp-input"
+                  value={tg.botToken || ''}
+                  placeholder={
+                    tg.hasBotToken ? `Сохранён ${tg.botTokenHint || ''}`.trim() : '123456789:AA...'
+                  }
+                  onChange={(ev) => setTelegram({ botToken: ev.target.value })}
+                />
+              </label>
+              <label className="platform-mp-label">
+                Chat id
+                <input
+                  type="text"
+                  className="platform-mp-input"
+                  value={tg.chatId || ''}
+                  placeholder="123456789 или -1001234567890"
+                  onChange={(ev) => setTelegram({ chatId: ev.target.value })}
+                />
+              </label>
+              <label className="platform-mp-label" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={tg.events?.public_signup !== false}
+                  onChange={(ev) =>
+                    setTelegram({
+                      events: { ...(tg.events || {}), public_signup: ev.target.checked },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Регистрация аккаунта</strong>
+                  <span className="platform-muted" style={{ display: 'block', fontSize: '0.85rem', marginTop: 2 }}>
+                    Новая заявка через /register (название, ФИО, телефон).
+                  </span>
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={testTelegram}
+                  disabled={telegramTesting || loading}
+                >
+                  {telegramTesting ? 'Отправка…' : 'Проверить отправку'}
+                </Button>
+                {telegramTestMessage ? (
+                  <span className="platform-muted" style={{ fontSize: '0.88rem' }}>
+                    {telegramTestMessage}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          );
+        })()}
+      </section>
 
       <section className="platform-mp-card" style={{ marginBottom: '1.25rem' }}>
         <h2 className="platform-mp-card__title">URL приёма</h2>

@@ -14,6 +14,7 @@ router.use(requireAdmin);
 
 router.get('/settings', wrapAsync(controller.getSettings));
 router.put('/settings', wrapAsync(controller.putSettings));
+router.post('/telegram/test', wrapAsync(controller.testTelegram));
 router.get('/events', wrapAsync(controller.listEvents));
 
 export default router;

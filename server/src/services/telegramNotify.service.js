@@ -326,6 +326,47 @@ export async function notifyOrderChanges({
   }
 }
 
+/**
+ * Уведомление суперадмину о публичной регистрации аккаунта.
+ */
+export async function notifyPlatformPublicSignup({
+  accountName,
+  fullName,
+  phone,
+  email,
+  profileId,
+} = {}) {
+  try {
+    const {
+      isPlatformTelegramEventEnabled,
+      parsePlatformTelegram,
+      resolvePlatformTelegramSendTarget,
+    } = await import('../utils/platformTelegramSettings.js');
+    const platformMpNotificationsRepo = (
+      await import('../repositories/platform_marketplace_notifications.repository.pg.js')
+    ).default;
+    const settings = await platformMpNotificationsRepo.getSettings();
+    const stored = parsePlatformTelegram(settings?.secrets?.telegram, null);
+    if (!isPlatformTelegramEventEnabled(stored, 'public_signup')) return;
+    const { token, chatIds } = resolvePlatformTelegramSendTarget(stored);
+    if (!token || !chatIds.length) return;
+    const lines = [
+      '<b>Новая регистрация</b>',
+      `Аккаунт: ${escapeHtml(accountName || '—')}`,
+      `ФИО: ${escapeHtml(fullName || '—')}`,
+      `Телефон: ${escapeHtml(phone || '—')}`,
+    ];
+    if (email) lines.push(`Email: ${escapeHtml(email)}`);
+    if (profileId != null) lines.push(`ID: <code>${escapeHtml(String(profileId))}</code>`);
+    const text = lines.join('\n');
+    const dedupe = `platform|public_signup|${profileId || phone || accountName}`;
+    if (!rememberSend(dedupe)) return;
+    await sendToChats({ botToken: token, chatIds }, [text]);
+  } catch (e) {
+    logger?.warn?.('[Telegram] platform signup notify failed:', e?.message || e);
+  }
+}
+
 /** Первое появление runtime-уведомления — в Telegram, если событие включено. */
 export async function forwardRuntimeNotification(notification) {
   const pid = Number(
