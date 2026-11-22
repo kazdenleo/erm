@@ -214,6 +214,274 @@ function mapYmDecisions(availableDecisions) {
 
 /* ───────────────────────── Wildberries ───────────────────────── */
 
+/** WB srid/rid выглядит как `ex.…` / `obr.…` / `v5o_….0.0`, а не как номер сборочного задания. */
+function looksLikeWbSrid(value) {
+  const s = String(value ?? '').trim();
+  if (!s) return false;
+  if (/^\d+$/.test(s)) return false;
+  return /[._]/.test(s);
+}
+
+/**
+ * По srid из заявки на возврат найти человекочитаемый номер заказа (assembly_id / gNumber),
+ * который уже есть в финансовых отчётах FBS/FBO.
+ */
+async function resolveWbDisplayOrderIdBySrid(profileId, srid, hint = {}) {
+  const key = String(srid ?? '').trim();
+  if (!key || !profileId) return null;
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return null;
+
+  const pick = (rows) => {
+    for (const r of rows || []) {
+      const oid = r?.order_id != null ? String(r.order_id).trim() : '';
+      if (oid && oid !== key && !looksLikeWbSrid(oid)) return oid;
+      if (oid && oid !== key) return oid;
+    }
+    return null;
+  };
+
+  try {
+    const fbs = await query(
+      `SELECT order_id
+       FROM marketplace_fbs_report_lines
+       WHERE profile_id = $1
+         AND LOWER(marketplace) IN ('wb', 'wildberries')
+         AND (
+           posting_number = $2
+           OR raw_json->>'srid' = $2
+           OR raw_json->>'rid' = $2
+         )
+         AND order_id IS NOT NULL
+         AND TRIM(order_id) <> ''
+       ORDER BY operation_date DESC NULLS LAST, id DESC
+       LIMIT 5`,
+      [pid, key]
+    );
+    const fromFbs = pick(fbs.rows);
+    if (fromFbs) return fromFbs;
+  } catch (e) {
+    logger.warn('[ReturnClaims] WB srid→order resolve FBS failed', { error: e?.message });
+  }
+
+  try {
+    const fbo = await query(
+      `SELECT order_id
+       FROM marketplace_fbo_report_lines
+       WHERE profile_id = $1
+         AND LOWER(marketplace) IN ('wb', 'wildberries')
+         AND (
+           posting_number = $2
+           OR raw_json->>'srid' = $2
+           OR raw_json->>'rid' = $2
+         )
+         AND order_id IS NOT NULL
+         AND TRIM(order_id) <> ''
+       ORDER BY operation_date DESC NULLS LAST, id DESC
+       LIMIT 5`,
+      [pid, key]
+    );
+    const fromFbo = pick(fbo.rows);
+    if (fromFbo) return fromFbo;
+  } catch (e) {
+    logger.warn('[ReturnClaims] WB srid→order resolve FBO failed', { error: e?.message });
+  }
+
+  // Запасной путь: nmId + дата заказа ≈ orders (номер сборочного задания).
+  const nmId = hint?.nmId != null ? String(hint.nmId).trim() : '';
+  const orderDt = hint?.orderDt ? new Date(hint.orderDt) : null;
+  if (nmId && orderDt && !Number.isNaN(orderDt.getTime())) {
+    try {
+      const byNm = await query(
+        `SELECT order_id
+         FROM orders
+         WHERE profile_id = $1
+           AND marketplace IN ('wb', 'wildberries')
+           AND (
+             marketplace_sku::text = $2
+             OR offer_id = $2
+           )
+           AND created_at IS NOT NULL
+           AND created_at BETWEEN ($3::timestamptz - INTERVAL '2 days')
+                              AND ($3::timestamptz + INTERVAL '2 days')
+         ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamptz))) ASC
+         LIMIT 1`,
+        [pid, nmId, orderDt.toISOString()]
+      );
+      const oid = byNm.rows[0]?.order_id != null ? String(byNm.rows[0].order_id).trim() : '';
+      if (oid && !looksLikeWbSrid(oid)) return oid;
+    } catch (e) {
+      logger.warn('[ReturnClaims] WB srid→order resolve orders failed', { error: e?.message });
+    }
+  }
+
+  return null;
+}
+
+async function resolveWbDisplayOrderIdsBatch(profileId, srids) {
+  const keys = [...new Set((srids || []).map((s) => String(s || '').trim()).filter(Boolean))];
+  const map = new Map();
+  if (!keys.length || !profileId) return map;
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return map;
+
+  const absorb = (rows) => {
+    for (const r of rows || []) {
+      const srid = String(r.srid || '').trim();
+      const oid = r?.order_id != null ? String(r.order_id).trim() : '';
+      if (!srid || !oid || oid === srid || map.has(srid)) continue;
+      map.set(srid, oid);
+    }
+  };
+
+  try {
+    const fbs = await query(
+      `SELECT DISTINCT ON (srid) srid, order_id
+       FROM (
+         SELECT
+           COALESCE(
+             NULLIF(TRIM(posting_number), ''),
+             NULLIF(TRIM(raw_json->>'srid'), ''),
+             NULLIF(TRIM(raw_json->>'rid'), '')
+           ) AS srid,
+           order_id,
+           operation_date,
+           id
+         FROM marketplace_fbs_report_lines
+         WHERE profile_id = $1
+           AND LOWER(marketplace) IN ('wb', 'wildberries')
+           AND order_id IS NOT NULL
+           AND TRIM(order_id) <> ''
+           AND (
+             posting_number = ANY($2::text[])
+             OR raw_json->>'srid' = ANY($2::text[])
+             OR raw_json->>'rid' = ANY($2::text[])
+           )
+       ) t
+       WHERE srid IS NOT NULL AND TRIM(srid) <> '' AND TRIM(order_id) <> TRIM(srid)
+       ORDER BY srid, operation_date DESC NULLS LAST, id DESC`,
+      [pid, keys]
+    );
+    absorb(fbs.rows);
+  } catch (e) {
+    logger.warn('[ReturnClaims] WB srid batch FBS failed', { error: e?.message });
+  }
+
+  const missing = keys.filter((k) => !map.has(k));
+  if (missing.length) {
+    try {
+      const fbo = await query(
+        `SELECT DISTINCT ON (srid) srid, order_id
+         FROM (
+           SELECT
+             COALESCE(
+               NULLIF(TRIM(posting_number), ''),
+               NULLIF(TRIM(raw_json->>'srid'), ''),
+               NULLIF(TRIM(raw_json->>'rid'), '')
+             ) AS srid,
+             order_id,
+             operation_date,
+             id
+           FROM marketplace_fbo_report_lines
+           WHERE profile_id = $1
+             AND LOWER(marketplace) IN ('wb', 'wildberries')
+             AND order_id IS NOT NULL
+             AND TRIM(order_id) <> ''
+             AND (
+               posting_number = ANY($2::text[])
+               OR raw_json->>'srid' = ANY($2::text[])
+               OR raw_json->>'rid' = ANY($2::text[])
+             )
+         ) t
+         WHERE srid IS NOT NULL AND TRIM(srid) <> '' AND TRIM(order_id) <> TRIM(srid)
+         ORDER BY srid, operation_date DESC NULLS LAST, id DESC`,
+        [pid, missing]
+      );
+      absorb(fbo.rows);
+    } catch (e) {
+      logger.warn('[ReturnClaims] WB srid batch FBO failed', { error: e?.message });
+    }
+  }
+  return map;
+}
+
+async function enrichMappedWbClaimOrderId(mapped, profileId) {
+  if (!mapped) return mapped;
+  const srid =
+    mapped.meta?.srid != null
+      ? String(mapped.meta.srid)
+      : looksLikeWbSrid(mapped.order_id)
+        ? String(mapped.order_id)
+        : null;
+  if (!srid) return mapped;
+  if (mapped.order_id && !looksLikeWbSrid(mapped.order_id)) {
+    mapped.meta = { ...(mapped.meta || {}), srid, resolvedOrderId: String(mapped.order_id) };
+    return mapped;
+  }
+  const resolved = await resolveWbDisplayOrderIdBySrid(profileId, srid, {
+    nmId: mapped.meta?.nmId ?? mapped.sku_or_offer,
+    orderDt: mapped.meta?.orderDt,
+  });
+  mapped.meta = { ...(mapped.meta || {}), srid };
+  if (resolved) {
+    mapped.order_id = resolved;
+    mapped.meta.resolvedOrderId = resolved;
+  } else if (looksLikeWbSrid(mapped.order_id)) {
+    mapped.order_id = srid;
+  }
+  return mapped;
+}
+
+async function enrichApiWbClaimsOrderIds(profileId, apiRows) {
+  const rows = Array.isArray(apiRows) ? apiRows : [];
+  if (!rows.length) return rows;
+  const need = [];
+  for (const row of rows) {
+    if (String(row?.marketplace || '').toLowerCase() !== 'wildberries') continue;
+    const srid = row?.meta?.srid != null ? String(row.meta.srid) : null;
+    const oid = row?.orderId != null ? String(row.orderId) : null;
+    if (oid && !looksLikeWbSrid(oid)) continue;
+    if (srid && looksLikeWbSrid(oid || srid)) need.push(srid);
+    else if (looksLikeWbSrid(oid)) need.push(oid);
+  }
+  if (!need.length) return rows;
+  const resolvedMap = await resolveWbDisplayOrderIdsBatch(profileId, need);
+  const out = [];
+  for (const row of rows) {
+    if (String(row?.marketplace || '').toLowerCase() !== 'wildberries') {
+      out.push(row);
+      continue;
+    }
+    const srid =
+      row?.meta?.srid != null
+        ? String(row.meta.srid)
+        : looksLikeWbSrid(row?.orderId)
+          ? String(row.orderId)
+          : null;
+    if (!srid || (row.orderId && !looksLikeWbSrid(row.orderId))) {
+      out.push(row);
+      continue;
+    }
+    let resolved = resolvedMap.get(srid) || null;
+    if (!resolved) {
+      resolved = await resolveWbDisplayOrderIdBySrid(profileId, srid, {
+        nmId: row.meta?.nmId ?? row.skuOrOffer,
+        orderDt: row.meta?.orderDt,
+      });
+    }
+    if (!resolved) {
+      out.push(row);
+      continue;
+    }
+    out.push({
+      ...row,
+      orderId: resolved,
+      meta: { ...(row.meta || {}), srid, resolvedOrderId: resolved },
+    });
+  }
+  return out;
+}
+
 function mapWbClaim(claim, profileId, scopeMeta = {}) {
   if (!claim || typeof claim !== 'object') return null;
   const id = claim.id ?? claim.claim_id;
@@ -233,6 +501,10 @@ function mapWbClaim(claim, profileId, scopeMeta = {}) {
     (statusNum != null && WB_STATUS_LABELS[statusNum]) ||
     (statusExNum != null && WB_STATUS_EX_LABELS[statusExNum]) ||
     (claim.status_ex != null ? String(claim.status_ex) : claim.status != null ? String(claim.status) : null);
+  const srid = claim.srid != null ? String(claim.srid) : null;
+  // В API заявок WB нет номера сборочного задания — только srid. Резолвим отдельно.
+  const explicitOrderId =
+    claim.order_id ?? claim.orderId ?? claim.assembly_id ?? claim.assemblyId ?? null;
   return {
     profile_id: profileId,
     marketplace: 'wildberries',
@@ -244,7 +516,7 @@ function mapWbClaim(claim, profileId, scopeMeta = {}) {
     reason: claim.origin_id_info ?? null,
     product_name: claim.imt_name ?? claim.imtName ?? null,
     sku_or_offer: claim.nm_id != null ? String(claim.nm_id) : null,
-    order_id: claim.srid != null ? String(claim.srid) : null,
+    order_id: explicitOrderId != null ? String(explicitOrderId) : srid,
     price: claim.price != null ? Number(claim.price) : null,
     currency: claim.currency_code != null ? String(claim.currency_code) : null,
     photos,
@@ -261,7 +533,7 @@ function mapWbClaim(claim, profileId, scopeMeta = {}) {
       videos,
       orderDt: claim.order_dt ?? claim.orderDt ?? null,
       deliveryDt: claim.delivery_dt ?? null,
-      srid: claim.srid ?? null,
+      srid,
       nmId: claim.nm_id ?? null,
       organizationId: scopeMeta.organizationId ?? null,
     },
@@ -347,6 +619,41 @@ async function fetchWbClaimsPage(apiKey, params) {
   return { claims, total };
 }
 
+async function syncWbClaimsForScope(scope, profileId, { isArchive, limit = 200 }) {
+  let imported = 0;
+  const externalIds = [];
+  let offset = 0;
+  let openSyncOk = false;
+  for (let page = 0; page < 50; page++) {
+    let claims = [];
+    let total = 0;
+    try {
+      const pageData = await fetchWbClaimsPage(scope.apiKey, { isArchive, limit, offset });
+      claims = pageData.claims;
+      total = pageData.total;
+      openSyncOk = true;
+    } catch (e) {
+      logger.warn('[ReturnClaims] WB claims failed', {
+        organizationId: scope.organizationId,
+        isArchive,
+        error: e?.message,
+      });
+      break;
+    }
+    for (const claim of claims) {
+      const mapped = mapWbClaim(claim, profileId, { organizationId: scope.organizationId });
+      if (!mapped) continue;
+      await enrichMappedWbClaimOrderId(mapped, profileId);
+      await marketplaceReturnClaimsRepo.upsertRow(mapped);
+      imported += 1;
+      externalIds.push(mapped.external_id);
+    }
+    offset += claims.length;
+    if (claims.length === 0 || offset >= total) break;
+  }
+  return { imported, externalIds, syncOk: openSyncOk };
+}
+
 async function syncWildberries(profileId) {
   const scopes = await listWbClaimScopes(profileId);
   if (!scopes.length) {
@@ -356,37 +663,28 @@ async function syncWildberries(profileId) {
   }
 
   let imported = 0;
-  const externalIds = [];
-  const limit = 200;
+  const openExternalIds = [];
+  let anyOpenSyncOk = false;
 
   for (const scope of scopes) {
-    let offset = 0;
-    for (let page = 0; page < 50; page++) {
-      let claims = [];
-      let total = 0;
-      try {
-        const pageData = await fetchWbClaimsPage(scope.apiKey, { isArchive: false, limit, offset });
-        claims = pageData.claims;
-        total = pageData.total;
-      } catch (e) {
-        logger.warn('[ReturnClaims] WB claims failed', {
-          organizationId: scope.organizationId,
-          error: e?.message,
-        });
-        break;
-      }
-      for (const claim of claims) {
-        const mapped = mapWbClaim(claim, profileId, { organizationId: scope.organizationId });
-        if (!mapped) continue;
-        await marketplaceReturnClaimsRepo.upsertRow(mapped);
-        imported += 1;
-        externalIds.push(mapped.external_id);
-      }
-      offset += claims.length;
-      if (claims.length === 0 || offset >= total) break;
-    }
+    // 1) Открытые заявки (ждут решения)
+    const open = await syncWbClaimsForScope(scope, profileId, { isArchive: false });
+    imported += open.imported;
+    openExternalIds.push(...open.externalIds);
+    if (open.syncOk) anyOpenSyncOk = true;
+
+    // 2) Архив — чтобы обновить статусы уже решённых и не держать их в «ждут решения»
+    const archived = await syncWbClaimsForScope(scope, profileId, { isArchive: true });
+    imported += archived.imported;
   }
-  return { imported, externalIds };
+
+  let closedStale = 0;
+  if (anyOpenSyncOk) {
+    // Заявки, которых больше нет в открытом списке WB (ушли в архив / пропали из окна 14 дней).
+    closedStale = await marketplaceReturnClaimsRepo.closeStaleWbPending(profileId, openExternalIds);
+  }
+
+  return { imported, externalIds: openExternalIds, closedStale };
 }
 
 async function resolveWbApiKeyForRow(profileId, row) {
@@ -1195,13 +1493,19 @@ export async function syncMarketplaceReturnClaims(profileId, opts = {}) {
       else if (mp === 'wildberries') data = await syncWildberries(profileId);
       else if (mp === 'yandex') data = await syncYandex(profileId);
       else continue;
-      results.push({ marketplace: mp, ok: true, imported: data.imported });
+      results.push({
+        marketplace: mp,
+        ok: true,
+        imported: data.imported,
+        closedStale: data.closedStale || 0,
+      });
     } catch (e) {
       logger.warn('[ReturnClaims] sync failed', { marketplace: mp, error: e?.message });
       results.push({
         marketplace: mp,
         ok: false,
         imported: 0,
+        closedStale: 0,
         error: e?.message || String(e),
       });
     }
@@ -1214,12 +1518,13 @@ export async function listMarketplaceReturnClaims(profileId, query = {}) {
   const marketplace = query.marketplace != null ? String(query.marketplace).trim() : null;
   const limit = query.limit != null ? Number(query.limit) : 200;
   const offset = query.offset != null ? Number(query.offset) : 0;
-  return marketplaceReturnClaimsRepo.findByProfile(profileId, {
+  const items = await marketplaceReturnClaimsRepo.findByProfile(profileId, {
     marketplace: marketplace && marketplace !== 'all' ? marketplace : null,
     decision: parseDecisionFilter(query),
     limit: Number.isFinite(limit) ? limit : 200,
     offset: Number.isFinite(offset) ? offset : 0,
   });
+  return enrichApiWbClaimsOrderIds(profileId, items);
 }
 
 export async function getMarketplaceReturnClaimsStats(profileId, query = {}) {
@@ -1324,12 +1629,18 @@ export async function getMarketplaceReturnClaimById(profileId, claimRowId, opts 
   if (opts.refresh !== false) {
     try {
       const refreshed = await refreshClaimFromMarketplace(profileId, row);
-      if (refreshed) await marketplaceReturnClaimsRepo.upsertRow(refreshed);
+      if (refreshed) {
+        await enrichMappedWbClaimOrderId(refreshed, profileId);
+        await marketplaceReturnClaimsRepo.upsertRow(refreshed);
+      }
     } catch (e) {
       logger.warn('[ReturnClaims] refresh failed', { id: claimRowId, error: e?.message });
     }
   }
-  return marketplaceReturnClaimsRepo.findOneApiByIdAndProfile(claimRowId, profileId);
+  const api = await marketplaceReturnClaimsRepo.findOneApiByIdAndProfile(claimRowId, profileId);
+  if (!api) return null;
+  const [enriched] = await enrichApiWbClaimsOrderIds(profileId, [api]);
+  return enriched || api;
 }
 
 export async function submitMarketplaceReturnClaimDecision(profileId, claimRowId, body = {}) {

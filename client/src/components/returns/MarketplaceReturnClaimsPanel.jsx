@@ -136,7 +136,9 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
       const results = Array.isArray(data?.results) ? data.results : [];
       const parts = results.map((r) => {
         const name = r.marketplace === 'wildberries' ? 'WB' : r.marketplace === 'yandex' ? 'ЯМ' : 'Ozon';
-        return r.ok ? `${name}: ${r.imported}` : `${name}: ошибка`;
+        if (!r.ok) return `${name}: ошибка`;
+        const closed = Number(r.closedStale) || 0;
+        return closed > 0 ? `${name}: ${r.imported} (закрыто устаревших: ${closed})` : `${name}: ${r.imported}`;
       });
       setSyncInfo(parts.length ? `Синхронизация: ${parts.join(', ')}` : 'Синхронизация завершена');
       await loadRef.current();
@@ -365,7 +367,15 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
                     <div className="mp-claims-comment">{row.buyerComment || '—'}</div>
                   </td>
                   <td>{formatMoney(row.price, row.currency)}</td>
-                  <td>{row.orderId || '—'}</td>
+                  <td>
+                    <div>{row.orderId || '—'}</div>
+                    {row.meta?.srid &&
+                    String(row.meta.srid) !== String(row.orderId || '') ? (
+                      <div className="mp-returns-sub" title="Внутренний srid WB">
+                        {row.meta.srid}
+                      </div>
+                    ) : null}
+                  </td>
                   <td>{formatDt(row.sourceCreatedAt)}</td>
                   <td className="mp-returns-actions-cell">
                     {row.needsDecision ? (
@@ -405,6 +415,10 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
             <div className="mp-claims-modal__meta">
               <div>
                 <strong>Заказ:</strong> {active.orderId || '—'}
+                {active.meta?.srid &&
+                String(active.meta.srid) !== String(active.orderId || '') ? (
+                  <div className="mp-returns-sub">srid: {active.meta.srid}</div>
+                ) : null}
               </div>
               <div>
                 <strong>SKU:</strong> {active.skuOrOffer || '—'}
