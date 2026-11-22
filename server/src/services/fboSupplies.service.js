@@ -511,7 +511,11 @@ class FboSuppliesService {
         ? [status]
         : [];
     if (statusList.length > 0) {
-      params.push(statusList);
+      const expanded = [...statusList];
+      if (expanded.includes('ready_for_supply') && !expanded.includes('packed')) {
+        expanded.push('packed');
+      }
+      params.push(expanded);
       sql += ` AND s.status = ANY($${params.length}::text[])`;
     }
     if (marketplace) {

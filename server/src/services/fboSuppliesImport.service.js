@@ -224,9 +224,31 @@ function buildOzonSupplyListBody(daysBack, lastId = '', states = OZON_SUPPLY_LIS
   return body;
 }
 
-function parseOzonListOrderIds(listData) {
-  const ids = listData?.result?.order_ids ?? listData?.order_ids ?? [];
-  return (Array.isArray(ids) ? ids : []).map((id) => String(id)).filter(Boolean);
+export function parseOzonListOrderIds(listData) {
+  const roots = [];
+  if (listData && typeof listData === 'object') {
+    roots.push(listData);
+    if (listData.result && typeof listData.result === 'object') roots.push(listData.result);
+  }
+  for (const root of roots) {
+    for (const key of ['order_ids', 'supply_order_ids', 'orderIds', 'supplyOrderIds']) {
+      const ids = root?.[key];
+      if (Array.isArray(ids) && ids.length) {
+        return ids.map((id) => (id != null && typeof id === 'object' ? id.order_id ?? id.id : id))
+          .map((id) => String(id ?? '').trim())
+          .filter(Boolean);
+      }
+    }
+    const orders = root?.orders;
+    if (Array.isArray(orders) && orders.length) {
+      const fromOrders = orders
+        .map((o) => o?.order_id ?? o?.id ?? o)
+        .map((id) => String(id ?? '').trim())
+        .filter(Boolean);
+      if (fromOrders.length) return fromOrders;
+    }
+  }
+  return [];
 }
 
 function parseOzonListLastId(listData) {
@@ -250,11 +272,12 @@ function flattenOzonSupplyOrders(orders) {
   return rows;
 }
 
-function ozonSupplyRowState(order, supply) {
-  return String(supply?.state ?? order?.state ?? order?.status ?? '').toUpperCase();
+export function ozonSupplyRowState(order, supply) {
+  const raw = supply?.state || order?.state || order?.status || '';
+  return String(raw).trim().toUpperCase();
 }
 
-function isOzonSupplyImportable(order, supply) {
+export function isOzonSupplyImportable(order, supply) {
   return OZON_SUPPLY_IMPORT_STATES.includes(ozonSupplyRowState(order, supply));
 }
 
@@ -464,13 +487,21 @@ function pickDominantOzonCluster(clusterQty) {
   return best;
 }
 
-function parseOzonBundleResponse(bundleData) {
+export function parseOzonBundleResponse(bundleData) {
   const root = bundleData?.result ?? bundleData ?? {};
   let rows = root.items ?? root.products ?? bundleData?.items ?? [];
   if ((!Array.isArray(rows) || !rows.length) && Array.isArray(root.bundles)) {
     rows = root.bundles.flatMap((b) => b?.items ?? b?.products ?? []);
   }
-  const totalCount = parseInt(root.total_count ?? root.totalCount ?? 0, 10) || 0;
+  const totalCount =
+    parseInt(
+      root.total_items ??
+        root.total_items_count ??
+        root.total_count ??
+        root.totalCount ??
+        0,
+      10
+    ) || 0;
   const hasNext = root.has_next === true || root.hasNext === true;
   const lastId = root.last_id ?? root.lastId ?? '';
   return {
@@ -987,11 +1018,28 @@ async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimes
 }
 
 async function fetchOzonSupplyOrderIdsForImport(daysBack, ozonApiOpts, { states } = {}) {
-  let ids = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter: true });
-  if (!ids.length) {
-    ids = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter: false });
+  // DATA_FILLING часто без таймслота — фильтр timeslot_from_range их отсекает.
+  // Сначала полный список по статусам, таймслот только если без него пусто или ошибка.
+  let without = [];
+  try {
+    without = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, {
+      states,
+      useTimeslotFilter: false,
+    });
+  } catch (e) {
+    console.warn('[FboImport] Ozon list without timeslot:', e?.message || e);
   }
-  return ids;
+  if (without.length) return without;
+  try {
+    return await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, {
+      states,
+      useTimeslotFilter: true,
+    });
+  } catch (e) {
+    const err = new Error(e?.message || 'Не удалось получить список поставок Ozon');
+    err.statusCode = e?.statusCode === 429 ? 429 : 400;
+    throw err;
+  }
 }
 
 async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
@@ -1494,9 +1542,11 @@ async function mapWithConcurrency(items, concurrency, fn) {
   return out;
 }
 
-function parseWbSuppliesListResponse(data) {
+export function parseWbSuppliesListResponse(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.supplies)) return data.supplies;
+  if (Array.isArray(data?.result?.supplies)) return data.result.supplies;
+  if (Array.isArray(data?.data?.supplies)) return data.data.supplies;
   if (Array.isArray(data?.result)) return data.result;
   if (Array.isArray(data?.data)) return data.data;
   return [];
@@ -2291,7 +2341,7 @@ async function fetchMarketplaceStatusForSupply(supply, { profileId, ozonOrdersCa
       err.statusCode = 400;
       throw err;
     }
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
     const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts, {
       ozonOrdersCache,
     });
@@ -2685,7 +2735,7 @@ async function buildOzonConfirmContexts(supplies, profileId) {
       throw err;
     }
 
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
     const idSet = new Set();
     for (const r of rows) {
       for (const oid of buildOzonApiOrderIds(r)) idSet.add(oid);
@@ -2746,7 +2796,7 @@ async function hydrateOzonImportRow(row, { profileId, ozonCtx = null } = {}) {
       err.statusCode = 400;
       throw err;
     }
-    ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
   }
 
   let order = null;
@@ -2890,7 +2940,7 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
 
     const imported = await fboSuppliesService.listImportedExternalKeys('ozon', { profileId });
     const listDaysBack = Math.max(1, Math.min(365, Number(daysBack) || 90));
@@ -2931,14 +2981,6 @@ class FboSuppliesImportService {
       if (!isOzonSupplyImportable(order, supply)) continue;
 
       const supplyOrderId = ozonSupplyOrderId(order);
-      if (!ozonDetailsCache.has(String(supplyOrderId))) {
-        ozonDetailsCache.set(
-          String(supplyOrderId),
-          await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts)
-        );
-      }
-      const orderDetails = ozonDetailsCache.get(String(supplyOrderId));
-
       const supplyId = supply?.supply_id ?? supply?.id;
       const supplyIdStr = supplyId != null ? String(supplyId).trim() : '';
       const baseNumber = String(
@@ -2950,9 +2992,51 @@ class FboSuppliesImportService {
           : baseNumber || supplyIdStr;
       if (!externalNumber) continue;
 
-      if (ozonSupplyAlreadyImported(imported, externalNumber, supplyId, supplyOrderId)) {
+      const alreadyImported = ozonSupplyAlreadyImported(
+        imported,
+        externalNumber,
+        supplyId,
+        supplyOrderId
+      );
+      if (alreadyImported) {
+        candidates.push({
+          importKey: `ozon:${externalNumber}`,
+          marketplace: 'ozon',
+          name: null,
+          readyAt: parseDateOnly(
+            order.timeslot?.from ??
+              order.timeslot?.timeslot?.from ??
+              order.created_date ??
+              order.delivery_date ??
+              order.planned_date
+          ),
+          marketplaceWarehouseName: null,
+          marketplaceWarehouseId: null,
+          shippingCluster: null,
+          externalShipmentNumber: externalNumber,
+          externalSupplyId:
+            supplyId != null ? String(supplyId) : supplyOrderId != null ? String(supplyOrderId) : null,
+          externalOrderId: supplyOrderId != null ? String(supplyOrderId) : null,
+          ozonPreviewOnly: true,
+          deductionWarehouseId: null,
+          organizationId: organizationId != null ? Number(organizationId) : null,
+          deductStock: true,
+          status: mapOzonStateToStatus(supply?.state ?? order.state ?? order.status),
+          ozonState: ozonSupplyRowState(order, supply),
+          items: [],
+          itemCount: 0,
+          alreadyImported: true,
+        });
         continue;
       }
+
+      if (!ozonDetailsCache.has(String(supplyOrderId))) {
+        ozonDetailsCache.set(
+          String(supplyOrderId),
+          await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts)
+        );
+      }
+      const orderDetails = ozonDetailsCache.get(String(supplyOrderId));
 
       let items = [];
       let itemCount = 0;
@@ -3417,8 +3501,29 @@ class FboSuppliesImportService {
             reason: 'duplicate',
           });
         } else {
-          throw e;
+          console.warn(
+            '[FboImport] confirm row failed:',
+            row?.externalShipmentNumber,
+            e?.message || e
+          );
+          skipped.push({
+            externalShipmentNumber: row.externalShipmentNumber,
+            reason: 'error',
+            message: e?.message || String(e),
+          });
         }
+      }
+    }
+
+    if (!created.length) {
+      const firstErr = skipped.find((s) => s.reason === 'error');
+      if (firstErr) {
+        const err = new Error(
+          firstErr.message ||
+            `Не удалось загрузить поставку ${firstErr.externalShipmentNumber || ''}`.trim()
+        );
+        err.statusCode = 400;
+        throw err;
       }
     }
 
@@ -3486,7 +3591,7 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
     const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
     const supplyOrderId = ozonSupplyOrderId(order);
     const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
@@ -3619,7 +3724,7 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
     const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
     const supplyOrderId = ozonSupplyOrderId(order);
     const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
@@ -3766,7 +3871,7 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg, priority: 'high' };
     const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
     const orderId = Number(ozonSupplyOrderId(order));
     const supplyIdRaw = ozonSupply?.supply_id ?? ozonSupply?.id;

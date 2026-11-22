@@ -229,8 +229,17 @@ function withRawFlag(ozonApiOpts) {
   return { ...(ozonApiOpts || {}), __ozonRaw: true };
 }
 
+function resolveCallPriority(ozonApiOpts, opts = {}) {
+  if (opts?.priority != null && String(opts.priority).trim() !== '') return opts.priority;
+  if (ozonApiOpts?.priority != null && String(ozonApiOpts.priority).trim() !== '') {
+    return ozonApiOpts.priority;
+  }
+  return 'normal';
+}
+
 export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
-  const { priority = 'normal', ...retryOpts } = opts;
+  const { priority: _ignored, ...retryOpts } = opts;
+  const priority = resolveCallPriority(ozonApiOpts, opts);
   const clientKey = await resolveOzonClientKey(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
@@ -241,7 +250,8 @@ export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
 }
 
 export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
-  const { priority = 'normal', ...retryOpts } = opts;
+  const { priority: _ignored, ...retryOpts } = opts;
+  const priority = resolveCallPriority(ozonApiOpts, opts);
   const clientKey = await resolveOzonClientKey(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(() => integrationsService._ozonApiGet(path, withRawFlag(ozonApiOpts)), {
