@@ -196,44 +196,43 @@ class MarketplaceReturnClaimsRepositoryPG {
     return rowToApi(result.rows[0]);
   }
 
-  /** Закрыть «ждут решения» у WB-заявок, которых больше нет в открытом списке API. */
-  async closeStaleWbPending(profileId, openExternalIds = []) {
+  /**
+   * Закрыть «ждут решения» у заявок МП, которых больше нет в открытом списке API.
+   * Вызывать только после успешного синка открытых заявок (даже если список пуст).
+   */
+  async closeStalePending(profileId, marketplace, openExternalIds = [], statusFallback = 'Закрыта (нет в открытых)') {
     const pid = Number(profileId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
+    const mp = String(marketplace || '').trim().toLowerCase();
+    if (!mp) return 0;
     const open = [...new Set((openExternalIds || []).map((x) => String(x)).filter(Boolean))];
     const result = await query(
       `UPDATE marketplace_return_claims SET
          needs_decision = FALSE,
          available_actions = '[]'::jsonb,
          status = CASE
-           WHEN status IS NULL OR TRIM(status) = '' OR status = 'На рассмотрении' THEN 'В архиве WB'
+           WHEN status IS NULL OR TRIM(status) = '' OR status IN ('На рассмотрении', 'На согласовании', 'На уточнении')
+             THEN $4
            ELSE status
          END,
          meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('closedBySync', true, 'closedAt', NOW()::text),
          synced_at = CURRENT_TIMESTAMP,
          updated_at = CURRENT_TIMESTAMP
        WHERE profile_id = $1
-         AND marketplace = 'wildberries'
+         AND marketplace = $2
          AND needs_decision = TRUE
          AND (
-           CARDINALITY($2::text[]) = 0
-           OR NOT (external_id = ANY($2::text[]))
+           CARDINALITY($3::text[]) = 0
+           OR NOT (external_id = ANY($3::text[]))
          )
        RETURNING id`,
-      [pid, open]
+      [pid, mp, open, String(statusFallback)]
     );
     return (result.rows || []).length;
   }
 
-  async listPendingWbExternalIds(profileId) {
-    const pid = Number(profileId);
-    if (!Number.isFinite(pid) || pid < 1) return [];
-    const result = await query(
-      `SELECT id, external_id FROM marketplace_return_claims
-       WHERE profile_id = $1 AND marketplace = 'wildberries' AND needs_decision = TRUE`,
-      [pid]
-    );
-    return result.rows || [];
+  async closeStaleWbPending(profileId, openExternalIds = []) {
+    return this.closeStalePending(profileId, 'wildberries', openExternalIds, 'В архиве WB');
   }
 
   async findByProfile(profileId, opts = {}) {

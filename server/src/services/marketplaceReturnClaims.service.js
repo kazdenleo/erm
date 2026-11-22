@@ -682,9 +682,15 @@ async function syncWildberries(profileId) {
   if (anyOpenSyncOk) {
     // Заявки, которых больше нет в открытом списке WB (ушли в архив / пропали из окна 14 дней).
     closedStale = await marketplaceReturnClaimsRepo.closeStaleWbPending(profileId, openExternalIds);
+  } else if (imported === 0) {
+    const err = new Error(
+      'Wildberries: не удалось получить заявки (проверьте токен категории «Возвраты покупателей» в Интеграциях).'
+    );
+    err.statusCode = 400;
+    throw err;
   }
 
-  return { imported, externalIds: openExternalIds, closedStale };
+  return { imported, externalIds: openExternalIds, closedStale, syncOk: anyOpenSyncOk };
 }
 
 async function resolveWbApiKeyForRow(profileId, row) {
@@ -1077,6 +1083,9 @@ async function syncOzon(profileId) {
 
   let imported = 0;
   const externalIds = [];
+  let apiOk = 0;
+  let apiFail = 0;
+  let lastError = null;
 
   for (const scope of scopes) {
     const ozonOverride = { client_id: scope.client_id, api_key: scope.api_key };
@@ -1086,11 +1095,14 @@ async function syncOzon(profileId) {
       let rows = [];
       try {
         rows = await fetchOzonReturnsListByStatus(profileId, ozonOverride, st);
+        apiOk += 1;
       } catch (e) {
+        apiFail += 1;
+        lastError = e?.message || String(e);
         logger.warn('[ReturnClaims] Ozon returns/list failed', {
           status: st,
           clientId: scope.client_id,
-          error: e?.message,
+          error: lastError,
         });
         continue;
       }
@@ -1106,10 +1118,13 @@ async function syncOzon(profileId) {
     let rfbsRows = [];
     try {
       rfbsRows = await fetchOzonRfbsOpen(profileId, ozonOverride);
+      apiOk += 1;
     } catch (e) {
+      apiFail += 1;
+      lastError = e?.message || String(e);
       logger.warn('[ReturnClaims] Ozon rfbs/list failed', {
         clientId: scope.client_id,
-        error: e?.message,
+        error: lastError,
       });
     }
     for (const raw of rfbsRows) {
@@ -1129,7 +1144,26 @@ async function syncOzon(profileId) {
     }
   }
 
-  return { imported, externalIds };
+  const syncOk = apiOk > 0;
+  let closedStale = 0;
+  if (syncOk) {
+    closedStale = await marketplaceReturnClaimsRepo.closeStalePending(
+      profileId,
+      'ozon',
+      externalIds,
+      'Закрыта (нет в открытых Ozon)'
+    );
+  } else if (apiFail > 0) {
+    const err = new Error(
+      lastError?.includes('Invalid Api-Key') || lastError?.includes('Api-Key')
+        ? 'Ozon: неверный Api-Key — обновите ключ в Интеграциях.'
+        : `Ozon: синхронизация не удалась (${lastError || 'ошибка API'})`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return { imported, externalIds, closedStale, syncOk };
 }
 
 async function resolveOzonOverrideForRow(profileId, row) {
@@ -1391,7 +1425,13 @@ async function syncYandex(profileId) {
       externalIds.push(mapped.external_id);
     }
   }
-  return { imported, externalIds };
+  const closedStale = await marketplaceReturnClaimsRepo.closeStalePending(
+    profileId,
+    'yandex',
+    externalIds,
+    'Закрыта (нет в открытых ЯМ)'
+  );
+  return { imported, externalIds, closedStale, syncOk: true };
 }
 
 async function submitAnswerYandex(profileId, row, body) {
@@ -1495,9 +1535,10 @@ export async function syncMarketplaceReturnClaims(profileId, opts = {}) {
       else continue;
       results.push({
         marketplace: mp,
-        ok: true,
-        imported: data.imported,
+        ok: data.syncOk !== false,
+        imported: data.imported || 0,
         closedStale: data.closedStale || 0,
+        error: data.error || null,
       });
     } catch (e) {
       logger.warn('[ReturnClaims] sync failed', { marketplace: mp, error: e?.message });

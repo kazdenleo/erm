@@ -136,11 +136,15 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
       const results = Array.isArray(data?.results) ? data.results : [];
       const parts = results.map((r) => {
         const name = r.marketplace === 'wildberries' ? 'WB' : r.marketplace === 'yandex' ? 'ЯМ' : 'Ozon';
-        if (!r.ok) return `${name}: ошибка`;
+        if (!r.ok) return `${name}: ${r.error || 'ошибка'}`;
         const closed = Number(r.closedStale) || 0;
         return closed > 0 ? `${name}: ${r.imported} (закрыто устаревших: ${closed})` : `${name}: ${r.imported}`;
       });
-      setSyncInfo(parts.length ? `Синхронизация: ${parts.join(', ')}` : 'Синхронизация завершена');
+      setSyncInfo(parts.length ? `Синхронизация: ${parts.join('; ')}` : 'Синхронизация завершена');
+      const failMsgs = results.filter((r) => !r.ok && r.error).map((r) => r.error);
+      if (failMsgs.length) {
+        setError(failMsgs.join(' · '));
+      }
       await loadRef.current();
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Ошибка синхронизации');
