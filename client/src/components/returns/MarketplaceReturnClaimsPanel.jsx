@@ -371,15 +371,7 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
                     <div className="mp-claims-comment">{row.buyerComment || '—'}</div>
                   </td>
                   <td>{formatMoney(row.price, row.currency)}</td>
-                  <td>
-                    <div>{row.orderId || '—'}</div>
-                    {row.meta?.srid &&
-                    String(row.meta.srid) !== String(row.orderId || '') ? (
-                      <div className="mp-returns-sub" title="Внутренний srid WB">
-                        {row.meta.srid}
-                      </div>
-                    ) : null}
-                  </td>
+                  <td>{row.orderId || '—'}</td>
                   <td>{formatDt(row.sourceCreatedAt)}</td>
                   <td className="mp-returns-actions-cell">
                     {row.needsDecision ? (
@@ -419,10 +411,6 @@ export function MarketplaceReturnClaimsPanel({ embedded = false }) {
             <div className="mp-claims-modal__meta">
               <div>
                 <strong>Заказ:</strong> {active.orderId || '—'}
-                {active.meta?.srid &&
-                String(active.meta.srid) !== String(active.orderId || '') ? (
-                  <div className="mp-returns-sub">srid: {active.meta.srid}</div>
-                ) : null}
               </div>
               <div>
                 <strong>SKU:</strong> {active.skuOrOffer || '—'}
