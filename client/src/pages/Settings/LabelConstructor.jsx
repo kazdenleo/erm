@@ -10,6 +10,7 @@ import { cellLabelTemplatesApi } from '../../services/cellLabelTemplates.api.js'
 import { userCategoriesApi } from '../../services/userCategories.api.js';
 import { productAttributesApi } from '../../services/productAttributes.api.js';
 import { productsApi } from '../../services/products.api.js';
+import { addressStorageApi } from '../../services/addressStorage.api.js';
 import { LABEL_SIZES } from './Labels.jsx';
 import { LABEL_PRODUCT_FIELDS, labelProductFieldLabel } from '../../constants/labelProductFields.js';
 import './LabelConstructor.css';
@@ -36,6 +37,30 @@ const CELL_ELEMENT_TYPES = [
   { type: 'warehouse', label: 'Склад' },
   { type: 'barcode', label: 'Штрихкод ячейки' },
 ];
+
+const CELL_ELEMENT_TYPE_SET = new Set(CELL_ELEMENT_TYPES.map((t) => t.type));
+
+const SAMPLE_CELL_PREVIEW = {
+  id: 'sample',
+  code: 'A-01-3-2',
+  legend: 'Стеллаж A · Ряд 01 · Полка 3 · Ячейка 2',
+  barcode: 'A-01-3-2',
+  warehouseName: 'Основной склад',
+};
+
+function sanitizeCellElements(elements) {
+  return (elements || []).filter((el) => el && CELL_ELEMENT_TYPE_SET.has(el.type));
+}
+
+function cellPreviewLegend(location, settings) {
+  const levels = Array.isArray(settings?.levels) ? settings.levels : [];
+  const parts = Array.isArray(location?.parts) ? location.parts : [];
+  const legend = parts
+    .map((p, i) => `${levels[i]?.label || ''} ${p}`.trim())
+    .filter(Boolean)
+    .join(' · ');
+  return legend || SAMPLE_CELL_PREVIEW.legend;
+}
 
 const LABEL_PRESET_MM = {
   '58x40': { widthMm: 58, heightMm: 40 },
@@ -166,9 +191,12 @@ function normalizeTemplate(data, { packaging = false, cell = false } = {}) {
     : packaging
       ? defaultPackagingElements(base)
       : defaultElements(base);
+  const rawElements = hasElementsList
+    ? clampElementsForSave(d.elements, { packaging, cell })
+    : fallback;
   return {
     ...base,
-    elements: hasElementsList ? clampElementsForSave(d.elements, { packaging, cell }) : fallback,
+    elements: cell ? sanitizeCellElements(rawElements) : rawElements,
   };
 }
 
@@ -249,10 +277,11 @@ function clampElementsForSave(elements, { packaging = false, cell = false } = {}
 }
 
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
-function buildTemplatePayload(form, { packaging = false, cell = false } = {}) {
+function buildTemplatePayload(form, { packaging = false, cell = false, previewCell = null } = {}) {
   const isCustom = cell && form.size_preset === 'custom';
   const size = labelSizeMm(form);
-  return {
+  const elements = clampElementsForSave(form.elements, { packaging, cell });
+  const payload = {
     size_preset: isCustom ? 'custom' : form.size_preset || '58x40',
     width_mm: isCustom ? size.widthMm : null,
     height_mm: isCustom ? size.heightMm : null,
@@ -261,8 +290,10 @@ function buildTemplatePayload(form, { packaging = false, cell = false } = {}) {
     margin_bottom_mm: parseMmValue(form.margin_bottom_mm, 2),
     margin_left_mm: parseMmValue(form.margin_left_mm, 2),
     line_gap_mm: parseMmValue(form.line_gap_mm, 1),
-    elements: clampElementsForSave(form.elements, { packaging, cell }),
+    elements: cell ? sanitizeCellElements(elements) : elements,
   };
+  if (cell && previewCell) payload.previewCell = previewCell;
+  return payload;
 }
 
 export function LabelConstructor() {
@@ -287,8 +318,47 @@ export function LabelConstructor() {
   const [packagingProducts, setPackagingProducts] = useState([]);
   const [dragElementIndex, setDragElementIndex] = useState(null);
   const [dragOverElementIndex, setDragOverElementIndex] = useState(null);
+  const [cellWarehouses, setCellWarehouses] = useState([]);
+  const [cellLocations, setCellLocations] = useState([]);
+  const [cellWarehouseSettings, setCellWarehouseSettings] = useState(null);
+  const [previewWarehouseId, setPreviewWarehouseId] = useState('');
+  const [previewLocationId, setPreviewLocationId] = useState('');
   const isPackaging = editorMode === 'packaging';
   const isCell = editorMode === 'cell';
+
+  const selectedPreviewLocation = useMemo(() => {
+    if (!previewLocationId) return null;
+    return cellLocations.find((l) => String(l.id) === String(previewLocationId)) || null;
+  }, [cellLocations, previewLocationId]);
+
+  const cellPreviewPayload = useMemo(() => {
+    if (!isCell) return null;
+    if (!selectedPreviewLocation) return SAMPLE_CELL_PREVIEW;
+    const wh =
+      cellWarehouses.find((w) => String(w.id) === String(previewWarehouseId)) ||
+      cellWarehouses.find((w) => String(w.id) === String(selectedPreviewLocation.warehouse_id)) ||
+      null;
+    const code = String(selectedPreviewLocation.code || '').trim() || SAMPLE_CELL_PREVIEW.code;
+    return {
+      id: selectedPreviewLocation.id,
+      code,
+      legend: cellPreviewLegend(selectedPreviewLocation, cellWarehouseSettings),
+      barcode:
+        String(
+          selectedPreviewLocation.effective_barcode ||
+            selectedPreviewLocation.effectiveBarcode ||
+            selectedPreviewLocation.barcode ||
+            code
+        ).trim() || code,
+      warehouseName: String(wh?.name || '').trim() || SAMPLE_CELL_PREVIEW.warehouseName,
+    };
+  }, [
+    isCell,
+    selectedPreviewLocation,
+    cellWarehouses,
+    previewWarehouseId,
+    cellWarehouseSettings,
+  ]);
 
   const categoryById = useMemo(() => {
     const m = {};
@@ -408,6 +478,7 @@ export function LabelConstructor() {
     let cancelled = false;
     setPreviewProductId('');
     setPreviewProductDetail(null);
+    setPreviewLocationId('');
     setError('');
     (async () => {
       try {
@@ -419,10 +490,72 @@ export function LabelConstructor() {
         if (!cancelled) setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки шаблона ячейки');
       }
     })();
+    (async () => {
+      try {
+        const whRes = await addressStorageApi.listWarehouses();
+        const list = Array.isArray(whRes?.data) ? whRes.data : Array.isArray(whRes) ? whRes : [];
+        if (cancelled) return;
+        setCellWarehouses(list);
+        if (list.length) {
+          setPreviewWarehouseId((prev) => prev || String(list[0].id));
+        }
+      } catch {
+        if (!cancelled) setCellWarehouses([]);
+      }
+    })();
     return () => {
       cancelled = true;
     };
   }, [isCell]);
+
+  /** Поля товара (sku/name/…) в шаблоне ячейки бессмысленны — убираем из формы сразу. */
+  useEffect(() => {
+    if (!isCell) return;
+    setForm((prev) => {
+      const next = sanitizeCellElements(prev.elements);
+      if (next.length === (prev.elements || []).length) return prev;
+      return { ...prev, elements: next };
+    });
+  }, [isCell, form.elements]);
+
+  useEffect(() => {
+    if (!isCell || !previewWarehouseId) {
+      if (isCell) {
+        setCellLocations([]);
+        setCellWarehouseSettings(null);
+      }
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [locRes, settingsRes] = await Promise.all([
+          addressStorageApi.listLocations(previewWarehouseId),
+          addressStorageApi.getSettings(previewWarehouseId),
+        ]);
+        if (cancelled) return;
+        const locs = Array.isArray(locRes?.data)
+          ? locRes.data
+          : Array.isArray(locRes)
+            ? locRes
+            : [];
+        setCellLocations(locs.slice(0, 200));
+        setCellWarehouseSettings(settingsRes?.data ?? settingsRes ?? null);
+        setPreviewLocationId((prev) => {
+          if (prev && locs.some((l) => String(l.id) === String(prev))) return prev;
+          return '';
+        });
+      } catch {
+        if (!cancelled) {
+          setCellLocations([]);
+          setCellWarehouseSettings(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCell, previewWarehouseId]);
 
   useEffect(() => {
     if (!previewProductId) {
@@ -457,7 +590,10 @@ export function LabelConstructor() {
       setPreviewError('');
       try {
         const blob = isCell
-          ? await cellLabelTemplatesApi.preview(buildTemplatePayload(form, { cell: true }), { scale: 4 })
+          ? await cellLabelTemplatesApi.preview(
+              buildTemplatePayload(form, { cell: true, previewCell: cellPreviewPayload }),
+              { scale: 4 }
+            )
           : isPackaging
           ? await packagingLabelTemplatesApi.preview(buildTemplatePayload(form, { packaging: true }), {
               productId: previewProductId || undefined,
@@ -500,6 +636,7 @@ export function LabelConstructor() {
     isCell,
     selectedCategoryId,
     previewProductId,
+    cellPreviewPayload,
     form.size_preset,
     form.width_mm,
     form.height_mm,
@@ -914,9 +1051,9 @@ export function LabelConstructor() {
                 ))}
               </div>
               <p className="label-constructor-hint" style={{ marginTop: 8 }}>
-                «Между строками» — интервал внутри перенесённого текста (название, атрибуты) и отступ между
-                полями (название, SKU, штрихкод). Для проверки переноса выберите товар с длинным названием
-                или увеличьте шрифт названия.
+                {isCell
+                  ? '«Между строками» — интервал между полями (адрес, расшифровка, склад, штрихкод) и внутри длинного текста.'
+                  : '«Между строками» — интервал внутри перенесённого текста (название, атрибуты) и отступ между полями (название, SKU, штрихкод). Для проверки переноса выберите товар с длинным названием или увеличьте шрифт названия.'}
               </p>
             </fieldset>
 
@@ -1176,19 +1313,19 @@ export function LabelConstructor() {
                 })}
               </ul>
               <div className="label-constructor-add-buttons d-flex flex-wrap gap-2 mt-2">
-                {!hasElementType(form.elements, 'name') ? (
+                {!isCell && !hasElementType(form.elements, 'name') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addNameElement}>
                     + Название
                   </button>
                 ) : null}
-                {!hasElementType(form.elements, 'sku') ? (
+                {!isCell && !hasElementType(form.elements, 'sku') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addSkuElement}>
                     + {isPackaging ? 'Артикул' : 'SKU'}
                   </button>
                 ) : null}
                 {!hasElementType(form.elements, 'barcode') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addBarcodeElement}>
-                    + {isPackaging ? 'ШК упаковки' : 'Штрихкод'}
+                    + {isPackaging ? 'ШК упаковки' : isCell ? 'Штрихкод ячейки' : 'Штрихкод'}
                   </button>
                 ) : null}
                 {isCell && !hasElementType(form.elements, 'code') ? (
@@ -1281,7 +1418,7 @@ export function LabelConstructor() {
               </div>
               <p className="text-muted small mt-2 mb-0">
                 {isCell
-                  ? 'Адрес, расшифровка уровней шаблона склада и штрихкод. Предпросмотр — пример A-01-3-2.'
+                  ? 'На этикетке ячейки — только адрес, расшифровка уровней, склад и штрихкод. Поля товара (SKU, название) сюда не подходят.'
                   : isPackaging
                   ? 'На этикетке упаковки печатаются поля шаблона: артикул/название товара, ШК коробки и количество штук в упаковке. На маркетплейс не отправляется.'
                   : 'Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин. чистая прибыль.'}
@@ -1329,7 +1466,62 @@ export function LabelConstructor() {
               )}
             </div>
             ) : (
-              <p className="label-constructor-hint">Пример: A-01-3-2 — стеллаж, ряд, полка, ячейка.</p>
+              <div className="form-group label-constructor-cell-preview-data">
+                <label className="label-constructor-label">Данные для предпросмотра</label>
+                {cellWarehouses.length > 1 ? (
+                  <select
+                    className="label-constructor-select mb-2"
+                    value={previewWarehouseId}
+                    onChange={(e) => {
+                      setPreviewWarehouseId(e.target.value);
+                      setPreviewLocationId('');
+                    }}
+                    aria-label="Склад для предпросмотра"
+                  >
+                    {cellWarehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name || `Склад #${w.id}`}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <select
+                  className="label-constructor-select"
+                  value={previewLocationId}
+                  onChange={(e) => setPreviewLocationId(e.target.value)}
+                  aria-label="Ячейка для предпросмотра"
+                >
+                  <option value="">Пример: {SAMPLE_CELL_PREVIEW.code}</option>
+                  {cellLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.code || `Ячейка #${loc.id}`}
+                    </option>
+                  ))}
+                </select>
+                <dl className="label-constructor-sample-dl">
+                  <div>
+                    <dt>Адрес</dt>
+                    <dd>{cellPreviewPayload?.code}</dd>
+                  </div>
+                  <div>
+                    <dt>Расшифровка</dt>
+                    <dd>{cellPreviewPayload?.legend}</dd>
+                  </div>
+                  <div>
+                    <dt>Склад</dt>
+                    <dd>{cellPreviewPayload?.warehouseName}</dd>
+                  </div>
+                  <div>
+                    <dt>Штрихкод</dt>
+                    <dd>{cellPreviewPayload?.barcode}</dd>
+                  </div>
+                </dl>
+                {!previewLocationId ? (
+                  <p className="label-constructor-hint mb-0">
+                    Показан тестовый пример. Можно выбрать реальную ячейку — поля на этикетке обновятся.
+                  </p>
+                ) : null}
+              </div>
             )}
             <div
               className="label-constructor-preview-frame"
@@ -1353,7 +1545,7 @@ export function LabelConstructor() {
             </div>
             <p className="label-constructor-hint">
               {isCell
-                ? 'Предпросмотр увеличен. После сохранения печать ячеек использует этот шаблон.'
+                ? 'Предпросмотр увеличен по данным выше. После сохранения печать ячеек использует этот шаблон.'
                 : isPackaging
                 ? 'Предпросмотр увеличен. Если у товара есть ШК коробки — он подставится; иначе используются тестовые данные.'
                 : 'Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих выберите комплект в списке или смотрите пример с тестовым составом.'}

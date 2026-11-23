@@ -6,28 +6,32 @@ import { cellLabelTemplatesRepository } from '../repositories/cellLabelTemplates
 import productLabelsService, { defaultCellLabelElements } from '../services/productLabels.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
+const CELL_ELEMENT_TYPES = new Set(['code', 'legend', 'warehouse', 'barcode']);
+
 function normalizeElements(body) {
   if (!Array.isArray(body?.elements)) return defaultCellLabelElements();
   if (body.elements.length === 0) return [];
-  return body.elements.map((el, idx) => ({
-    id: el.id || `${el.type}-${idx}`,
-    type: el.type,
-    enabled: el.enabled !== false,
-    fontSize: el.fontSize != null ? Math.min(48, Math.max(6, Number(el.fontSize))) : undefined,
-    textFontSize:
-      el.textFontSize != null ? Math.min(36, Math.max(6, Number(el.textFontSize))) : undefined,
-    bold: el.bold === true,
-    heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
-    widthMm: el.widthMm != null ? Number(el.widthMm) : undefined,
-    showText: el.showText !== false,
-    align: (() => {
-      const a = String(el.align ?? el.textAlign ?? '').trim().toLowerCase();
-      if (a === 'center' || a === 'middle') return 'center';
-      if (a === 'right' || a === 'end') return 'right';
-      if (a === 'left' || a === 'start') return 'left';
-      return undefined;
-    })(),
-  }));
+  return body.elements
+    .filter((el) => el && CELL_ELEMENT_TYPES.has(el.type))
+    .map((el, idx) => ({
+      id: el.id || `${el.type}-${idx}`,
+      type: el.type,
+      enabled: el.enabled !== false,
+      fontSize: el.fontSize != null ? Math.min(48, Math.max(6, Number(el.fontSize))) : undefined,
+      textFontSize:
+        el.textFontSize != null ? Math.min(36, Math.max(6, Number(el.textFontSize))) : undefined,
+      bold: el.bold === true,
+      heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
+      widthMm: el.widthMm != null ? Number(el.widthMm) : undefined,
+      showText: el.showText !== false,
+      align: (() => {
+        const a = String(el.align ?? el.textAlign ?? '').trim().toLowerCase();
+        if (a === 'center' || a === 'middle') return 'center';
+        if (a === 'right' || a === 'end') return 'right';
+        if (a === 'left' || a === 'start') return 'left';
+        return undefined;
+      })(),
+    }));
 }
 
 function requireProfileId(req) {

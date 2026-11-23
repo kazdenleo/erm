@@ -288,3 +288,37 @@
 .label-constructor-preview-error {
   color: #b91c1c;
 }
+
+.label-constructor-cell-preview-data {
+  margin-bottom: 12px;
+}
+
+.label-constructor-sample-dl {
+  margin: 10px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  background: #f9fafb;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.label-constructor-sample-dl > div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.label-constructor-sample-dl dt {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-weight: 500;
+}
+
+.label-constructor-sample-dl dd {
+  margin: 0;
+  color: var(--text, #111827);
+  word-break: break-word;
+}

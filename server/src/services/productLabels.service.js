@@ -1200,6 +1200,11 @@ export const productLabelsService = {
   },
 
   async renderCellPreview(templatePayload, { previewScale = 4 } = {}) {
+    const allowedCellTypes = new Set(['code', 'legend', 'warehouse', 'barcode']);
+    const rawElements =
+      Array.isArray(templatePayload.elements) && templatePayload.elements.length
+        ? templatePayload.elements.filter((el) => el && allowedCellTypes.has(el.type))
+        : defaultCellLabelElements();
     const template = {
       ...defaultCellTemplate(),
       size_preset: templatePayload.size_preset || templatePayload.sizePreset || '58x40',
@@ -1210,12 +1215,20 @@ export const productLabelsService = {
       margin_bottom_mm: Number(templatePayload.margin_bottom_mm ?? templatePayload.marginBottomMm ?? 2),
       margin_left_mm: Number(templatePayload.margin_left_mm ?? templatePayload.marginLeftMm ?? 2),
       line_gap_mm: Number(templatePayload.line_gap_mm ?? templatePayload.lineGapMm ?? 1),
-      elements:
-        Array.isArray(templatePayload.elements) && templatePayload.elements.length
-          ? templatePayload.elements
-          : defaultCellLabelElements(),
+      elements: rawElements.length ? rawElements : defaultCellLabelElements(),
     };
-    return renderWithTemplate(template, {}, 'png', { previewScale, cell: sampleCellLabel() });
+    const raw = templatePayload.previewCell || templatePayload.sampleCell || null;
+    const fallback = sampleCellLabel();
+    const cell = {
+      id: raw?.id ?? raw?.locationId ?? fallback.id,
+      code: String(raw?.code || fallback.code).trim() || fallback.code,
+      legend: String(raw?.legend || fallback.legend).trim() || fallback.legend,
+      barcode: String(raw?.barcode || raw?.effectiveBarcode || raw?.code || fallback.barcode).trim() || fallback.barcode,
+      warehouseName:
+        String(raw?.warehouseName || raw?.warehouse_name || fallback.warehouseName).trim() ||
+        fallback.warehouseName,
+    };
+    return renderWithTemplate(template, {}, 'png', { previewScale, cell });
   },
 
   async renderCellLabelsPdf(template, cells, options = {}) {
