@@ -479,6 +479,15 @@ export function sampleCellLabel() {
   };
 }
 
+/** Товар для предпросмотра этикетки ячейки (название / SKU). */
+export function sampleCellProduct() {
+  return {
+    id: 'sample',
+    name: 'Пример товара',
+    sku: 'SKU-DEMO',
+  };
+}
+
 function normalizeElements(elements) {
   const list = Array.isArray(elements) && elements.length ? elements : defaultLabelElements();
   return list.filter((el) => el && el.enabled !== false);
@@ -1200,7 +1209,7 @@ export const productLabelsService = {
   },
 
   async renderCellPreview(templatePayload, { previewScale = 4 } = {}) {
-    const allowedCellTypes = new Set(['code', 'legend', 'warehouse', 'barcode']);
+    const allowedCellTypes = new Set(['code', 'legend', 'warehouse', 'barcode', 'name', 'sku']);
     const rawElements =
       Array.isArray(templatePayload.elements) && templatePayload.elements.length
         ? templatePayload.elements.filter((el) => el && allowedCellTypes.has(el.type))
@@ -1228,7 +1237,14 @@ export const productLabelsService = {
         String(raw?.warehouseName || raw?.warehouse_name || fallback.warehouseName).trim() ||
         fallback.warehouseName,
     };
-    return renderWithTemplate(template, {}, 'png', { previewScale, cell });
+    const rawProduct = templatePayload.previewProduct || templatePayload.sampleProduct || null;
+    const sampleProduct = sampleCellProduct();
+    const product = {
+      id: rawProduct?.id ?? sampleProduct.id,
+      name: String(rawProduct?.name || sampleProduct.name).trim() || sampleProduct.name,
+      sku: String(rawProduct?.sku || sampleProduct.sku).trim() || sampleProduct.sku,
+    };
+    return renderWithTemplate(template, product, 'png', { previewScale, cell });
   },
 
   async renderCellLabelsPdf(template, cells, options = {}) {
@@ -1238,7 +1254,7 @@ export const productLabelsService = {
 
     if (pageMode !== 'a4') {
       for (const cell of list) {
-        const rendered = await renderWithTemplate(template, {}, 'png', { cell });
+        const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
         const widthPt = mmToPt(rendered.widthMm);
         const heightPt = mmToPt(rendered.heightMm);
         const image = await doc.embedPng(rendered.buffer);
@@ -1280,7 +1296,7 @@ export const productLabelsService = {
       if (indexOnPage === 0) {
         page = doc.addPage([pageWPt, pageHPt]);
       }
-      const rendered = await renderWithTemplate(template, {}, 'png', { cell });
+      const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
       const image = await doc.embedPng(rendered.buffer);
       const col = indexOnPage % cols;
       const row = Math.floor(indexOnPage / cols);

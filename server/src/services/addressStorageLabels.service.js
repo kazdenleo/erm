@@ -6,6 +6,7 @@
 import bwipjs from 'bwip-js';
 import sharp from 'sharp';
 import { PDFDocument, rgb } from 'pdf-lib';
+import { query } from '../config/database.js';
 import { effectiveBarcode } from './addressStorage.service.js';
 import productLabelsService from './productLabels.service.js';
 import { getLabelSvgFontFaceCss, labelSvgFontFamily } from '../utils/labelFonts.js';
@@ -93,6 +94,29 @@ function locationLegend(loc, settings) {
     .join(' · ');
 }
 
+async function loadAssignedProductsByLocationIds(locationIds) {
+  const ids = [...new Set((locationIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Map();
+  const r = await query(
+    `SELECT DISTINCT ON (a.location_id)
+            a.location_id, p.id AS product_id, p.name, p.sku
+     FROM product_storage_assignments a
+     JOIN products p ON p.id = a.product_id
+     WHERE a.location_id = ANY($1::bigint[])
+     ORDER BY a.location_id, p.name NULLS LAST, p.id`,
+    [ids]
+  );
+  const map = new Map();
+  for (const row of r.rows || []) {
+    map.set(Number(row.location_id), {
+      id: Number(row.product_id),
+      name: row.name || '',
+      sku: row.sku || '',
+    });
+  }
+  return map;
+}
+
 export async function buildLocationLabelsPdf(
   locations,
   settings,
@@ -101,12 +125,15 @@ export async function buildLocationLabelsPdf(
   const mode = pageMode === 'a4' ? 'a4' : 'single';
   const saved = template?.saved === true || template?.id != null;
   if (saved) {
-    const cells = (locations || []).map((loc) => ({
+    const list = locations || [];
+    const byLoc = await loadAssignedProductsByLocationIds(list.map((l) => l.id));
+    const cells = list.map((loc) => ({
       id: loc.id,
       code: loc.code,
       legend: locationLegend(loc, settings),
       barcode: effectiveBarcode(loc),
       warehouseName: warehouseName || '',
+      product: byLoc.get(Number(loc.id)) || null,
     }));
     return productLabelsService.renderCellLabelsPdf(template, cells, { pageMode: mode });
   }

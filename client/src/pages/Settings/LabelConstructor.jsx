@@ -36,6 +36,8 @@ const CELL_ELEMENT_TYPES = [
   { type: 'legend', label: 'Расшифровка уровней' },
   { type: 'warehouse', label: 'Склад' },
   { type: 'barcode', label: 'Штрихкод ячейки' },
+  { type: 'name', label: 'Название товара' },
+  { type: 'sku', label: 'SKU (артикул)' },
 ];
 
 const CELL_ELEMENT_TYPE_SET = new Set(CELL_ELEMENT_TYPES.map((t) => t.type));
@@ -46,6 +48,12 @@ const SAMPLE_CELL_PREVIEW = {
   legend: 'Стеллаж A · Ряд 01 · Полка 3 · Ячейка 2',
   barcode: 'A-01-3-2',
   warehouseName: 'Основной склад',
+};
+
+const SAMPLE_CELL_PRODUCT = {
+  id: 'sample',
+  name: 'Пример товара',
+  sku: 'SKU-DEMO',
 };
 
 function sanitizeCellElements(elements) {
@@ -278,7 +286,10 @@ function clampElementsForSave(elements, { packaging = false, cell = false } = {}
 }
 
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
-function buildTemplatePayload(form, { packaging = false, cell = false, previewCell = null } = {}) {
+function buildTemplatePayload(
+  form,
+  { packaging = false, cell = false, previewCell = null, previewProduct = null } = {}
+) {
   const isCustom = cell && form.size_preset === 'custom';
   const size = labelSizeMm(form);
   const elements = clampElementsForSave(form.elements, { packaging, cell });
@@ -294,6 +305,7 @@ function buildTemplatePayload(form, { packaging = false, cell = false, previewCe
     elements: cell ? sanitizeCellElements(elements) : elements,
   };
   if (cell && previewCell) payload.previewCell = previewCell;
+  if (cell && previewProduct) payload.previewProduct = previewProduct;
   return payload;
 }
 
@@ -325,22 +337,38 @@ export function LabelConstructor() {
   const [cellWarehouseSettings, setCellWarehouseSettings] = useState(null);
   const [previewWarehouseId, setPreviewWarehouseId] = useState('');
   const [previewLocationId, setPreviewLocationId] = useState('');
+  const [cellPreviewProducts, setCellPreviewProducts] = useState([]);
+  const [cellAssignedLocation, setCellAssignedLocation] = useState(null);
+  const [cellAssignedNote, setCellAssignedNote] = useState('');
   /** Черновики шаблона ячейки по size_preset — чтобы при переключении размера не терять несохранённое. */
   const cellDraftsRef = useRef({});
   const isPackaging = editorMode === 'packaging';
   const isCell = editorMode === 'cell';
 
   const selectedPreviewLocation = useMemo(() => {
+    if (cellAssignedLocation) return cellAssignedLocation;
     if (!previewLocationId) return null;
     return cellLocations.find((l) => String(l.id) === String(previewLocationId)) || null;
-  }, [cellLocations, previewLocationId]);
+  }, [cellAssignedLocation, cellLocations, previewLocationId]);
+
+  const cellPreviewProduct = useMemo(() => {
+    if (!isCell) return null;
+    if (!previewProductId) return SAMPLE_CELL_PRODUCT;
+    const fromList = cellPreviewProducts.find((p) => String(p.id) === String(previewProductId));
+    const fromDetail = previewProductDetail;
+    return {
+      id: fromDetail?.id ?? fromList?.id ?? previewProductId,
+      name: String(fromDetail?.name || fromList?.name || '').trim() || SAMPLE_CELL_PRODUCT.name,
+      sku: String(fromDetail?.sku || fromList?.sku || '').trim() || SAMPLE_CELL_PRODUCT.sku,
+    };
+  }, [isCell, previewProductId, cellPreviewProducts, previewProductDetail]);
 
   const cellPreviewPayload = useMemo(() => {
     if (!isCell) return null;
     if (!selectedPreviewLocation) return SAMPLE_CELL_PREVIEW;
     const wh =
       cellWarehouses.find((w) => String(w.id) === String(previewWarehouseId)) ||
-      cellWarehouses.find((w) => String(w.id) === String(selectedPreviewLocation.warehouse_id)) ||
+      cellWarehouses.find((w) => String(w.id) === String(selectedPreviewLocation.warehouse_id || selectedPreviewLocation.warehouseId)) ||
       null;
     const code = String(selectedPreviewLocation.code || '').trim() || SAMPLE_CELL_PREVIEW.code;
     return {
@@ -483,6 +511,8 @@ export function LabelConstructor() {
     setPreviewProductId('');
     setPreviewProductDetail(null);
     setPreviewLocationId('');
+    setCellAssignedLocation(null);
+    setCellAssignedNote('');
     setError('');
     cellDraftsRef.current = {};
     (async () => {
@@ -512,10 +542,77 @@ export function LabelConstructor() {
         if (!cancelled) setCellWarehouses([]);
       }
     })();
+    (async () => {
+      try {
+        const res = await productsApi.getAll({ limit: 80 });
+        if (!cancelled) setCellPreviewProducts((res?.data || []).slice(0, 80));
+      } catch {
+        if (!cancelled) setCellPreviewProducts([]);
+      }
+    })();
     return () => {
       cancelled = true;
     };
   }, [isCell]);
+
+  /** По выбранному товару подтягиваем закреплённую ячейку на складе предпросмотра. */
+  useEffect(() => {
+    if (!isCell) return undefined;
+    if (!previewProductId) {
+      setCellAssignedLocation(null);
+      setCellAssignedNote('');
+      setPreviewLocationId('');
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await addressStorageApi.productLocations(previewProductId);
+        const warehouses = Array.isArray(res?.warehouses)
+          ? res.warehouses
+          : Array.isArray(res?.data?.warehouses)
+            ? res.data.warehouses
+            : [];
+        const whId = previewWarehouseId ? String(previewWarehouseId) : '';
+        const row =
+          (whId && warehouses.find((w) => String(w.warehouseId ?? w.warehouse_id) === whId)) ||
+          warehouses.find((w) => w.assigned) ||
+          warehouses[0] ||
+          null;
+        const assigned = row?.assigned || null;
+        const stockLoc = Array.isArray(row?.stocks) && row.stocks[0]?.location ? row.stocks[0].location : null;
+        const loc = assigned || stockLoc || null;
+        if (cancelled) return;
+        if (loc) {
+          setCellAssignedLocation(loc);
+          setPreviewLocationId(String(loc.id));
+          if (row?.warehouseId != null && !previewWarehouseId) {
+            setPreviewWarehouseId(String(row.warehouseId));
+          } else if (row?.warehouse_id != null && !previewWarehouseId) {
+            setPreviewWarehouseId(String(row.warehouse_id));
+          }
+          setCellAssignedNote(
+            assigned
+              ? `Ячейка из закрепления: ${loc.code || loc.id}`
+              : `Закрепления нет — взята ячейка с остатком: ${loc.code || loc.id}`
+          );
+        } else {
+          setCellAssignedLocation(null);
+          setPreviewLocationId('');
+          setCellAssignedNote('У товара нет закреплённой ячейки на этом складе — в предпросмотре пример адреса.');
+        }
+      } catch {
+        if (!cancelled) {
+          setCellAssignedLocation(null);
+          setPreviewLocationId('');
+          setCellAssignedNote('Не удалось загрузить ячейку товара — показан пример.');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCell, previewProductId, previewWarehouseId]);
 
   /** Поля товара (sku/name/…) в шаблоне ячейки бессмысленны — убираем из формы сразу. */
   useEffect(() => {
@@ -600,7 +697,11 @@ export function LabelConstructor() {
       try {
         const blob = isCell
           ? await cellLabelTemplatesApi.preview(
-              buildTemplatePayload(form, { cell: true, previewCell: cellPreviewPayload }),
+              buildTemplatePayload(form, {
+                cell: true,
+                previewCell: cellPreviewPayload,
+                previewProduct: cellPreviewProduct,
+              }),
               { scale: 4 }
             )
           : isPackaging
@@ -646,6 +747,7 @@ export function LabelConstructor() {
     selectedCategoryId,
     previewProductId,
     cellPreviewPayload,
+    cellPreviewProduct,
     form.size_preset,
     form.width_mm,
     form.height_mm,
@@ -1401,12 +1503,12 @@ export function LabelConstructor() {
                 })}
               </ul>
               <div className="label-constructor-add-buttons d-flex flex-wrap gap-2 mt-2">
-                {!isCell && !hasElementType(form.elements, 'name') ? (
+                {!hasElementType(form.elements, 'name') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addNameElement}>
                     + Название
                   </button>
                 ) : null}
-                {!isCell && !hasElementType(form.elements, 'sku') ? (
+                {!hasElementType(form.elements, 'sku') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addSkuElement}>
                     + {isPackaging ? 'Артикул' : 'SKU'}
                   </button>
@@ -1506,7 +1608,7 @@ export function LabelConstructor() {
               </div>
               <p className="text-muted small mt-2 mb-0">
                 {isCell
-                  ? 'На этикетке ячейки — только адрес, расшифровка уровней, склад и штрихкод. Поля товара (SKU, название) сюда не подходят.'
+                  ? 'Адрес, расшифровка, склад, штрихкод ячейки; название и SKU — из закреплённого за ячейкой товара (при печати).'
                   : isPackaging
                   ? 'На этикетке упаковки печатаются поля шаблона: артикул/название товара, ШК коробки и количество штук в упаковке. На маркетплейс не отправляется.'
                   : 'Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин. чистая прибыль.'}
@@ -1562,6 +1664,7 @@ export function LabelConstructor() {
                     value={previewWarehouseId}
                     onChange={(e) => {
                       setPreviewWarehouseId(e.target.value);
+                      setCellAssignedLocation(null);
                       setPreviewLocationId('');
                     }}
                     aria-label="Склад для предпросмотра"
@@ -1575,18 +1678,27 @@ export function LabelConstructor() {
                 ) : null}
                 <select
                   className="label-constructor-select"
-                  value={previewLocationId}
-                  onChange={(e) => setPreviewLocationId(e.target.value)}
-                  aria-label="Ячейка для предпросмотра"
+                  value={previewProductId}
+                  onChange={(e) => setPreviewProductId(e.target.value)}
+                  aria-label="Товар для предпросмотра"
                 >
-                  <option value="">Пример: {SAMPLE_CELL_PREVIEW.code}</option>
-                  {cellLocations.map((loc) => (
-                    <option key={loc.id} value={loc.id}>
-                      {loc.code || `Ячейка #${loc.id}`}
+                  <option value="">Пример (тестовые данные)</option>
+                  {cellPreviewProducts.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.sku ? `${p.sku} — ` : ''}
+                      {p.name || `Товар #${p.id}`}
                     </option>
                   ))}
                 </select>
                 <dl className="label-constructor-sample-dl">
+                  <div>
+                    <dt>Товар</dt>
+                    <dd>{cellPreviewProduct?.name}</dd>
+                  </div>
+                  <div>
+                    <dt>SKU</dt>
+                    <dd>{cellPreviewProduct?.sku}</dd>
+                  </div>
                   <div>
                     <dt>Адрес</dt>
                     <dd>{cellPreviewPayload?.code}</dd>
@@ -1604,9 +1716,11 @@ export function LabelConstructor() {
                     <dd>{cellPreviewPayload?.barcode}</dd>
                   </div>
                 </dl>
-                {!previewLocationId ? (
+                {cellAssignedNote ? (
+                  <p className="label-constructor-hint mb-0">{cellAssignedNote}</p>
+                ) : !previewProductId ? (
                   <p className="label-constructor-hint mb-0">
-                    Показан тестовый пример. Можно выбрать реальную ячейку — поля на этикетке обновятся.
+                    Выберите товар — подтянется закреплённая ячейка. Без выбора показан тестовый пример.
                   </p>
                 ) : null}
               </div>

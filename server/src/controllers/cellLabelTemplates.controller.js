@@ -6,7 +6,7 @@ import { cellLabelTemplatesRepository } from '../repositories/cellLabelTemplates
 import productLabelsService, { defaultCellLabelElements } from '../services/productLabels.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
-const CELL_ELEMENT_TYPES = new Set(['code', 'legend', 'warehouse', 'barcode']);
+const CELL_ELEMENT_TYPES = new Set(['code', 'legend', 'warehouse', 'barcode', 'name', 'sku']);
 
 function normalizeElements(body) {
   if (!Array.isArray(body?.elements)) return defaultCellLabelElements();
