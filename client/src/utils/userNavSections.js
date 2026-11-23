@@ -32,8 +32,8 @@ export function isNavFeatureEnabled(features, key) {
   if (!key) return true;
   const f = features;
   if (f == null || typeof f !== 'object') return true;
-  if (Object.keys(f).length === 0) return true;
-  // wb_returns — устаревший раздел; не должен скрывать «Возвраты от клиентов»
+  // Пустой объект = права ещё не пришли / сбой: не открываем всё меню.
+  if (Object.keys(f).length === 0) return false;
   if (key === 'assembly') {
     return f.nav_assembly !== false;
   }

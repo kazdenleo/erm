@@ -371,7 +371,8 @@ export function AuthProvider({ children }) {
           ? { id: profileId, name: user?.profile?.name ?? null }
           : null,
       profile: user?.profile ?? null,
-      features: features && typeof features === 'object' ? features : {},
+      // Не подменяем на {} — пустой объект в isNavFeatureEnabled открывал бы всё меню.
+      features: features && typeof features === 'object' ? features : null,
       limits: limits && typeof limits === 'object' ? limits : {},
       canUseFeature,
       selectedOrganizationId,
