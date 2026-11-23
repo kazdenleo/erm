@@ -1,8 +1,8 @@
 /**
  * Assembly Page
  * Сборка FBS: слева следующий заказ (со сканом — текущий), справа последний собранный.
- * Скан ищет первый заказ из отфильтрованного списка с этим товаром; другой товар —
- * другой заказ. Пока текущий состав не закрыт, сессия остаётся на нём.
+ * Скан сначала пробует заказ с левой карточки (очередь), затем — первый из списка
+ * с этим товаром. Пока текущий состав не закрыт, сессия остаётся на нём.
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
@@ -19,6 +19,7 @@ import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
 import {
   appendAccessTokenToUrl,
+  fetchPrintHelperHealth,
   printViaPrintHelper,
   printViaPrintHelperNavigation,
 } from '../../utils/printHelperClient.js';
@@ -33,6 +34,7 @@ import {
   pickAssemblyStageGroups,
   assemblyStageLabel,
 } from '../../utils/assemblyNextRecommendation';
+import { prioritizeAssemblyListOrder } from '../../utils/prioritizeAssemblyListOrder';
 import {
   applyPickedToStock,
   nextRecommendationScanOverlay,
@@ -480,6 +482,8 @@ export function Assembly() {
   const pickedQuantitiesRef = useRef({});
   /** Порядок строк таблицы сборки — при скане берём первый заказ из неё с этим товаром */
   const assemblyListOrderRef = useRef([]);
+  /** Группа на левой карточке — приоритет при первом скане общего SKU */
+  const assemblyQueueHeadRef = useRef(null);
   const markedCollectedKeyRef = useRef('');
   const autoFinishKeyRef = useRef('');
   /** Пока идёт markCollected + печать — игнорируем сканы (иначе сканер шлёт второй ввод и открывается чужой заказ с тем же товаром → вторая этикетка). */
@@ -908,6 +912,10 @@ export function Assembly() {
     }
     const labelUrlForHelper = appendAccessTokenToUrl(labelFileUrlAbs, accessToken);
 
+    const health = willUseHelperFetch
+      ? await fetchPrintHelperHealth(base)
+      : { ok: false, message: 'HTTP-сайт' };
+
     if (willUseHelperNavigate) {
       const nav = printViaPrintHelperNavigation({
         printHelperUrl: base,
@@ -933,7 +941,7 @@ export function Assembly() {
         pdfBuffer: warmedBlob,
         orderId: id,
         labelSize,
-        timeoutMs: PRINT_HELPER_FETCH_MS,
+        timeoutMs: 60000,
       });
     }
     if (!printed.ok) {
@@ -943,30 +951,40 @@ export function Assembly() {
         labelUrl: labelUrlForHelper,
         orderId: id,
         labelSize,
-        timeoutMs: PRINT_HELPER_FETCH_MS,
+        timeoutMs: 60000,
       });
-    }
-    // Fetch на 127.0.0.1 с HTTPS иногда режется — top-level navigate часто проходит.
-    if (!printed.ok && willUseHelperFetch) {
-      const nav = printViaPrintHelperNavigation({
-        printHelperUrl: base,
-        kind: 'order',
-        labelUrl: labelUrlForHelper,
-        orderId: id,
-        labelSize,
-      });
-      if (nav.ok) return;
     }
     if (printed.ok) return;
-    const msg = printed.message || 'Принтер не ответил';
+
+    const msg = printed.message || health.message || 'Print Helper не ответил';
+    const helperUp = health.ok === true;
+    const helperDown =
+      !helperUp &&
+      /недоступен|failed to fetch|networkerror|load failed|econnrefused|таймаут print helper|print helper не ответил/i.test(
+        String(msg)
+      );
+
+    // Helper в трее, но печать не прошла — не открываем window.print() (это и есть «окно печати»).
+    if (helperUp) {
+      const sumatraHint =
+        health.sumatraFound === false
+          ? ' SumatraPDF не найден — переустановите Print Helper.'
+          : '';
+      setLabelPrintError(
+        `Тихая печать не удалась: ${msg}.${sumatraHint} Проверьте принтер в «Настройки → Этикетки» (не «Print to PDF»).`
+      );
+      setTimeout(() => setLabelPrintError(null), 16000);
+      return;
+    }
+
     if (String(msg).includes('Этикетка') || String(msg).includes('загружена')) {
       setLabelPrintError('Этикетка для заказа не загружена. Запущена печать со страницы этикетки.');
       setTimeout(() => setLabelPrintError(null), 8000);
-    } else if (String(msg).includes('Таймаут')) {
+    } else if (helperDown) {
       setLabelPrintError(
-        'Таймаут печати: этикетка с маркетплейса долго формируется. Запущена печать со страницы этикетки.'
+        'Print Helper не отвечает — открыто окно печати браузера. Запустите erm-print-helper из трея/меню Пуск.'
       );
-      setTimeout(() => setLabelPrintError(null), 10000);
+      setTimeout(() => setLabelPrintError(null), 16000);
     } else {
       setLabelPrintError(`${msg}. Запущена печать со страницы этикетки.`);
       setTimeout(() => setLabelPrintError(null), 10000);
@@ -1088,16 +1106,53 @@ export function Assembly() {
           (curItems.length === 0 &&
             String(cur.order?.status ?? '').toLowerCase() !== 'assembled'));
 
-      const data = await assemblyApi.findOrderByBarcode(trimmed, {
-        marketplace: marketplaceFilter,
-        listOrder: assemblyListOrderRef.current,
-        ...(preferIncomplete
-          ? {
-              preferOrderId: String(cur.order.orderId),
-              preferMarketplace: normMarketplace(cur.order) || undefined
-            }
-          : {})
-      });
+      const queueHead = assemblyQueueHeadRef.current;
+      const listOrder = prioritizeAssemblyListOrder(
+        assemblyListOrderRef.current,
+        !preferIncomplete ? queueHead : null
+      );
+      const headOrderId = String(
+        queueHead?.primary?.orderId ?? queueHead?.primary?.order_id ?? ''
+      ).trim();
+      const headMarketplace = queueHead?.primary
+        ? normMarketplace(queueHead.primary) || undefined
+        : undefined;
+
+      const findByBarcode = (prefer) =>
+        assemblyApi.findOrderByBarcode(trimmed, {
+          marketplace: marketplaceFilter,
+          listOrder,
+          ...(prefer?.orderId
+            ? {
+                preferOrderId: String(prefer.orderId),
+                preferMarketplace: prefer.marketplace || undefined,
+              }
+            : {}),
+        });
+
+      let data;
+      if (preferIncomplete) {
+        data = await findByBarcode({
+          orderId: String(cur.order.orderId),
+          marketplace: normMarketplace(cur.order) || undefined,
+        });
+      } else if (headOrderId) {
+        // Первый скан: жёстко пробуем левую карточку (A+B), иначе общий A открывает A+C.
+        try {
+          data = await findByBarcode({
+            orderId: headOrderId,
+            marketplace: headMarketplace,
+          });
+        } catch (preferErr) {
+          if (preferErr?.response?.status === 409) {
+            data = await findByBarcode(null);
+          } else {
+            throw preferErr;
+          }
+        }
+      } else {
+        data = await findByBarcode(null);
+      }
       if (data?.order && data?.product) {
         if (
           marketplaceFilter !== 'all' &&
@@ -1575,6 +1630,7 @@ export function Assembly() {
       labelReadyByOrderId,
     ]
   );
+  assemblyQueueHeadRef.current = stage.currentGroup;
 
   const currentRecommendation = useMemo(
     () => buildAssemblyNextRecommendation(stage.currentGroup),
