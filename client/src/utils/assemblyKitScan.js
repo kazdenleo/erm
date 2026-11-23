@@ -280,3 +280,87 @@ export function scannedProductStillNeededOnOrder(product, orderItems, scannedQua
 export function shouldPreferCurrentAssemblyOrder(product, currentOrderItems, scannedQuantities) {
   return scannedProductStillNeededOnOrder(product, currentOrderItems, scannedQuantities);
 }
+
+/** productId строк состава, по которым уже есть сканы > 0. */
+export function scannedProductIdsFromQuantities(orderItems, scannedQuantities) {
+  const items = Array.isArray(orderItems) ? orderItems : [];
+  const ids = new Set();
+  items.forEach((item, idx) => {
+    const got = scannedQtyForAssemblyLine(item, idx, scannedQuantities || {}, items);
+    if (got <= 0) return;
+    const pid = Number(item.productId ?? item.product_id);
+    if (Number.isInteger(pid) && pid > 0) ids.add(pid);
+  });
+  return ids;
+}
+
+/** productId состава группы очереди сборки (комплектующие + корень строки). */
+export function assemblyGroupCompositionProductIds(group) {
+  const ids = new Set();
+  const rows = Array.isArray(group?.rows) ? group.rows : group?.primary ? [group.primary] : [];
+  for (const row of rows) {
+    const root = Number(row?.productId ?? row?.product_id);
+    if (Number.isInteger(root) && root > 0) ids.add(root);
+    const acl = row?.assemblyCompositionLines ?? row?.assembly_composition_lines;
+    if (!Array.isArray(acl)) continue;
+    for (const line of acl) {
+      const pid = Number(line?.productId ?? line?.product_id);
+      if (Number.isInteger(pid) && pid > 0) ids.add(pid);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Найти заказ/комплект в очереди, который содержит все requiredPids.
+ * Предпочтение: точное совпадение состава, затем меньший состав, затем порядок списка.
+ */
+export function findAssemblyGroupMatchingProductIds(groups, requiredPids, { excludeKey = '' } = {}) {
+  const required = [...(requiredPids || [])]
+    .map((x) => Number(x))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!required.length) return null;
+  const reqSet = new Set(required);
+  const list = Array.isArray(groups) ? groups : [];
+  let best = null;
+  let bestScore = null;
+  list.forEach((group, index) => {
+    if (!group || (excludeKey && group.key === excludeKey)) return;
+    const comps = assemblyGroupCompositionProductIds(group);
+    if (![...reqSet].every((id) => comps.has(id))) return;
+    const exact = comps.size === reqSet.size;
+    const score = {
+      exact: exact ? 0 : 1,
+      size: comps.size,
+      index,
+    };
+    if (
+      !bestScore ||
+      score.exact < bestScore.exact ||
+      (score.exact === bestScore.exact && score.size < bestScore.size) ||
+      (score.exact === bestScore.exact &&
+        score.size === bestScore.size &&
+        score.index < bestScore.index)
+    ) {
+      best = group;
+      bestScore = score;
+    }
+  });
+  return best;
+}
+
+/** Закрыть строки состава для уже отсканированных productId (перенос прогресса на другой комплект). */
+export function seedScannedQuantitiesForProductIds(orderItems, productIds) {
+  const items = Array.isArray(orderItems) ? orderItems : [];
+  const want = new Set(
+    [...(productIds || [])].map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0)
+  );
+  const next = {};
+  if (!want.size || !items.length) return next;
+  items.forEach((item, idx) => {
+    const pid = Number(item.productId ?? item.product_id);
+    if (!want.has(pid)) return;
+    next[assemblyLineScanKey(item, idx, items)] = item.quantity ?? 1;
+  });
+  return next;
+}

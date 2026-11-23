@@ -2,7 +2,8 @@
  * Assembly Page
  * Сборка FBS: слева следующий заказ (со сканом — текущий), справа последний собранный.
  * Скан сначала пробует заказ с левой карточки (очередь), затем — первый из списка
- * с этим товаром. Пока текущий состав не закрыт, сессия остаётся на нём.
+ * с этим товаром. Пока текущий состав не закрыт — остаёмся на нём, если скан ещё нужен;
+ * если отсканирован «чужой» артикул, ищем в очереди комплект из уже снятых + нового.
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
@@ -58,6 +59,9 @@ import {
   orderItemMatchesScannedProduct,
   isKitSkuScanForOrder,
   isRootKitSkuScanForOrder,
+  scannedProductIdsFromQuantities,
+  findAssemblyGroupMatchingProductIds,
+  seedScannedQuantitiesForProductIds,
 } from '../../utils/assemblyKitScan.js';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { useProductAddresses } from '../../hooks/useProductAddresses';
@@ -482,6 +486,8 @@ export function Assembly() {
   const pickedQuantitiesRef = useRef({});
   /** Порядок строк таблицы сборки — при скане берём первый заказ из неё с этим товаром */
   const assemblyListOrderRef = useRef([]);
+  /** Группы очереди — для пересборки комплекта из уже отсканированных + нового SKU */
+  const assemblyTableGroupsRef = useRef([]);
   /** Группа на левой карточке — приоритет при первом скане общего SKU */
   const assemblyQueueHeadRef = useRef(null);
   const markedCollectedKeyRef = useRef('');
@@ -1131,11 +1137,22 @@ export function Assembly() {
         });
 
       let data;
+      /** productId уже снятых с полки — перенос на другой комплект (A+B → A+C). */
+      let rematchSeedPids = null;
       if (preferIncomplete) {
-        data = await findByBarcode({
-          orderId: String(cur.order.orderId),
-          marketplace: normMarketplace(cur.order) || undefined,
-        });
+        try {
+          data = await findByBarcode({
+            orderId: String(cur.order.orderId),
+            marketplace: normMarketplace(cur.order) || undefined,
+          });
+        } catch (preferErr) {
+          // Штрихкод не из текущего комплекта — ищем другой заказ / комплект в очереди.
+          if (preferErr?.response?.status === 409) {
+            data = await findByBarcode(null);
+          } else {
+            throw preferErr;
+          }
+        }
       } else if (headOrderId) {
         // Первый скан: жёстко пробуем левую карточку (A+B), иначе общий A открывает A+C.
         try {
@@ -1171,28 +1188,65 @@ export function Assembly() {
         const apiKey = assemblyOrderSessionKey(order);
         const prevKey = orderKeyRef.current;
 
-        // Hard-lock: пока текущий состав не закрыт — только ещё нужные штрихкоды.
-        // Иначе общие комплектующие (A в A+B и A+C) перепрыгивают и печатают чужой стикер.
+        // Незавершённая сессия: нужный SKU — остаёмся; иначе пробуем комплект из уже снятых + новый.
         if (preferIncomplete && curItems.length > 0 && cur?.order) {
           const stillNeeded = scannedProductStillNeededOnOrder(data.product, curItems, qty);
-          if (!stillNeeded) {
+          if (stillNeeded) {
+            order = cur.order;
+            orderItems = curItems;
+          } else {
             const onCurrentOrder =
               isKitSkuScanForOrder(data.product, curItems) ||
               isRootKitSkuScanForOrder(data.product, curItems) ||
               curItems.some((item) => orderItemMatchesScannedProduct(item, data.product));
-            clearScanField(barcodeInputRef.current);
-            setScanError(
-              onCurrentOrder
-                ? 'Этот штрихкод уже отсканирован в текущем заказе. Отсканируйте оставшиеся позиции или сбросьте сессию.'
-                : 'Этот штрихкод не нужен в текущем заказе. Дособерите текущий или сбросьте сессию.'
+            if (onCurrentOrder) {
+              clearScanField(barcodeInputRef.current);
+              setScanError(
+                'Этот штрихкод уже отсканирован в текущем заказе. Отсканируйте оставшиеся позиции или сбросьте сессию.'
+              );
+              playEventSound(SOUND_EVENTS.scan_error);
+              return;
+            }
+
+            const scannedIds = scannedProductIdsFromQuantities(curItems, qty);
+            const required = new Set(scannedIds);
+            const newPid = Number(data.product.id);
+            if (Number.isInteger(newPid) && newPid > 0) required.add(newPid);
+            const match = findAssemblyGroupMatchingProductIds(
+              assemblyTableGroupsRef.current,
+              required,
+              { excludeKey: assemblyOrderSessionKey(cur.order) }
             );
-            playEventSound(SOUND_EVENTS.scan_error);
-            return;
+            if (!match?.primary) {
+              clearScanField(barcodeInputRef.current);
+              setScanError(
+                'Этот штрихкод не нужен в текущем заказе, и в очереди нет комплекта из уже отсканированных позиций. Дособерите текущий или сбросьте сессию.'
+              );
+              playEventSound(SOUND_EVENTS.scan_error);
+              return;
+            }
+
+            const matchKey = match.key;
+            if (assemblyOrderSessionKey(data.order) !== matchKey) {
+              const matchOrderId = String(
+                match.primary.orderId ?? match.primary.order_id ?? ''
+              ).trim();
+              data = await findByBarcode({
+                orderId: matchOrderId,
+                marketplace: normMarketplace(match.primary) || undefined,
+              });
+              if (!data?.order || !data?.product) {
+                clearScanField(barcodeInputRef.current);
+                setScanError('Не удалось открыть подобранный комплект по уже отсканированным товарам.');
+                playEventSound(SOUND_EVENTS.scan_error);
+                return;
+              }
+            }
+            order = data.order;
+            orderItems = data.orderItems || [];
+            rematchSeedPids = scannedIds;
           }
-          order = cur.order;
-          orderItems = curItems;
         } else if (prevKey && apiKey !== prevKey && cur?.order && preferIncomplete) {
-          // Страховка для заказов без строк состава (однострочные).
           const stillNeeded = shouldPreferCurrentAssemblyOrder(data.product, curItems, qty);
           const currentOpen =
             curItems.length > 0 && !isAssemblyCompositionComplete(curItems, qty);
@@ -1218,18 +1272,30 @@ export function Assembly() {
         const isSameOrder = newKey === prevKey;
         setCurrentOrderData({ order, product: data.product, orderItems });
         setCurrentOrderKey(newKey);
-        const scannedBefore = isSameOrder ? qty : {};
+        const qtyBase = isSameOrder
+          ? qty
+          : rematchSeedPids
+            ? seedScannedQuantitiesForProductIds(orderItems, rematchSeedPids)
+            : {};
+        const scannedBefore = qtyBase;
         const scannedPidForKit = Number(data.product?.id);
         const kitUnits =
           Number(order.productId ?? order.product_id) === scannedPidForKit
             ? Number(order.quantity) || 1
             : 1;
-        setScannedQuantities((prev) => {
-          const base = isSameOrder ? prev : {};
-          return applyAssemblyBarcodeScan(base, data.product, orderItems);
-        });
-        setPickedQuantities((prev) =>
-          applyAssemblyPickScan(isSameOrder ? prev : {}, data.product, orderItems, scannedBefore, {
+        setScannedQuantities(() => applyAssemblyBarcodeScan(qtyBase, data.product, orderItems));
+        const pickedBase = isSameOrder
+          ? pickedQuantitiesRef.current || {}
+          : rematchSeedPids
+            ? Object.fromEntries(
+                [...rematchSeedPids].map((pid) => {
+                  const n = Number(pid);
+                  return [n, Math.max(1, Number((pickedQuantitiesRef.current || {})[n]) || 1)];
+                })
+              )
+            : {};
+        setPickedQuantities(() =>
+          applyAssemblyPickScan(pickedBase, data.product, orderItems, scannedBefore, {
             kitUnits,
           })
         );
@@ -1574,6 +1640,7 @@ export function Assembly() {
     () => groupAssemblyRowsBySessionKey(filtered),
     [filtered]
   );
+  assemblyTableGroupsRef.current = assemblyTableGroups;
   assemblyListOrderRef.current = useMemo(
     () =>
       assemblyTableGroups.flatMap(({ rows }) =>
