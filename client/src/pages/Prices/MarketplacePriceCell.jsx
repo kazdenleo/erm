@@ -18,9 +18,9 @@ function MarginHint({ price, costBase, titlePrefix = 'Маржинальност
   return (
     <span
       className={`mp-margin-hint mp-margin-hint--${tone}`}
-      title={`${titlePrefix}: (цена − себестоимость − доп.) / цена`}
+      title={`${titlePrefix}: (цена − себестоимость − доп.) / цена × 100`}
     >
-      {label}
+      маржа {label}
     </span>
   );
 }

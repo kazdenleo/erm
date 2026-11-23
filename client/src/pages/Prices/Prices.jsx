@@ -1546,9 +1546,9 @@ export function Prices() {
                                   className={`mp-margin-hint ${
                                     marginPct >= 0 ? 'mp-margin-hint--positive' : 'mp-margin-hint--negative'
                                   }`}
-                                  title="Маржинальность: (цена − себестоимость − доп.) / цена"
+                                  title="Маржинальность: (цена − себестоимость − доп.) / цена × 100"
                                 >
-                                  {marginLabel}
+                                  маржа {marginLabel}
                                 </span>
                               ) : null}
                             </div>

@@ -249,20 +249,21 @@
 
 .mp-margin-hint {
   display: block;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.1;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  opacity: 0.9;
+  opacity: 1;
+  margin-top: 1px;
 }
 
 .mp-margin-hint--positive {
-  color: #059669;
+  color: #047857;
 }
 
 .mp-margin-hint--negative {
-  color: #dc2626;
+  color: #b91c1c;
 }
 
 .mp-price-cell-min-btn {
