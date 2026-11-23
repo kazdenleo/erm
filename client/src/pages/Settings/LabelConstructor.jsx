@@ -2,7 +2,7 @@
  * Конструктор этикеток: товар по категориям + ШК упаковки
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { categoryLabelTemplatesApi } from '../../services/categoryLabelTemplates.api.js';
 import { packagingLabelTemplatesApi } from '../../services/packagingLabelTemplates.api.js';
@@ -194,9 +194,10 @@ function normalizeTemplate(data, { packaging = false, cell = false } = {}) {
   const rawElements = hasElementsList
     ? clampElementsForSave(d.elements, { packaging, cell })
     : fallback;
+  const elements = cell ? sanitizeCellElements(rawElements) : rawElements;
   return {
     ...base,
-    elements: cell ? sanitizeCellElements(rawElements) : rawElements,
+    elements: cell && elements.length === 0 ? fallback : elements,
   };
 }
 
@@ -303,6 +304,7 @@ export function LabelConstructor() {
   const [templates, setTemplates] = useState([]);
   const [packagingSaved, setPackagingSaved] = useState(false);
   const [cellSaved, setCellSaved] = useState(false);
+  const [cellSavedSizes, setCellSavedSizes] = useState([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [form, setForm] = useState(() => normalizeTemplate({}));
   const [loading, setLoading] = useState(true);
@@ -323,6 +325,8 @@ export function LabelConstructor() {
   const [cellWarehouseSettings, setCellWarehouseSettings] = useState(null);
   const [previewWarehouseId, setPreviewWarehouseId] = useState('');
   const [previewLocationId, setPreviewLocationId] = useState('');
+  /** Черновики шаблона ячейки по size_preset — чтобы при переключении размера не терять несохранённое. */
+  const cellDraftsRef = useRef({});
   const isPackaging = editorMode === 'packaging';
   const isCell = editorMode === 'cell';
 
@@ -480,12 +484,17 @@ export function LabelConstructor() {
     setPreviewProductDetail(null);
     setPreviewLocationId('');
     setError('');
+    cellDraftsRef.current = {};
     (async () => {
       try {
         const res = await cellLabelTemplatesApi.get();
         if (cancelled) return;
-        setForm(normalizeTemplate(res, { cell: true }));
+        const normalized = normalizeTemplate(res, { cell: true });
+        setForm(normalized);
         setCellSaved(Boolean(res?.saved));
+        const sizes = res?.saved_sizes || res?.savedSizes || [];
+        setCellSavedSizes(Array.isArray(sizes) ? sizes.map(String) : []);
+        cellDraftsRef.current[normalized.size_preset || '58x40'] = normalized;
       } catch (e) {
         if (!cancelled) setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки шаблона ячейки');
       }
@@ -807,6 +816,63 @@ export function LabelConstructor() {
     setDragOverElementIndex(null);
   };
 
+  const applyCellSavedSizes = (res) => {
+    const sizes = res?.saved_sizes || res?.savedSizes || [];
+    if (Array.isArray(sizes)) setCellSavedSizes(sizes.map(String));
+  };
+
+  const loadCellTemplateForSize = useCallback(async (sizePreset) => {
+    const key = String(sizePreset || '58x40');
+    const draft = cellDraftsRef.current[key];
+    if (draft) {
+      setForm(draft);
+      setCellSaved(cellSavedSizes.includes(key));
+      return;
+    }
+    const res = await cellLabelTemplatesApi.get({ sizePreset: key });
+    const normalized = normalizeTemplate(res, { cell: true });
+    if (normalized.size_preset !== key) {
+      normalized.size_preset = key;
+      if (key !== 'custom') {
+        normalized.width_mm = null;
+        normalized.height_mm = null;
+      }
+    }
+    cellDraftsRef.current[key] = normalized;
+    setForm(normalized);
+    setCellSaved(Boolean(res?.saved));
+    applyCellSavedSizes(res);
+  }, [cellSavedSizes]);
+
+  const handleCellSizeChange = async (nextSize) => {
+    const next = String(nextSize || '58x40');
+    const prevKey = String(form.size_preset || '58x40');
+    if (next === prevKey) return;
+    cellDraftsRef.current[prevKey] = {
+      ...form,
+      elements: (form.elements || []).map((el) => ({ ...el })),
+    };
+    setError('');
+    try {
+      if (cellDraftsRef.current[next]) {
+        setForm(cellDraftsRef.current[next]);
+        setCellSaved(cellSavedSizes.includes(next));
+        return;
+      }
+      await loadCellTemplateForSize(next);
+    } catch (e) {
+      setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить шаблон для размера');
+      // fallback: пустой шаблон выбранного размера
+      const fallback = normalizeTemplate(
+        { data: { size_preset: next, ...(next === 'custom' ? { width_mm: 58, height_mm: 40 } : {}) } },
+        { cell: true }
+      );
+      cellDraftsRef.current[next] = fallback;
+      setForm(fallback);
+      setCellSaved(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!isPackaging && !isCell && !selectedCategoryId) return;
     setSaving(true);
@@ -814,9 +880,16 @@ export function LabelConstructor() {
     setError('');
     try {
       if (isCell) {
-        await cellLabelTemplatesApi.save(buildTemplatePayload(form, { cell: true }));
+        const payload = buildTemplatePayload(form, { cell: true });
+        const res = await cellLabelTemplatesApi.save(payload);
         setCellSaved(true);
-        setMessage('Шаблон ячейки сохранён');
+        applyCellSavedSizes(res);
+        const key = String(payload.size_preset || form.size_preset || '58x40');
+        cellDraftsRef.current[key] = {
+          ...form,
+          elements: (form.elements || []).map((el) => ({ ...el })),
+        };
+        setMessage(`Шаблон ячейки сохранён для размера ${key === 'custom' ? 'свой' : key}`);
       } else if (isPackaging) {
         await packagingLabelTemplatesApi.save(buildTemplatePayload(form, { packaging: true }));
         setPackagingSaved(true);
@@ -901,8 +974,8 @@ export function LabelConstructor() {
           {isCell ? (
             <p className="label-constructor-hint" style={{ marginTop: 0 }}>
               {cellSaved
-                ? 'Шаблон ячейки сохранён — печать этикеток ячеек идёт по нему.'
-                : 'Шаблон не сохранён — печать ячеек идёт в прежнем виде (размер из настроек склада).'}
+                ? 'Для этого размера шаблон сохранён. Печать берёт последний сохранённый размер.'
+                : 'Для этого размера шаблон ещё не сохранён — при печати используется последний сохранённый или значения по умолчанию.'}
             </p>
           ) : isPackaging ? (
             <p className="label-constructor-hint" style={{ marginTop: 0 }}>
@@ -956,6 +1029,10 @@ export function LabelConstructor() {
                   value={form.size_preset}
                   onChange={(e) => {
                     const next = e.target.value;
+                    if (isCell) {
+                      void handleCellSizeChange(next);
+                      return;
+                    }
                     setForm((p) => {
                       if (next === 'custom') {
                         const cur = labelSizeMm(p);
@@ -974,10 +1051,21 @@ export function LabelConstructor() {
                   {LABEL_SIZES.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
+                      {isCell && cellSavedSizes.includes(opt.value) ? ' ✓' : ''}
                     </option>
                   ))}
-                  {isCell ? <option value="custom">Свой размер</option> : null}
+                  {isCell ? (
+                    <option value="custom">
+                      Свой размер{cellSavedSizes.includes('custom') ? ' ✓' : ''}
+                    </option>
+                  ) : null}
                 </select>
+                {isCell ? (
+                  <p className="label-constructor-hint" style={{ marginTop: 8 }}>
+                    Настройки хранятся отдельно для каждого размера. Переключите размер — вернутся его поля и
+                    отступы (галочка ✓ = уже сохраняли).
+                  </p>
+                ) : null}
               </div>
               {isCell && form.size_preset === 'custom' ? (
                 <>

@@ -5,8 +5,12 @@
 import api from './api.js';
 
 export const cellLabelTemplatesApi = {
-  async get() {
-    const response = await api.get('/cell-label-templates');
+  async get({ sizePreset } = {}) {
+    const params = {};
+    if (sizePreset != null && String(sizePreset).trim() !== '') {
+      params.size_preset = String(sizePreset).trim();
+    }
+    const response = await api.get('/cell-label-templates', { params });
     return response.data;
   },
 
@@ -15,8 +19,12 @@ export const cellLabelTemplatesApi = {
     return response.data;
   },
 
-  async remove() {
-    const response = await api.delete('/cell-label-templates');
+  async remove({ sizePreset } = {}) {
+    const params = {};
+    if (sizePreset != null && String(sizePreset).trim() !== '') {
+      params.size_preset = String(sizePreset).trim();
+    }
+    const response = await api.delete('/cell-label-templates', { params });
     return response.data;
   },
 

@@ -49,9 +49,12 @@ function requireProfileId(req) {
   return tid;
 }
 
-function defaultTemplatePayload() {
+function defaultTemplatePayload(sizePreset = '58x40') {
+  const size = String(sizePreset || '58x40').trim() || '58x40';
   return {
-    size_preset: '58x40',
+    size_preset: size,
+    width_mm: size === 'custom' ? 58 : null,
+    height_mm: size === 'custom' ? 40 : null,
     margin_top_mm: 2,
     margin_right_mm: 2,
     margin_bottom_mm: 2,
@@ -65,11 +68,22 @@ class CellLabelTemplatesController {
   async get(req, res, next) {
     try {
       const tid = requireProfileId(req);
-      const template = await cellLabelTemplatesRepository.findByProfileId(tid);
+      const sizeRaw = req.query?.size_preset ?? req.query?.sizePreset;
+      const sizePreset =
+        sizeRaw != null && String(sizeRaw).trim() !== '' ? String(sizeRaw).trim() : null;
+      const template = sizePreset
+        ? await cellLabelTemplatesRepository.findByProfileIdAndSize(tid, sizePreset)
+        : await cellLabelTemplatesRepository.findByProfileId(tid);
+      const savedSizes = await cellLabelTemplatesRepository.listSavedSizes(tid);
       return res.status(200).json({
         ok: true,
-        data: template || { profile_id: tid, ...defaultTemplatePayload() },
-        saved: Boolean(template),
+        data: template || {
+          profile_id: tid,
+          ...defaultTemplatePayload(sizePreset || '58x40'),
+        },
+        saved: Boolean(template?.id),
+        saved_sizes: savedSizes.map((s) => s.size_preset),
+        savedSizes: savedSizes.map((s) => s.size_preset),
       });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -102,7 +116,14 @@ class CellLabelTemplatesController {
         lineGapMm: Number(body.line_gap_mm ?? body.lineGapMm ?? 1),
         elements: normalizeElements(body),
       });
-      return res.status(200).json({ ok: true, data: template, saved: true });
+      const savedSizes = await cellLabelTemplatesRepository.listSavedSizes(tid);
+      return res.status(200).json({
+        ok: true,
+        data: template,
+        saved: true,
+        saved_sizes: savedSizes.map((s) => s.size_preset),
+        savedSizes: savedSizes.map((s) => s.size_preset),
+      });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
       next(error);
@@ -132,8 +153,17 @@ class CellLabelTemplatesController {
   async delete(req, res, next) {
     try {
       const tid = requireProfileId(req);
-      const deleted = await cellLabelTemplatesRepository.deleteByProfileId(tid);
-      return res.status(200).json({ ok: true, deleted });
+      const sizeRaw = req.query?.size_preset ?? req.query?.sizePreset ?? req.body?.size_preset ?? req.body?.sizePreset;
+      const sizePreset =
+        sizeRaw != null && String(sizeRaw).trim() !== '' ? String(sizeRaw).trim() : null;
+      const deleted = await cellLabelTemplatesRepository.deleteByProfileId(tid, sizePreset);
+      const savedSizes = await cellLabelTemplatesRepository.listSavedSizes(tid);
+      return res.status(200).json({
+        ok: true,
+        deleted,
+        saved_sizes: savedSizes.map((s) => s.size_preset),
+        savedSizes: savedSizes.map((s) => s.size_preset),
+      });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
       next(error);

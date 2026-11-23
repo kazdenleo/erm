@@ -1,5 +1,5 @@
 /**
- * Шаблон этикетки ячейки (один на профиль)
+ * Шаблон этикетки ячейки (на профиль × размер)
  */
 
 import { query } from '../config/database.js';
@@ -44,16 +44,51 @@ function rowToTemplate(row) {
   };
 }
 
+function normalizeSizePreset(sizePreset) {
+  const s = String(sizePreset || '58x40').trim() || '58x40';
+  return s === 'custom' ? 'custom' : s;
+}
+
 export const cellLabelTemplatesRepository = {
+  /** Последний сохранённый шаблон профиля (для печати). */
   async findByProfileId(profileId) {
     if (profileId == null || profileId === '') return null;
     const result = await query(
       `SELECT t.* FROM cell_label_templates t
        WHERE t.profile_id = $1::bigint
+       ORDER BY t.updated_at DESC NULLS LAST, t.id DESC
        LIMIT 1`,
       [profileId]
     );
     return rowToTemplate(result.rows[0] || null);
+  },
+
+  async findByProfileIdAndSize(profileId, sizePreset) {
+    if (profileId == null || profileId === '') return null;
+    const size = normalizeSizePreset(sizePreset);
+    const result = await query(
+      `SELECT t.* FROM cell_label_templates t
+       WHERE t.profile_id = $1::bigint AND t.size_preset = $2
+       LIMIT 1`,
+      [profileId, size]
+    );
+    return rowToTemplate(result.rows[0] || null);
+  },
+
+  async listSavedSizes(profileId) {
+    if (profileId == null || profileId === '') return [];
+    const result = await query(
+      `SELECT size_preset, updated_at
+       FROM cell_label_templates
+       WHERE profile_id = $1::bigint
+       ORDER BY updated_at DESC NULLS LAST, size_preset`,
+      [profileId]
+    );
+    return (result.rows || []).map((r) => ({
+      size_preset: r.size_preset,
+      sizePreset: r.size_preset,
+      updated_at: r.updated_at,
+    }));
   },
 
   async upsert(data) {
@@ -74,13 +109,13 @@ export const cellLabelTemplatesRepository = {
       err.statusCode = 400;
       throw err;
     }
+    const size = normalizeSizePreset(sizePreset);
     const result = await query(
       `INSERT INTO cell_label_templates (
          profile_id, size_preset, width_mm, height_mm,
          margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm, line_gap_mm, elements, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, CURRENT_TIMESTAMP)
-       ON CONFLICT (profile_id) DO UPDATE SET
-         size_preset = EXCLUDED.size_preset,
+       ON CONFLICT (profile_id, size_preset) DO UPDATE SET
          width_mm = EXCLUDED.width_mm,
          height_mm = EXCLUDED.height_mm,
          margin_top_mm = EXCLUDED.margin_top_mm,
@@ -93,7 +128,7 @@ export const cellLabelTemplatesRepository = {
        RETURNING *`,
       [
         profileId,
-        sizePreset,
+        size,
         widthMm,
         heightMm,
         marginTopMm,
@@ -107,8 +142,17 @@ export const cellLabelTemplatesRepository = {
     return rowToTemplate(result.rows[0]);
   },
 
-  async deleteByProfileId(profileId) {
+  async deleteByProfileId(profileId, sizePreset = null) {
     if (profileId == null || profileId === '') return false;
+    if (sizePreset != null && String(sizePreset).trim() !== '') {
+      const result = await query(
+        `DELETE FROM cell_label_templates
+         WHERE profile_id = $1::bigint AND size_preset = $2
+         RETURNING id`,
+        [profileId, normalizeSizePreset(sizePreset)]
+      );
+      return (result.rows || []).length > 0;
+    }
     const result = await query(
       `DELETE FROM cell_label_templates
        WHERE profile_id = $1::bigint
