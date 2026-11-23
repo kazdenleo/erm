@@ -6,6 +6,7 @@ import {
   isRelevantNews,
   stripLeadingDate,
   parseTelegramChannelHtml,
+  parseTelegramRssXml,
   parseYandexChangelogMarkdown,
 } from '../src/services/platformMarketplaceNews.service.js';
 
@@ -102,11 +103,109 @@ describe('platformMarketplaceNews parsers', () => {
     );
   });
 
-  test('isRelevantNews passes API-only sources', () => {
-    expect(isRelevantNews({ source: 'ozon', title: 'hello', summary: '' })).toBe(true);
-    expect(isRelevantNews({ source: 'wildberries', title: 'x', summary: 'y' })).toBe(true);
-    expect(isRelevantNews({ source: 'yandex', title: 'x', summary: 'y' })).toBe(true);
-    expect(isRelevantNews({ source: 'other', title: 'скидки на обувь', summary: '' })).toBe(false);
+  test('isRelevantNews passes API feeds and filters ops feeds', () => {
+    expect(isRelevantNews({ source: 'ozon', tags: ['api'], title: 'hello', summary: '' })).toBe(true);
+    expect(isRelevantNews({ source: 'wildberries', tags: ['api'], title: 'x', summary: 'y' })).toBe(true);
+    expect(
+      isRelevantNews({
+        source: 'ozon',
+        tags: ['ops'],
+        title: 'Вебинар для новичков',
+        summary: 'регистрация открыта',
+      })
+    ).toBe(false);
+    expect(
+      isRelevantNews({
+        source: 'ozon',
+        tags: ['ops'],
+        title: 'Новые тарифы логистики FBO',
+        summary: 'с 6 апреля снизим плату за доставку',
+      })
+    ).toBe(true);
+    expect(
+      isRelevantNews({
+        source: 'ozon',
+        tags: ['ops'],
+        title: 'Запускаем конкурс «Время Fashion» для тех, кто продаёт одежду и аксессуары',
+        summary: 'Вчера рассказали про продление льгот для fashion',
+        body: 'Вчера рассказали про продление льгот для fashion',
+      })
+    ).toBe(false);
+    expect(
+      isRelevantNews({
+        source: 'wildberries',
+        tags: ['ops'],
+        title: '#дайджест',
+        body: 'Акция для партнёров: логистика FBO дешевле в выходные',
+      })
+    ).toBe(false);
+    expect(
+      isRelevantNews({
+        source: 'wildberries',
+        tags: ['ops'],
+        title: 'Хозтовары на WB: стабильный рост и как его использовать',
+        summary: 'разбираем спрос в категории',
+      })
+    ).toBe(false);
+    expect(
+      isRelevantNews({
+        source: 'ozon',
+        tags: ['ops'],
+        title: 'FBS: время на отгрузку начнёт учитывать все дни недели',
+        summary: '',
+      })
+    ).toBe(true);
+    expect(
+      isRelevantNews({
+        source: 'ozon',
+        tags: ['ops'],
+        title: 'Продлили льготы для fashion-товаров до 2028 года',
+        summary: '',
+      })
+    ).toBe(true);
     expect(isRelevantNews({ source: 'other', title: 'Изменения API', summary: '' })).toBe(true);
+  });
+
+  test('parseTelegramChannelHtml supports ops tags and seller externalId prefix', () => {
+    const html = `
+      <div class="tgme_widget_message" data-post="ozonmarketplace/3350">
+        <div class="tgme_widget_message_text">Новые тарифы на размещение FBO</div>
+        <time datetime="2026-11-01T10:00:00+00:00"></time>
+      </div>
+    `;
+    const items = parseTelegramChannelHtml(html, {
+      source: 'ozon',
+      channelUrl: 'https://t.me/s/ozonmarketplace',
+      tags: ['ops'],
+      externalIdPrefix: 'seller-',
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].externalId).toBe('seller-3350');
+    expect(items[0].tags).toEqual(['ops']);
+    expect(items[0].url).toBe('https://t.me/ozonmarketplace/3350');
+  });
+
+  test('parseTelegramRssXml extracts posts from RSSHub feed', () => {
+    const xml = `<?xml version="1.0"?>
+      <rss><channel>
+        <item>
+          <title><![CDATA[Новые тарифы FBO]]></title>
+          <link>https://t.me/ozonmarketplace/3350</link>
+          <guid>https://t.me/ozonmarketplace/3350</guid>
+          <pubDate>Thu, 19 Nov 2026 11:37:38 GMT</pubDate>
+          <description><![CDATA[&lt;p&gt;&lt;b&gt;Новые тарифы FBO&lt;/b&gt; с 1 декабря&lt;/p&gt;]]></description>
+        </item>
+      </channel></rss>`;
+    const items = parseTelegramRssXml(xml, {
+      source: 'ozon',
+      channelUrl: 'https://t.me/s/ozonmarketplace',
+      tags: ['ops'],
+      externalIdPrefix: 'seller-',
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].externalId).toBe('seller-3350');
+    expect(items[0].body).toMatch(/Новые тарифы FBO/);
+    expect(items[0].url).toBe('https://t.me/ozonmarketplace/3350');
+    expect(items[0].publishedAt).toBe('2026-11-19T11:37:38.000Z');
   });
 });

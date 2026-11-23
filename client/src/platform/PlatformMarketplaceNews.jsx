@@ -14,6 +14,11 @@ const SOURCE_LABELS = {
   yandex: 'Яндекс Маркет',
 };
 
+const TAG_LABELS = {
+  api: 'API',
+  ops: 'Важные новости МП',
+};
+
 function formatDate(iso) {
   if (!iso) return '';
   try {
@@ -34,6 +39,7 @@ export function PlatformMarketplaceNews() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [offset, setOffset] = useState(0);
   const [source, setSource] = useState('all');
+  const [tag, setTag] = useState('all');
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [openItem, setOpenItem] = useState(null);
   const pageSize = 30;
@@ -46,6 +52,7 @@ export function PlatformMarketplaceNews() {
         limit: pageSize,
         offset,
         source: source === 'all' ? undefined : source,
+        tag: tag === 'all' ? undefined : tag,
         unreadOnly,
       });
       if (res?.ok && res?.data) {
@@ -65,7 +72,7 @@ export function PlatformMarketplaceNews() {
     } finally {
       setLoading(false);
     }
-  }, [offset, source, unreadOnly]);
+  }, [offset, source, tag, unreadOnly]);
 
   useEffect(() => {
     load();
@@ -73,6 +80,11 @@ export function PlatformMarketplaceNews() {
 
   const onSourceChange = (next) => {
     setSource(next);
+    setOffset(0);
+  };
+
+  const onTagChange = (next) => {
+    setTag(next);
     setOffset(0);
   };
 
@@ -122,6 +134,7 @@ export function PlatformMarketplaceNews() {
     try {
       await platformMarketplaceNewsApi.markAllRead({
         source: source === 'all' ? undefined : source,
+        tag: tag === 'all' ? undefined : tag,
       });
       await load();
     } catch (err) {
@@ -141,7 +154,8 @@ export function PlatformMarketplaceNews() {
         <div>
           <h1 className="title">Новости маркетплейсов</h1>
           <p className="platform-muted" style={{ marginBottom: 0, maxWidth: '40rem' }}>
-            Автосбор изменений API и крупных обновлений Ozon, Wildberries и Яндекс Маркета.
+            Автосбор: изменения API и операционные новости (тарифы, условия, логистика, поставки) Ozon,
+            Wildberries и Яндекс Маркета.
             {unreadCount > 0 ? ` Непрочитанных: ${unreadCount}.` : ''}
           </p>
         </div>
@@ -170,7 +184,7 @@ export function PlatformMarketplaceNews() {
 
       <div className="platform-mp-news__filters" role="group" aria-label="Фильтр по маркетплейсу">
         {[
-          { id: 'all', label: 'Все' },
+          { id: 'all', label: 'Все МП' },
           { id: 'ozon', label: 'Ozon' },
           { id: 'wildberries', label: 'Wildberries' },
           { id: 'yandex', label: 'Яндекс' },
@@ -180,6 +194,23 @@ export function PlatformMarketplaceNews() {
             type="button"
             className={`platform-mp-news__chip${source === f.id ? ' platform-mp-news__chip--active' : ''}`}
             onClick={() => onSourceChange(f.id)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="platform-mp-news__filters" role="group" aria-label="Фильтр по теме" style={{ marginTop: '0.5rem' }}>
+        {[
+          { id: 'all', label: 'Все темы' },
+          { id: 'api', label: 'API' },
+          { id: 'ops', label: 'Важные новости МП' },
+        ].map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            className={`platform-mp-news__chip${tag === f.id ? ' platform-mp-news__chip--active' : ''}`}
+            onClick={() => onTagChange(f.id)}
           >
             {f.label}
           </button>
@@ -221,6 +252,13 @@ export function PlatformMarketplaceNews() {
                   <span className={`platform-mp-news__badge platform-mp-news__badge--${item.source}`}>
                     {SOURCE_LABELS[item.source] || item.source}
                   </span>
+                  {(Array.isArray(item.tags) ? item.tags : []).map((tag) =>
+                    TAG_LABELS[tag] ? (
+                      <span key={tag} className={`platform-mp-news__tag platform-mp-news__tag--${tag}`}>
+                        {TAG_LABELS[tag]}
+                      </span>
+                    ) : null
+                  )}
                   <time dateTime={item.publishedAt || undefined}>{formatDate(item.publishedAt)}</time>
                   {item.isRead ? <span className="platform-mp-news__read-label">прочитано</span> : null}
                 </div>
@@ -270,6 +308,11 @@ export function PlatformMarketplaceNews() {
           <div className="platform-mp-news-detail">
             <p className="platform-muted platform-mp-news-detail__meta">
               {SOURCE_LABELS[openItem.source] || openItem.source}
+              {(Array.isArray(openItem.tags) ? openItem.tags : [])
+                .map((tag) => TAG_LABELS[tag])
+                .filter(Boolean)
+                .map((label) => ` · ${label}`)
+                .join('')}
               {openItem.publishedAt ? ` · ${formatDate(openItem.publishedAt)}` : ''}
             </p>
             <div className="platform-mp-news-detail__body">

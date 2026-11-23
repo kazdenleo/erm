@@ -375,6 +375,26 @@
   color: #6b5c00;
 }
 
+.platform-mp-news__tag {
+  display: inline-block;
+  padding: 0.12rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  background: var(--body-bg, #eef1f4);
+  color: var(--text-muted, #666);
+}
+
+.platform-mp-news__tag--api {
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+}
+
+.platform-mp-news__tag--ops {
+  background: rgba(180, 83, 9, 0.12);
+  color: #9a3412;
+}
+
 .platform-mp-news__title {
   margin: 0 0 0.4rem;
   font-size: 1.02rem;

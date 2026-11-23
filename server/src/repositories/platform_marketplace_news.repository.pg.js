@@ -61,12 +61,27 @@ class PlatformMarketplaceNewsRepositoryPG {
     return { item: rowToApi(row), inserted: Boolean(row?.inserted) };
   }
 
-  async list({ limit = 50, offset = 0, source = null, userId = null, unreadOnly = false } = {}) {
+  async list({
+    limit = 50,
+    offset = 0,
+    source = null,
+    sources = null,
+    tag = null,
+    userId = null,
+    unreadOnly = false,
+  } = {}) {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const off = Math.max(Number(offset) || 0, 0);
     const src =
       source != null && String(source).trim() !== '' && String(source).trim() !== 'all'
         ? String(source).trim().toLowerCase()
+        : null;
+    const srcList = Array.isArray(sources)
+      ? [...new Set(sources.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean))]
+      : null;
+    const tagFilter =
+      tag != null && String(tag).trim() !== '' && String(tag).trim() !== 'all'
+        ? String(tag).trim().toLowerCase()
         : null;
     const uid = userId != null && userId !== '' ? Number(userId) : null;
     const unread = Boolean(unreadOnly);
@@ -76,6 +91,16 @@ class PlatformMarketplaceNewsRepositoryPG {
     if (src) {
       params.push(src);
       where.push(`n.source = $${params.length}`);
+    } else if (srcList) {
+      if (!srcList.length) {
+        return { rows: [], total: 0, unreadCount: 0 };
+      }
+      params.push(srcList);
+      where.push(`n.source = ANY($${params.length}::text[])`);
+    }
+    if (tagFilter) {
+      params.push(tagFilter);
+      where.push(`n.tags @> ARRAY[$${params.length}]::text[]`);
     }
     if (unread && uid != null && Number.isFinite(uid)) {
       where.push(`r.news_id IS NULL`);
@@ -116,10 +141,17 @@ class PlatformMarketplaceNewsRepositoryPG {
     let unreadCount = 0;
     if (uid != null && Number.isFinite(uid)) {
       const unreadParams = [];
-      let unreadWhere = 'r.news_id IS NULL';
+      const unreadWhereParts = ['r.news_id IS NULL'];
       if (src) {
         unreadParams.push(src);
-        unreadWhere = `n.source = $1 AND ${unreadWhere}`;
+        unreadWhereParts.unshift(`n.source = $${unreadParams.length}`);
+      } else if (srcList && srcList.length) {
+        unreadParams.push(srcList);
+        unreadWhereParts.unshift(`n.source = ANY($${unreadParams.length}::text[])`);
+      }
+      if (tagFilter) {
+        unreadParams.push(tagFilter);
+        unreadWhereParts.unshift(`n.tags @> ARRAY[$${unreadParams.length}]::text[]`);
       }
       unreadParams.push(uid);
       const uidIdx = unreadParams.length;
@@ -127,7 +159,7 @@ class PlatformMarketplaceNewsRepositoryPG {
         `SELECT COUNT(*)::bigint AS c
          FROM platform_marketplace_news n
          LEFT JOIN platform_marketplace_news_reads r ON r.news_id = n.id AND r.user_id = $${uidIdx}
-         WHERE ${unreadWhere}`,
+         WHERE ${unreadWhereParts.join(' AND ')}`,
         unreadParams
       );
       unreadCount = Number(uRes.rows[0]?.c) || 0;
@@ -176,40 +208,68 @@ class PlatformMarketplaceNewsRepositoryPG {
     return this.getById(nid, uid);
   }
 
-  async markAllRead(userId, { source = null } = {}) {
+  async listOpsForPrune({ limit = 500 } = {}) {
+    const lim = Math.min(Math.max(Number(limit) || 500, 1), 2000);
+    const result = await query(
+      `SELECT id, source, external_id, title, summary, body, tags
+       FROM platform_marketplace_news
+       WHERE tags @> ARRAY['ops']::text[]
+       ORDER BY id ASC
+       LIMIT $1`,
+      [lim]
+    );
+    return (result.rows || []).map((row) => rowToApi(row));
+  }
+
+  async deleteByIds(ids) {
+    const list = (Array.isArray(ids) ? ids : [])
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n));
+    if (!list.length) return { deleted: 0 };
+    const result = await query(
+      `DELETE FROM platform_marketplace_news
+       WHERE id = ANY($1::bigint[])
+       RETURNING id`,
+      [list]
+    );
+    return { deleted: result.rowCount || 0 };
+  }
+
+  async markAllRead(userId, { source = null, tag = null } = {}) {
     const uid = Number(userId);
     if (!Number.isFinite(uid)) throw new Error('userId is required');
     const src =
       source != null && String(source).trim() !== '' && String(source).trim() !== 'all'
         ? String(source).trim().toLowerCase()
         : null;
+    const tagFilter =
+      tag != null && String(tag).trim() !== '' && String(tag).trim() !== 'all'
+        ? String(tag).trim().toLowerCase()
+        : null;
 
+    const where = [
+      `NOT EXISTS (
+         SELECT 1 FROM platform_marketplace_news_reads r
+         WHERE r.user_id = $1 AND r.news_id = n.id
+       )`,
+    ];
+    const params = [uid];
     if (src) {
-      const result = await query(
-        `INSERT INTO platform_marketplace_news_reads (user_id, news_id, read_at)
-         SELECT $1, n.id, CURRENT_TIMESTAMP
-         FROM platform_marketplace_news n
-         WHERE n.source = $2
-           AND NOT EXISTS (
-             SELECT 1 FROM platform_marketplace_news_reads r
-             WHERE r.user_id = $1 AND r.news_id = n.id
-           )
-         RETURNING news_id`,
-        [uid, src]
-      );
-      return { marked: result.rowCount || 0 };
+      params.push(src);
+      where.push(`n.source = $${params.length}`);
+    }
+    if (tagFilter) {
+      params.push(tagFilter);
+      where.push(`n.tags @> ARRAY[$${params.length}]::text[]`);
     }
 
     const result = await query(
       `INSERT INTO platform_marketplace_news_reads (user_id, news_id, read_at)
        SELECT $1, n.id, CURRENT_TIMESTAMP
        FROM platform_marketplace_news n
-       WHERE NOT EXISTS (
-         SELECT 1 FROM platform_marketplace_news_reads r
-         WHERE r.user_id = $1 AND r.news_id = n.id
-       )
+       WHERE ${where.join(' AND ')}
        RETURNING news_id`,
-      [uid]
+      params
     );
     return { marked: result.rowCount || 0 };
   }

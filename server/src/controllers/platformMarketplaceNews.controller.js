@@ -12,6 +12,7 @@ import {
 import { isMissingRelationError } from '../repositories/platform_marketplace_news.repository.pg.js';
 
 const ALLOWED_SOURCES = new Set(['ozon', 'wildberries', 'yandex', 'all']);
+const ALLOWED_TAGS = new Set(['api', 'ops', 'all']);
 
 function migrationHint(res) {
   return res.status(400).json({
@@ -28,6 +29,13 @@ function normalizeSource(raw) {
   return source;
 }
 
+function normalizeTag(raw) {
+  if (raw == null || raw === '') return null;
+  const tag = String(raw).trim().toLowerCase();
+  if (tag === 'tariffs' || tag === 'conditions' || tag === 'ops_news') return 'ops';
+  return tag;
+}
+
 export async function listNews(req, res, next) {
   try {
     const limit = req.query?.limit;
@@ -37,6 +45,13 @@ export async function listNews(req, res, next) {
       return res.status(400).json({
         ok: false,
         message: 'source: ozon | wildberries | yandex | all',
+      });
+    }
+    const tag = normalizeTag(req.query?.tag ?? req.query?.topic);
+    if (tag && !ALLOWED_TAGS.has(tag)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'tag: api | ops | all',
       });
     }
     const unreadOnly =
@@ -49,6 +64,7 @@ export async function listNews(req, res, next) {
       limit,
       offset,
       source: source === 'all' ? null : source,
+      tag: tag === 'all' ? null : tag,
       userId: req.user?.id,
       unreadOnly,
     });
@@ -94,8 +110,16 @@ export async function markAllRead(req, res, next) {
         message: 'source: ozon | wildberries | yandex | all',
       });
     }
+    const tag = normalizeTag(req.body?.tag ?? req.body?.topic ?? req.query?.tag ?? req.query?.topic);
+    if (tag && !ALLOWED_TAGS.has(tag)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'tag: api | ops | all',
+      });
+    }
     const result = await markAllMarketplaceNewsRead(req.user?.id, {
       source: source === 'all' ? null : source,
+      tag: tag === 'all' ? null : tag,
     });
     res.json({ ok: true, data: result });
   } catch (err) {

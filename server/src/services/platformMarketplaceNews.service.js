@@ -1,30 +1,142 @@
 /**
- * Автосбор новостей маркетплейсов (изменения API и крупные изменения) для супер-админа.
+ * Автосбор новостей маркетплейсов для супер-админа.
  *
- * Источники:
- * - Ozon: публичный Telegram https://t.me/s/OzonSellerAPI
- * - Wildberries: публичный Telegram https://t.me/s/wb_api_notifications
- *   (dev.wildberries.ru отдаёт 498 бот-защитой)
- * - Яндекс Маркет: markdown changelog Partner API
+ * Источники API:
+ * - Ozon: https://t.me/s/OzonSellerAPI
+ * - Wildberries: https://t.me/s/wb_api_notifications
+ * - Яндекс Маркет: Partner API changelog (markdown)
+ *
+ * Источники операционных новостей (тарифы, условия, логистика):
+ * - Ozon: https://t.me/s/ozonmarketplace
+ * - Wildberries: https://t.me/s/wbsellerofficial
+ * - Яндекс Маркет: https://t.me/s/market_marketplace
  */
 
 import fetch from 'node-fetch';
 import { parse as parseHtml } from 'node-html-parser';
 import logger from '../utils/logger.js';
+import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import platformMarketplaceNewsRepo from '../repositories/platform_marketplace_news.repository.pg.js';
 
 const FETCH_TIMEOUT_MS = 25_000;
 const USER_AGENT =
   'Mozilla/5.0 (compatible; ERP-PlatformNews/1.0; +https://localhost) AppleWebKit/537.36';
 
-const API_KEYWORDS =
-  /\b(api|seller\s*api|partner\s*api|endpoint|webhook|метод|метода|методов|токен|устарел|deprecate|отключ|changelog|openapi|swagger|push-уведомл|рейт-?лимит|rate\s*limit)\b/i;
+/** Граница слова с учётом кириллицы (\b в JS — только ASCII). */
+const WORD_START = '(?<![\\p{L}\\p{N}_])';
+const WORD_TAIL = '[\\p{L}\\p{N}_]*';
 
-const MAJOR_KEYWORDS =
-  /\b(комисс|тариф|логистик|штраф|рейтинг|fbo|fbs|fby|склад|отгрузк|поставк|этикетк|scanit|акци)\w*/i;
+const API_KEYWORDS = new RegExp(
+  `${WORD_START}(api|seller\\s*api|partner\\s*api|endpoint|webhook|метод|метода|методов|токен|устарел|deprecate|отключ|changelog|openapi|swagger|push-уведомл|рейт-?лимит|rate\\s*limit)${WORD_TAIL}`,
+  'iu'
+);
 
-/** Источники, целиком посвящённые API — пропускаем без доп. фильтра. */
-const API_ONLY_SOURCES = new Set(['ozon', 'wildberries', 'yandex']);
+/** Сильный сигнал: тарифы/условия/штрафы — перекрывает маркетинговый «шум» в том же посте. */
+const OPS_STRONG = new RegExp(
+  `${WORD_START}(` +
+    [
+      'комисс',
+      'тариф',
+      'штраф',
+      'оферт',
+      'договор',
+      'льгот',
+      'условия\\s+работ',
+      'плат[аы]\\s+за\\s+(продаж|хранен|размещен|логистик|доставк)',
+      'стоимост[ьи]\\s+(логистик|хранен|размещен|доставк|приёмк)',
+      'индекс\\s+качеств',
+      'средн[\\p{L}\\p{N}_]*\\s+мил',
+      'невыкуп',
+      'утилиз',
+      'балл(?:ы|ов)?\\s+за\\s+скидк',
+      'бесплатн[\\p{L}\\p{N}_]*\\s+размещен',
+    ].join('|') +
+    `)${WORD_TAIL}`,
+  'iu'
+);
+
+/**
+ * Операционно важные изменения (тарифы, условия, логистика, штрафы).
+ * Без «голой» логистики/FBS — иначе в ленту попадает маркетинг seller-каналов.
+ */
+const OPS_KEYWORDS = new RegExp(
+  `${WORD_START}(` +
+    [
+      'комисс',
+      'тариф',
+      'штраф',
+      'оферт',
+      'договор',
+      'льгот',
+      'условия\\s+работ',
+      'плат[аы]\\s+за\\s+(продаж|хранен|размещен|логистик|доставк)',
+      'стоимост[ьи]\\s+(логистик|хранен|размещен|доставк|приёмк)',
+      'изменен[ияею]\\s+(?:в\\s+)?(?:тариф|комисс|логистик|услов|оферт)',
+      'обновлен[ияею]\\s+(?:тариф|комисс|логистик|услов|оферт)',
+      'тариф[\\p{L}\\p{N}_]*\\s+логистик',
+      'логистическ[\\p{L}\\p{N}_]*\\s+тариф',
+      'хранен[ияе]\\s+(?:товар|FBO|на\\s+склад)',
+      'размещен[ияе]\\s+(?:товар|карт|на\\s+площадк)',
+      'невыкуп',
+      'утилиз',
+      'кросс-?докинг',
+      'средн[\\p{L}\\p{N}_]*\\s+мил',
+      'индекс\\s+качеств',
+      'наценк',
+      'вознагражден',
+      'балл(?:ы|ов)?\\s+за\\s+скидк',
+      'бесплатн[\\p{L}\\p{N}_]*\\s+размещен',
+      'время\\s+на\\s+отгрузк',
+      'срок(?:и|ов)?\\s+(?:хранени|отгрузк|поставк|приёмк)',
+      'график\\s+работ[ыа]?(?:\\s+маркет|\\s+СЦ|\\s+склад|\\s+пункт)?',
+      'приёмк[аи]\\s+(?:товар|отгруз|в\\s+СЦ|на\\s+склад)',
+      'ярлык(?:ами|ов|и)?\\s+для\\s+(?:FBS|FBO|DBS|заказ)',
+      'этикетк[аиу]\\s+для\\s+(?:FBS|FBO|DBS|заказ|отгруз)',
+    ].join('|') +
+    `)${WORD_TAIL}`,
+  'iu'
+);
+
+/** Маркетинг / дайджесты seller-каналов — не для пользовательской ленты. */
+const OPS_NOISE = new RegExp(
+  `${WORD_START}(` +
+    [
+      'вебинар',
+      'конкурс',
+      'дайджест',
+      'мероприят',
+      'подкаст',
+      'мастер-?класс',
+      'регистрац(?:ия|ии|ию)',
+      'приглашаем',
+      'бестселлер',
+      'распродаж',
+      'чёрн(?:ая|ой)\\s+пятниц',
+      'как\\s+(?:разобраться|продавцу|использовать|на\\s+самом\\s+деле)',
+      'стабильный\\s+рост',
+      'спрос\\s+в',
+      'успейте\\s+записаться',
+      'маркет\\s+ai',
+      'спрашиваете\\s+вы',
+      'всё,?\\s+что\\s+вы\\s+могли\\s+пропустить',
+      'принимать\\s+более\\s+крупн',
+      'пополняйте\\s+остатк',
+      'выплаты\\s+сегодня',
+    ].join('|') +
+    `)${WORD_TAIL}`,
+  'iu'
+);
+
+/** Тег api без ops — канал целиком про API, без доп. фильтра. */
+function isApiFeed(tags) {
+  const t = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()) : [];
+  return t.includes('api') && !t.includes('ops');
+}
+
+function isOpsFeed(tags) {
+  const t = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()) : [];
+  return t.includes('ops');
+}
 
 const MONTHS_RU = {
   января: 1,
@@ -146,15 +258,24 @@ function titleFromBody(body) {
   return `${first.slice(0, 137).trim()}…`;
 }
 
-export function isRelevantNews({ source, title, summary }) {
-  if (API_ONLY_SOURCES.has(String(source || '').toLowerCase())) return true;
-  const text = `${title || ''} ${summary || ''}`;
-  return API_KEYWORDS.test(text) || MAJOR_KEYWORDS.test(text);
+export function isRelevantNews({ source: _source, title, summary, body, tags }) {
+  // Чистые API-ленты пропускаем целиком; seller-каналы — только тарифы/условия.
+  if (isApiFeed(tags)) return true;
+  const text = `${title || ''} ${summary || ''} ${body || ''}`;
+  if (isOpsFeed(tags)) {
+    const titleText = String(title || '');
+    // Маркетинг в заголовке — отбрасываем, даже если в summary/body есть «льготы».
+    if (OPS_NOISE.test(titleText) && !OPS_STRONG.test(titleText)) return false;
+    if (OPS_NOISE.test(text) && !OPS_STRONG.test(text)) return false;
+    return OPS_KEYWORDS.test(text);
+  }
+  return API_KEYWORDS.test(text) || OPS_KEYWORDS.test(text);
 }
 
 async function fetchText(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const agent = getFetchProxyAgent();
   try {
     const res = await fetch(url, {
       method: 'GET',
@@ -165,6 +286,7 @@ async function fetchText(url) {
         'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
       },
       redirect: 'follow',
+      ...(agent ? { agent } : {}),
     });
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status} for ${url}`);
@@ -177,18 +299,152 @@ async function fetchText(url) {
   }
 }
 
+function decodeXmlEntities(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function rssField(block, tag) {
+  const cdata = String(block || '').match(
+    new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i')
+  );
+  if (cdata) return cdata[1] || '';
+  const plain = String(block || '').match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  return plain ? plain[1] || '' : '';
+}
+
+/**
+ * RSS-лента Telegram (fallback, когда t.me с VPS недоступен).
+ * @param {{ source: string, channelUrl: string, tags?: string[], externalIdPrefix?: string|null }} opts
+ */
+function atomLinkHref(block) {
+  const m = String(block || '').match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*>/i);
+  return m ? m[1] : '';
+}
+
+export function parseTelegramRssXml(xml, { source, channelUrl, tags = ['api'], externalIdPrefix = null }) {
+  const items = [];
+  const tagList = Array.isArray(tags) && tags.length ? tags : ['api'];
+  const raw = String(xml || '');
+  const blocks = [
+    ...[...raw.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((m) => m[1]),
+    ...[...raw.matchAll(/<entry>([\s\S]*?)<\/entry>/gi)].map((m) => m[1]),
+  ];
+
+  for (const block of blocks) {
+    const link = String(
+      rssField(block, 'link') || atomLinkHref(block) || rssField(block, 'guid') || rssField(block, 'id') || ''
+    ).trim();
+    const msgIdMatch = link.match(/t\.me\/[^/\s]+\/(\d+)/i);
+    const msgId = msgIdMatch?.[1] || (link.includes('/') ? link.split('/').pop() : '');
+    if (!msgId) continue;
+
+    const bodyHtml = decodeXmlEntities(
+      rssField(block, 'description') || rssField(block, 'content') || rssField(block, 'summary')
+    );
+    const body = stripHtml(bodyHtml);
+    if (!body) continue;
+
+    let publishedAt = null;
+    const pubDate = String(
+      rssField(block, 'pubDate') || rssField(block, 'published') || rssField(block, 'updated') || ''
+    ).trim();
+    if (pubDate) {
+      const d = new Date(pubDate);
+      if (!Number.isNaN(d.getTime())) publishedAt = d.toISOString();
+    }
+
+    const displayBody = stripLeadingDate(body) || body;
+    const title = titleFromBody(body) || stripHtml(decodeXmlEntities(rssField(block, 'title'))) || 'Обновление';
+    const externalId = externalIdPrefix ? `${externalIdPrefix}${msgId}` : String(msgId);
+    items.push({
+      source,
+      externalId,
+      title,
+      body: displayBody,
+      summary: truncate(displayBody, 400),
+      url: link.startsWith('http') ? link : `https://t.me/${link}`,
+      publishedAt,
+      tags: tagList,
+      raw: { channel: channelUrl, via: 'rss', link },
+    });
+  }
+
+  return items;
+}
+
+/**
+ * t.me HTML, при недоступности — RSS (TELEGRAM_RSS_BASE, по умолчанию rsshub.rssforever.com).
+ */
+async function fetchTelegramChannel({ username, source, tags = ['api'], externalIdPrefix = null }) {
+  const channelUrl = `https://t.me/s/${username}`;
+  try {
+    const html = await fetchText(channelUrl);
+    const items = parseTelegramChannelHtml(html, { source, channelUrl, tags, externalIdPrefix });
+    if (items.length > 0) return items;
+    logger.warn('[PlatformMarketplaceNews] t.me HTML empty, trying RSS', { username });
+  } catch (e) {
+    logger.warn('[PlatformMarketplaceNews] t.me fetch failed, trying RSS', {
+      username,
+      error: e?.message || String(e),
+    });
+  }
+
+  const bases = String(
+    process.env.TELEGRAM_RSS_BASE ||
+      'https://rsshub.rssforever.com/telegram/channel,https://rss-bridge.org/bridge01/?action=display&bridge=Telegram&username={u}&format=Atom'
+  )
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let lastErr = null;
+  for (const baseRaw of bases) {
+    const rssUrl = baseRaw.includes('{u}')
+      ? baseRaw.replaceAll('{u}', encodeURIComponent(username))
+      : `${baseRaw.replace(/\/$/, '')}/${encodeURIComponent(username)}`;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        if (attempt > 1) await new Promise((r) => setTimeout(r, 1500));
+        const xml = await fetchText(rssUrl);
+        const items = parseTelegramRssXml(xml, { source, channelUrl, tags, externalIdPrefix });
+        if (items.length > 0) return items;
+        lastErr = new Error(`RSS empty for ${rssUrl}`);
+      } catch (e) {
+        lastErr = e;
+        logger.warn('[PlatformMarketplaceNews] RSS attempt failed', {
+          username,
+          rssUrl,
+          attempt,
+          error: e?.message || String(e),
+        });
+      }
+    }
+  }
+  throw lastErr || new Error(`Telegram RSS unavailable for ${username}`);
+}
+
 /**
  * Парсинг публичной HTML-ленты Telegram (t.me/s/...).
+ * @param {{ source: string, channelUrl: string, tags?: string[], externalIdPrefix?: string|null }} opts
  */
-export function parseTelegramChannelHtml(html, { source, channelUrl }) {
+export function parseTelegramChannelHtml(html, { source, channelUrl, tags = ['api'], externalIdPrefix = null }) {
   const root = parseHtml(html || '');
   const messages = root.querySelectorAll('.tgme_widget_message[data-post]');
   const items = [];
+  const tagList = Array.isArray(tags) && tags.length ? tags : ['api'];
 
   for (const msg of messages) {
     const dataPost = msg.getAttribute('data-post') || '';
     if (!dataPost) continue;
-    const externalId = dataPost.includes('/') ? dataPost.split('/').pop() : dataPost;
+    const msgId = dataPost.includes('/') ? dataPost.split('/').pop() : dataPost;
+    // Префикс нужен, чтобы seller-канал не конфликтовал с API по UNIQUE(source, external_id).
+    const externalId = externalIdPrefix ? `${externalIdPrefix}${msgId}` : String(msgId);
 
     const textEl = getMainTelegramMessageTextEl(msg);
     const body = stripHtml(textEl ? textEl.innerHTML : '');
@@ -207,13 +463,13 @@ export function parseTelegramChannelHtml(html, { source, channelUrl }) {
     const title = titleFromBody(body);
     items.push({
       source,
-      externalId: String(externalId),
+      externalId,
       title,
       body: displayBody,
       summary: truncate(displayBody, 400),
       url,
       publishedAt,
-      tags: ['api'],
+      tags: tagList,
       raw: { channel: channelUrl, dataPost },
     });
   }
@@ -221,16 +477,43 @@ export function parseTelegramChannelHtml(html, { source, channelUrl }) {
   return items;
 }
 
-async function fetchOzonTelegram() {
-  const channelUrl = 'https://t.me/s/OzonSellerAPI';
-  const html = await fetchText(channelUrl);
-  return parseTelegramChannelHtml(html, { source: 'ozon', channelUrl });
+async function fetchOzonApiTelegram() {
+  return fetchTelegramChannel({ username: 'OzonSellerAPI', source: 'ozon', tags: ['api'] });
 }
 
-async function fetchWbTelegram() {
-  const channelUrl = 'https://t.me/s/wb_api_notifications';
-  const html = await fetchText(channelUrl);
-  return parseTelegramChannelHtml(html, { source: 'wildberries', channelUrl });
+async function fetchWbApiTelegram() {
+  return fetchTelegramChannel({
+    username: 'wb_api_notifications',
+    source: 'wildberries',
+    tags: ['api'],
+  });
+}
+
+async function fetchOzonSellerTelegram() {
+  return fetchTelegramChannel({
+    username: 'ozonmarketplace',
+    source: 'ozon',
+    tags: ['ops'],
+    externalIdPrefix: 'seller-',
+  });
+}
+
+async function fetchWbSellerTelegram() {
+  return fetchTelegramChannel({
+    username: 'wbsellerofficial',
+    source: 'wildberries',
+    tags: ['ops'],
+    externalIdPrefix: 'seller-',
+  });
+}
+
+async function fetchYandexSellerTelegram() {
+  return fetchTelegramChannel({
+    username: 'market_marketplace',
+    source: 'yandex',
+    tags: ['ops'],
+    externalIdPrefix: 'seller-',
+  });
 }
 
 /**
@@ -304,10 +587,42 @@ async function fetchYandexChangelog() {
 }
 
 const ADAPTERS = [
-  { name: 'ozon', fetch: fetchOzonTelegram },
-  { name: 'wildberries', fetch: fetchWbTelegram },
-  { name: 'yandex', fetch: fetchYandexChangelog },
+  { name: 'ozon-api', fetch: fetchOzonApiTelegram },
+  { name: 'ozon-ops', fetch: fetchOzonSellerTelegram },
+  { name: 'wildberries-api', fetch: fetchWbApiTelegram },
+  { name: 'wildberries-ops', fetch: fetchWbSellerTelegram },
+  { name: 'yandex-api', fetch: fetchYandexChangelog },
+  { name: 'yandex-ops', fetch: fetchYandexSellerTelegram },
 ];
+
+/**
+ * Удаляет ранее сохранённые ops-посты, которые больше не проходят строгий фильтр
+ * (маркетинг, дайджесты, «советы продавцу»).
+ */
+export async function pruneIrrelevantOpsNews() {
+  const rows = await platformMarketplaceNewsRepo.listOpsForPrune({ limit: 1000 });
+  const toDelete = [];
+  for (const row of rows) {
+    if (
+      !isRelevantNews({
+        source: row.source,
+        title: row.title,
+        summary: row.summary,
+        body: row.body,
+        tags: row.tags,
+      })
+    ) {
+      toDelete.push(row.id);
+    }
+  }
+  if (!toDelete.length) return { checked: rows.length, deleted: 0 };
+  const { deleted } = await platformMarketplaceNewsRepo.deleteByIds(toDelete);
+  logger.info('[PlatformMarketplaceNews] pruned irrelevant ops', {
+    checked: rows.length,
+    deleted,
+  });
+  return { checked: rows.length, deleted };
+}
 
 /**
  * Синхронизация всех источников. Ошибка одного не роняет остальные.
@@ -350,7 +665,24 @@ export async function syncMarketplaceNews() {
     bySource[adapter.name] = stats;
   }
 
-  return { ok: errors.length < ADAPTERS.length, inserted, updated, bySource, errors };
+  let pruned = { checked: 0, deleted: 0 };
+  try {
+    pruned = await pruneIrrelevantOpsNews();
+  } catch (err) {
+    errors.push({ source: 'ops-prune', message: err?.message || String(err) });
+    logger.warn('[PlatformMarketplaceNews] ops prune failed', {
+      error: err?.message || String(err),
+    });
+  }
+
+  return {
+    ok: errors.length < ADAPTERS.length,
+    inserted,
+    updated,
+    pruned,
+    bySource,
+    errors,
+  };
 }
 
 export async function listMarketplaceNews(params) {
@@ -371,6 +703,7 @@ export async function markAllMarketplaceNewsRead(userId, opts) {
 
 export default {
   syncMarketplaceNews,
+  pruneIrrelevantOpsNews,
   listMarketplaceNews,
   getMarketplaceNewsById,
   markMarketplaceNewsRead,
@@ -379,5 +712,6 @@ export default {
   stripLeadingDate,
   getMainTelegramMessageTextEl,
   parseTelegramChannelHtml,
+  parseTelegramRssXml,
   parseYandexChangelogMarkdown,
 };
