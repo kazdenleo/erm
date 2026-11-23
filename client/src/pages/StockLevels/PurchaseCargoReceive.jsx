@@ -214,9 +214,12 @@ export function PurchaseCargoReceive({
       }
       const total = (res.state?.places || []).length;
       const expected = res.state?.expectedCargoPlaces;
+      const overPlaces = res.exceededExpected === true;
       setMessage({
-        kind: 'success',
-        text: `Принято грузоместо ${code} · ${expected != null ? `${total} из ${expected}` : `всего ${total}`}`,
+        kind: overPlaces ? 'warning' : 'success',
+        text: overPlaces
+          ? `Принято сверх плана: ${code} · ${total} из ${expected}`
+          : `Принято грузоместо ${code} · ${expected != null ? `${total} из ${expected}` : `всего ${total}`}`,
       });
       playEventSound(SOUND_EVENTS.scan_ok);
       focusProductScanAfterPlace();
@@ -250,19 +253,11 @@ export function PurchaseCargoReceive({
             return;
           }
           if (errCode === 'EXPECTED_EXCEEDED') {
-            const extra = purchaseCargoErrorData(e);
-            const accepted = extra?.accepted ?? cargoState?.places?.length;
-            const expected = extra?.expected ?? cargoState?.expectedCargoPlaces;
-            if (
-              window.confirm(
-                `Уже принято ${accepted} из ${expected} грузомест.\n\nДобавить ещё одно грузоместо?`
-              )
-            ) {
-              try {
-                await acceptPlace(code, { forceExceed: true });
-              } catch (err) {
-                setMessage({ kind: 'error', text: getApiErrorMessage(err) });
-              }
+            // Совместимость со старым API: раньше лишние места блокировались.
+            try {
+              await acceptPlace(code, { forceExceed: true });
+            } catch (err) {
+              setMessage({ kind: 'error', text: getApiErrorMessage(err) });
             }
             return;
           }

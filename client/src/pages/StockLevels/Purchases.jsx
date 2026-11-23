@@ -2196,8 +2196,13 @@ export function Purchases() {
                   onClick={async () => {
                     if (createReceiptBusy) return;
                     if (String(detail?.purchase?.status || '') === 'archived') {
-                      setErr('Закупка в архиве — всё принято. Создайте новую закупку для следующей поставки.');
-                      return;
+                      if (
+                        !window.confirm(
+                          'Закупка в архиве (план уже принят). Создать приёмку сверх плана? Лишнее количество уйдёт на склад как перескан.'
+                        )
+                      ) {
+                        return;
+                      }
                     }
                     const scanningDraft = findScanningDraftReceipt(detail?.receipts);
                     if (scanningDraft?.id && isReceiptSameCalendarDay(scanningDraft)) {
@@ -2212,7 +2217,11 @@ export function Purchases() {
                   }}
                   disabled={createReceiptBusy}
                 >
-                  {createReceiptBusy ? 'Создаю приёмку…' : 'Создать приёмку (сканирование)'}
+                  {createReceiptBusy
+                    ? 'Создаю приёмку…'
+                    : String(detail?.purchase?.status || '') === 'archived'
+                      ? 'Допринять сверх плана'
+                      : 'Создать приёмку (сканирование)'}
                 </Button>
                 <Button
                   variant="secondary"
@@ -2262,8 +2271,9 @@ export function Purchases() {
               {String(detail.purchase.status || '') === 'archived' && (
                 <>
                   {' '}
-                  <strong>В архиве</strong> (всё принято
-                  {detail.purchase.completed_at ? ` · ${fmtDt(detail.purchase.completed_at)}` : ''}).
+                  <strong>В архиве</strong> (план принят
+                  {detail.purchase.completed_at ? ` · ${fmtDt(detail.purchase.completed_at)}` : ''}
+                  ). Можно допринять сверх плана кнопкой ниже.
                 </>
               )}
               {detail.purchase.supplier_submitted_at ? (

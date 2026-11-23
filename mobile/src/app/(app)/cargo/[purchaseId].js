@@ -108,9 +108,12 @@ export default function CargoPurchaseScreen() {
     }
     const total = res.state.places.length;
     const expected = res.state.expectedCargoPlaces;
+    const overPlaces = res.exceededExpected === true;
     setMessage({
-      kind: 'success',
-      text: `Принято грузоместо ${code} · ${expected != null ? `${total} из ${expected}` : `всего ${total}`}`,
+      kind: overPlaces ? 'warning' : 'success',
+      text: overPlaces
+        ? `Принято сверх плана: ${code} · ${total} из ${expected}`
+        : `Принято грузоместо ${code} · ${expected != null ? `${total} из ${expected}` : `всего ${total}`}`,
     });
     scanOk();
   };
@@ -138,25 +141,12 @@ export default function CargoPurchaseScreen() {
           return;
         }
         if (e?.code === 'EXPECTED_EXCEEDED') {
-          const accepted = e?.data?.data?.accepted ?? data?.places?.length;
-          const expected = e?.data?.data?.expected ?? data?.expectedCargoPlaces;
-          Alert.alert(
-            'Все места уже приняты',
-            `Принято ${accepted} из ${expected}. Добавить ещё одно грузоместо?`,
-            [
-              { text: 'Отмена', style: 'cancel' },
-              {
-                text: 'Добавить',
-                style: 'destructive',
-                onPress: () =>
-                  runBusy(() =>
-                    accept(code, { forceExceed: true }).catch((err) =>
-                      setMessage({ kind: 'error', text: errorMessage(err) })
-                    )
-                  ),
-              },
-            ]
-          );
+          // Совместимость со старым API: лишние места принимаем сразу.
+          try {
+            await accept(code, { forceExceed: true });
+          } catch (err) {
+            setMessage({ kind: 'error', text: errorMessage(err) });
+          }
           return;
         }
         setMessage({ kind: 'error', text: `${code}: ${errorMessage(e, 'Не удалось принять грузоместо')}` });

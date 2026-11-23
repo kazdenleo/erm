@@ -1754,6 +1754,22 @@ async function assertPurchaseNotArchivedInTx(client, purchaseId) {
   }
 }
 
+/**
+ * Разрешить доприёмку сверх плана: архивную закупку снова открываем.
+ * После completeReceipt статус пересчитается (archived, если всё покрыто ожиданием).
+ */
+async function reopenArchivedPurchaseForReceiptInTx(client, purchaseId) {
+  const r = await client.query(`SELECT status FROM purchases WHERE id = $1 FOR UPDATE`, [purchaseId]);
+  if (String(r.rows?.[0]?.status || '') !== 'archived') return false;
+  await client.query(
+    `UPDATE purchases
+     SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [purchaseId]
+  );
+  return true;
+}
+
 /** После приёмки/отката: open пока есть непринятое, archived когда всё принято. */
 async function recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId) {
   const hasUnreceived = await purchaseHasUnreceivedItemsInTx(client, purchaseId);
@@ -4264,7 +4280,8 @@ class PurchasesService {
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
-      await assertPurchaseNotArchivedInTx(client, id);
+      // Доприёмка сверх плана: архив не мешает создать новую приёмку.
+      await reopenArchivedPurchaseForReceiptInTx(client, id);
 
       const existing = await client.query(
         `SELECT r.id, r.warehouse_receipt_id, r.started_at, r.created_at
@@ -5010,7 +5027,8 @@ class PurchasesService {
 
       const purchaseId = Number(receipt.purchase_id);
       await assertPurchaseInProfile(client, purchaseId, pid);
-      await assertPurchaseNotArchivedInTx(client, purchaseId);
+      // Приёмка могла стартовать до архивации / доприёмка сверх плана.
+      await reopenArchivedPurchaseForReceiptInTx(client, purchaseId);
 
       // lock purchase
       const pHead = await client.query(
@@ -5389,7 +5407,7 @@ class PurchasesService {
       const purchaseId = Number(targetPr.purchase_id);
       purchaseIdOut = purchaseId;
       await assertPurchaseInProfile(client, purchaseId, pid);
-      await assertPurchaseNotArchivedInTx(client, purchaseId);
+      await reopenArchivedPurchaseForReceiptInTx(client, purchaseId);
       await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [purchaseId]);
 
       const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, scope.warehouseId, pid);

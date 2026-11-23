@@ -107,10 +107,16 @@ async function loadPurchaseInTx(client, purchaseId, profileId, { forUpdate = fal
   return row;
 }
 
-function assertPurchaseOpen(purchase) {
-  if (String(purchase.status) === 'archived') {
-    throw httpError(400, 'Закупка в архиве (всё принято)');
-  }
+async function reopenArchivedPurchaseInTx(client, purchaseId) {
+  const r = await client.query(`SELECT status FROM purchases WHERE id = $1 FOR UPDATE`, [purchaseId]);
+  if (String(r.rows?.[0]?.status || '') !== 'archived') return false;
+  await client.query(
+    `UPDATE purchases
+     SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [purchaseId]
+  );
+  return true;
 }
 
 async function lockPlaceInTx(client, placeId, profileId) {
@@ -455,8 +461,10 @@ class PurchaseCargoPlacesService {
     const uid = optionalUserId(userId);
 
     return transaction(async (client) => {
+      await loadPurchaseInTx(client, id, pid, { forUpdate: true });
+      // Доприёмка сверх плана: архив не блокирует.
+      await reopenArchivedPurchaseInTx(client, id);
       const purchase = await loadPurchaseInTx(client, id, pid, { forUpdate: true });
-      assertPurchaseOpen(purchase);
 
       const same = await client.query(
         `SELECT id FROM purchase_cargo_places WHERE purchase_id = $1 AND barcode = $2`,
@@ -470,7 +478,7 @@ class PurchaseCargoPlacesService {
         `SELECT cp.purchase_id
          FROM purchase_cargo_places cp
          JOIN purchases p ON p.id = cp.purchase_id
-         WHERE cp.barcode = $1 AND p.profile_id = $2 AND p.status = 'open'
+         WHERE cp.barcode = $1 AND p.profile_id = $2 AND p.status IN ('open', 'archived')
          LIMIT 1`,
         [code, pid]
       );
@@ -491,29 +499,28 @@ class PurchaseCargoPlacesService {
         purchase.expected_cargo_places != null && purchase.expected_cargo_places !== ''
           ? Math.floor(Number(purchase.expected_cargo_places))
           : null;
-      if (expected != null && Number.isFinite(expected) && expected >= 0 && !forceExceed) {
+      let exceededExpected = false;
+      if (expected != null && Number.isFinite(expected) && expected >= 0) {
         const cnt = await client.query(
           `SELECT COUNT(*)::int AS c FROM purchase_cargo_places WHERE purchase_id = $1`,
           [id]
         );
         const accepted = Number(cnt.rows?.[0]?.c) || 0;
-        if (accepted >= expected) {
-          throw httpError(
-            409,
-            `Уже принято ${accepted} из ${expected} грузомест — лишнее место не добавляем`,
-            'EXPECTED_EXCEEDED',
-            { accepted, expected }
-          );
-        }
+        // Раньше требовали forceExceed; теперь лишние места принимаем сразу (сверх плана).
+        if (accepted >= expected) exceededExpected = true;
       }
-
       const ins = await client.query(
         `INSERT INTO purchase_cargo_places (purchase_id, barcode, accepted_by_user_id)
          VALUES ($1, $2, $3)
          RETURNING id`,
         [id, code, uid]
       );
-      return { placeId: Number(ins.rows[0].id), alreadyAccepted: false, state: await this._stateInTx(client, id) };
+      return {
+        placeId: Number(ins.rows[0].id),
+        alreadyAccepted: false,
+        exceededExpected,
+        state: await this._stateInTx(client, id),
+      };
     });
   }
 
@@ -555,8 +562,8 @@ class PurchaseCargoPlacesService {
         );
         return;
       }
-      const purchase = await loadPurchaseInTx(client, purchaseId, pid, { forUpdate: true });
-      assertPurchaseOpen(purchase);
+      await loadPurchaseInTx(client, purchaseId, pid, { forUpdate: true });
+      await reopenArchivedPurchaseInTx(client, purchaseId);
       await client.query(`DELETE FROM purchase_cargo_place_items WHERE cargo_place_id = $1`, [cid]);
       const receiptId = await ensureScanningReceiptInTx(client, purchaseId, uid);
       await client.query(
