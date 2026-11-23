@@ -128,9 +128,20 @@ export const pricingStrategiesController = {
 
   async getOne(req, res, next) {
     try {
+      const profileId = profileIdFromReq(req);
       const item = await pricingStrategyService.getStrategy(req.params.id);
       if (!item) return res.status(404).json({ ok: false, message: 'Стратегия не найдена' });
-      res.json({ ok: true, data: item });
+      if (
+        profileId != null &&
+        item.profile_id != null &&
+        Number(item.profile_id) !== Number(profileId)
+      ) {
+        return res.status(404).json({ ok: false, message: 'Стратегия не найдена' });
+      }
+      const assignments = await pricingStrategyService.getStrategyAssignments(item.id, {
+        profileId,
+      });
+      res.json({ ok: true, data: { ...item, assignments } });
     } catch (e) {
       next(e);
     }
@@ -139,8 +150,24 @@ export const pricingStrategiesController = {
   async create(req, res, next) {
     try {
       const profileId = profileIdFromReq(req);
-      const item = await pricingStrategyService.createStrategy(req.body || {}, { profileId });
-      res.status(201).json({ ok: true, data: item });
+      const body = req.body || {};
+      const item = await pricingStrategyService.createStrategy(body, { profileId });
+      if (body.assignments != null) {
+        const assignments = body.assignments || {};
+        await pricingStrategyService.replaceStrategyAssignments(
+          item.id,
+          {
+            isDefault: assignments.isDefault ?? assignments.is_default ?? false,
+            items: assignments.items || assignments.rules || [],
+          },
+          { profileId }
+        );
+      }
+      const full = await pricingStrategyService.getStrategy(item.id);
+      const assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
+        profileId,
+      });
+      res.status(201).json({ ok: true, data: { ...full, assignments: assignmentsOut } });
     } catch (e) {
       res.status(400).json({ ok: false, message: e.message || String(e) });
     }
@@ -148,9 +175,33 @@ export const pricingStrategiesController = {
 
   async update(req, res, next) {
     try {
-      const item = await pricingStrategyService.updateStrategy(req.params.id, req.body || {});
+      const profileId = profileIdFromReq(req);
+      const body = req.body || {};
+      const item = await pricingStrategyService.updateStrategy(req.params.id, body);
       if (!item) return res.status(404).json({ ok: false, message: 'Стратегия не найдена' });
-      res.json({ ok: true, data: item });
+      if (
+        profileId != null &&
+        item.profile_id != null &&
+        Number(item.profile_id) !== Number(profileId)
+      ) {
+        return res.status(404).json({ ok: false, message: 'Стратегия не найдена' });
+      }
+      if (body.assignments != null) {
+        const assignments = body.assignments || {};
+        await pricingStrategyService.replaceStrategyAssignments(
+          item.id,
+          {
+            isDefault: assignments.isDefault ?? assignments.is_default ?? false,
+            items: assignments.items || assignments.rules || [],
+          },
+          { profileId }
+        );
+      }
+      const full = await pricingStrategyService.getStrategy(item.id);
+      const assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
+        profileId,
+      });
+      res.json({ ok: true, data: { ...full, assignments: assignmentsOut } });
     } catch (e) {
       res.status(400).json({ ok: false, message: e.message || String(e) });
     }

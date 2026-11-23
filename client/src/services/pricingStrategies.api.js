@@ -34,6 +34,12 @@ export const pricingStrategiesApi = {
     return response.data;
   },
 
+  /** Назначения стратегии (дефолт + области). Обычно приходят в getOne/create/update. */
+  async getAssignments(id) {
+    const response = await api.get(`/pricing-strategies/${id}`);
+    return response.data?.data?.assignments || response.data?.assignments || null;
+  },
+
   async getDefaults() {
     const response = await api.get('/pricing-strategies/defaults');
     return response.data;

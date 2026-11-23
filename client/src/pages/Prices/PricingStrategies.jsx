@@ -1,15 +1,16 @@
 /**
  * Pricing Strategies Page
- * Настройка стратегий ценообразования
+ * Расчёт + где применяется — всё внутри карточки стратегии.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { pricingStrategiesApi } from '../../services/pricingStrategies.api.js';
 import { brandsApi } from '../../services/brands.api.js';
 import { userCategoriesApi } from '../../services/userCategories.api.js';
+import { productsApi } from '../../services/products.api.js';
 import './PricingStrategies.css';
 
 const MODE_LABELS = {
@@ -39,9 +40,17 @@ function emptyForm(defaultsHybrid) {
     description: '',
     mode: 'hybrid',
     is_active: true,
+    is_default: false,
+    assignments: [],
     config: defaultsHybrid || {
       target_margin_percent: 25,
-      competitor: { enabled: true, agg: 'min', offset_rub: 0, offset_percent: -1, if_missing: 'keep_base' },
+      competitor: {
+        enabled: true,
+        agg: 'min',
+        offset_rub: 0,
+        offset_percent: -1,
+        if_missing: 'keep_base',
+      },
       sales: {
         enabled: true,
         window_days: 14,
@@ -58,6 +67,24 @@ function emptyForm(defaultsHybrid) {
   };
 }
 
+function assignmentKey(item) {
+  return `${item.scopeType}:${item.scopeId ?? ''}:${item.marketplace || ''}`;
+}
+
+function formatAssignment(item) {
+  const scope = SCOPE_LABELS[item.scopeType] || item.scopeType;
+  const name =
+    item.scopeType === 'profile'
+      ? ''
+      : item.scopeName
+        ? `: ${item.scopeName}`
+        : item.scopeId
+          ? `: #${item.scopeId}`
+          : '';
+  const mp = item.marketplace ? ` · ${MP_LABELS[item.marketplace] || item.marketplace}` : ' · все МП';
+  return `${scope}${name}${mp}`;
+}
+
 export function PricingStrategies() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -70,25 +97,23 @@ export function PricingStrategies() {
   const [form, setForm] = useState(() => emptyForm());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
-  const [rules, setRules] = useState([]);
   const [brands, setBrands] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [ruleSaving, setRuleSaving] = useState(false);
-  const [ruleForm, setRuleForm] = useState({
-    strategyId: '',
-    scopeType: 'brand',
-    scopeId: '',
-    marketplace: '',
-  });
+
+  const [addScopeType, setAddScopeType] = useState('brand');
+  const [addScopeId, setAddScopeId] = useState('');
+  const [addMarketplace, setAddMarketplace] = useState('');
+  const [productQuery, setProductQuery] = useState('');
+  const [productHits, setProductHits] = useState([]);
+  const [productSearching, setProductSearching] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const [listRes, defRes, rulesRes, brandsRes, catsRes] = await Promise.all([
+      const [listRes, defRes, brandsRes, catsRes] = await Promise.all([
         pricingStrategiesApi.list(),
         pricingStrategiesApi.getDefaults(),
-        pricingStrategiesApi.listRules().catch(() => ({ data: [] })),
         brandsApi.getAll().catch(() => ({ data: [] })),
         userCategoriesApi.getAll().catch(() => ({ data: [] })),
       ]);
@@ -100,10 +125,17 @@ export function PricingStrategies() {
         }
       );
       setDefaults(defRes?.data || null);
-      setRules(Array.isArray(rulesRes?.data) ? rulesRes.data : []);
-      const brandList = Array.isArray(brandsRes?.data) ? brandsRes.data : Array.isArray(brandsRes) ? brandsRes : [];
+      const brandList = Array.isArray(brandsRes?.data)
+        ? brandsRes.data
+        : Array.isArray(brandsRes)
+          ? brandsRes
+          : [];
       setBrands(brandList.filter(Boolean));
-      const catList = Array.isArray(catsRes?.data) ? catsRes.data : Array.isArray(catsRes) ? catsRes : [];
+      const catList = Array.isArray(catsRes?.data)
+        ? catsRes.data
+        : Array.isArray(catsRes)
+          ? catsRes
+          : [];
       setCategories(catList.filter(Boolean));
     } catch (e) {
       setError(e.response?.data?.message || e.message);
@@ -115,6 +147,35 @@ export function PricingStrategies() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (addScopeType !== 'product') {
+      setProductHits([]);
+      return undefined;
+    }
+    const q = productQuery.trim();
+    if (q.length < 2) {
+      setProductHits([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setProductSearching(true);
+      try {
+        const res = await productsApi.getAll({ search: q, limit: 12 });
+        const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        if (!cancelled) setProductHits(rows.filter(Boolean).slice(0, 12));
+      } catch {
+        if (!cancelled) setProductHits([]);
+      } finally {
+        if (!cancelled) setProductSearching(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [productQuery, addScopeType]);
 
   const toggleStrategiesEnabled = async () => {
     const next = !(settings.enabled !== false);
@@ -135,19 +196,31 @@ export function PricingStrategies() {
     }
   };
 
+  const resetAddForm = () => {
+    setAddScopeType('brand');
+    setAddScopeId('');
+    setAddMarketplace('');
+    setProductQuery('');
+    setProductHits([]);
+  };
+
   const openCreate = () => {
     setEditing(null);
     setForm(emptyForm(defaults?.defaultConfig?.hybrid));
+    resetAddForm();
     setModalOpen(true);
   };
 
-  const openEdit = (row) => {
+  const openEdit = async (row) => {
     setEditing(row);
+    resetAddForm();
     setForm({
       name: row.name || '',
       description: row.description || '',
       mode: row.mode || 'hybrid',
       is_active: row.is_active !== false,
+      is_default: row.is_default === true,
+      assignments: [],
       config: {
         ...emptyForm(defaults?.defaultConfig?.[row.mode || 'hybrid']).config,
         ...(row.config || {}),
@@ -162,6 +235,25 @@ export function PricingStrategies() {
       },
     });
     setModalOpen(true);
+    try {
+      const res = await pricingStrategiesApi.getOne(row.id);
+      const data = res?.data || res;
+      const assignments = data?.assignments;
+      setForm((prev) => ({
+        ...prev,
+        is_default: assignments?.isDefault === true || data?.is_default === true,
+        assignments: Array.isArray(assignments?.items)
+          ? assignments.items.map((it) => ({
+              scopeType: it.scopeType || it.scope_type,
+              scopeId: it.scopeId ?? it.scope_id ?? null,
+              scopeName: it.scopeName || it.scope_name || null,
+              marketplace: it.marketplace || null,
+            }))
+          : [],
+      }));
+    } catch (e) {
+      setMessage('Не удалось загрузить назначения: ' + (e.response?.data?.message || e.message));
+    }
   };
 
   const setConfigField = (path, value) => {
@@ -195,6 +287,59 @@ export function PricingStrategies() {
     }));
   };
 
+  const addAssignment = (item) => {
+    const next = {
+      scopeType: item.scopeType,
+      scopeId: item.scopeId ?? null,
+      scopeName: item.scopeName || null,
+      marketplace: item.marketplace || null,
+    };
+    setForm((prev) => {
+      const key = assignmentKey(next);
+      if ((prev.assignments || []).some((a) => assignmentKey(a) === key)) return prev;
+      return { ...prev, assignments: [...(prev.assignments || []), next] };
+    });
+  };
+
+  const handleAddAssignment = () => {
+    if (addScopeType === 'profile') {
+      addAssignment({
+        scopeType: 'profile',
+        scopeId: null,
+        scopeName: null,
+        marketplace: addMarketplace || null,
+      });
+      return;
+    }
+    if (addScopeType === 'product') {
+      setMessage('Выберите товар из подсказок поиска');
+      return;
+    }
+    if (!addScopeId) {
+      setMessage(addScopeType === 'brand' ? 'Выберите бренд' : 'Выберите категорию');
+      return;
+    }
+    const idNum = Number(addScopeId);
+    const named =
+      addScopeType === 'brand'
+        ? brands.find((b) => Number(b.id) === idNum)
+        : categories.find((c) => Number(c.id) === idNum);
+    addAssignment({
+      scopeType: addScopeType,
+      scopeId: idNum,
+      scopeName: named?.name || null,
+      marketplace: addMarketplace || null,
+    });
+    setAddScopeId('');
+  };
+
+  const removeAssignment = (key) => {
+    setForm((prev) => ({
+      ...prev,
+      assignments: (prev.assignments || []).filter((a) => assignmentKey(a) !== key),
+    }));
+  };
+
   const handleSave = async () => {
     if (!form.name.trim()) {
       setMessage('Укажите название');
@@ -209,6 +354,14 @@ export function PricingStrategies() {
         mode: form.mode,
         is_active: form.is_active === true,
         config: form.config,
+        assignments: {
+          isDefault: form.is_default === true,
+          items: (form.assignments || []).map((a) => ({
+            scopeType: a.scopeType,
+            scopeId: a.scopeId,
+            marketplace: a.marketplace || null,
+          })),
+        },
       };
       if (editing) await pricingStrategiesApi.update(editing.id, payload);
       else await pricingStrategiesApi.create(payload);
@@ -233,61 +386,19 @@ export function PricingStrategies() {
     }
   };
 
-  const setDefaultStrategy = async (strategyIdRaw) => {
-    setSettingsSaving(true);
-    setMessage(null);
-    try {
-      const res = await pricingStrategiesApi.updateSettings({
-        defaultStrategyId: strategyIdRaw === '' ? null : strategyIdRaw,
-      });
-      setSettings(res?.data || settings);
-      setMessage('Дефолт кабинета обновлён');
-      setTimeout(() => setMessage(null), 3000);
-    } catch (e) {
-      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
-    } finally {
-      setSettingsSaving(false);
+  const assignmentSummary = useMemo(() => {
+    const map = new Map();
+    for (const row of list) {
+      const parts = [];
+      if (row.is_default === true) parts.push('дефолт кабинета');
+      const rc = Number(row.rules_count ?? row.rulesCount ?? 0);
+      const pc = Number(row.products_count ?? row.productsCount ?? 0);
+      if (rc > 0) parts.push(`правил: ${rc}`);
+      if (pc > 0) parts.push(`товаров: ${pc}`);
+      map.set(row.id, parts.length ? parts.join(' · ') : 'нигде не назначена');
     }
-  };
-
-  const handleSaveRule = async () => {
-    if (!ruleForm.strategyId) {
-      setMessage('Выберите стратегию для правила');
-      return;
-    }
-    if (ruleForm.scopeType !== 'profile' && !ruleForm.scopeId) {
-      setMessage('Выберите бренд или категорию');
-      return;
-    }
-    setRuleSaving(true);
-    setMessage(null);
-    try {
-      await pricingStrategiesApi.upsertRule({
-        strategyId: ruleForm.strategyId,
-        scopeType: ruleForm.scopeType,
-        scopeId: ruleForm.scopeType === 'profile' ? null : ruleForm.scopeId,
-        marketplace: ruleForm.marketplace || null,
-      });
-      setRuleForm((p) => ({ ...p, scopeId: '' }));
-      await load();
-      setMessage('Правило сохранено');
-      setTimeout(() => setMessage(null), 3000);
-    } catch (e) {
-      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
-    } finally {
-      setRuleSaving(false);
-    }
-  };
-
-  const handleDeleteRule = async (rule) => {
-    if (!window.confirm('Удалить это правило назначения?')) return;
-    try {
-      await pricingStrategiesApi.deleteRule(rule.id);
-      await load();
-    } catch (e) {
-      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
-    }
-  };
+    return map;
+  }, [list]);
 
   if (loading) return <div className="loading">Загрузка стратегий...</div>;
   if (error) return <div className="error">Ошибка: {error}</div>;
@@ -299,11 +410,19 @@ export function PricingStrategies() {
 
   return (
     <div className="card pricing-strategies-page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+          alignItems: 'flex-start',
+        }}
+      >
         <div>
           <h1 className="title">Стратегии цен</h1>
           <p className="subtitle">
-            Правила расчёта фактической цены для выбранных товаров. Минимум (пол) всегда нижняя граница.{' '}
+            В каждой стратегии — и формула цены, и где она действует (товары, бренды, категории, МП).{' '}
             <Link to="/prices">← к ценам</Link>
           </p>
         </div>
@@ -318,7 +437,15 @@ export function PricingStrategies() {
       </div>
 
       {message && (
-        <div style={{ marginTop: 12, fontSize: 13, color: message.startsWith('Ошибка') ? 'var(--danger,#ef4444)' : 'var(--primary)' }}>
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 13,
+            color: message.startsWith('Ошибка') || message.startsWith('Не удалось')
+              ? 'var(--danger,#ef4444)'
+              : 'var(--primary)',
+          }}
+        >
           {message}
         </div>
       )}
@@ -331,13 +458,13 @@ export function PricingStrategies() {
           <div className="pricing-strategies-master-desc">
             {strategiesOn ? (
               <>
-                Назначение: товар (+опционально МП) → бренд → категория → дефолт кабинета. Более
-                узкое правило побеждает. Ручная цена на МП снимает правило только для этого МП.
+                Приоритет: товар+МП → товар → бренд → категория → дефолт кабинета. Более узкое
+                назначение побеждает. Ручная цена на МП не перезаписывается.
               </>
             ) : (
               <>
-                Авторасчёт фактической цены отключён для всего кабинета. На странице «Цены» поле «факт»
-                редактируется вручную; «до скидки» и % тоже.
+                Авторасчёт фактической цены отключён. На странице «Цены» поле «факт» задаётся
+                вручную.
               </>
             )}
           </div>
@@ -353,54 +480,41 @@ export function PricingStrategies() {
         </label>
       </div>
 
-      {strategiesOn ? (
-        <div className="pricing-strategies-default" style={{ marginTop: 12 }}>
-          <label className="form-label" style={{ marginBottom: 4 }}>
-            Стратегия по умолчанию для кабинета
-          </label>
-          <select
-            className="form-select form-select-sm"
-            style={{ maxWidth: 360 }}
-            disabled={settingsSaving}
-            value={
-              settings.defaultStrategy?.id != null ? String(settings.defaultStrategy.id) : ''
-            }
-            onChange={(e) => setDefaultStrategy(e.target.value)}
-          >
-            <option value="">Нет (только явные привязки и правила)</option>
-            {list
-              .filter((s) => s.is_active !== false)
-              .map((s) => (
-                <option key={s.id} value={String(s.id)}>
-                  {s.name}
-                </option>
-              ))}
-          </select>
-        </div>
-      ) : null}
-
       <div className="pricing-strategies-hint">
-        <p><strong>Режимы:</strong></p>
-        <ul>
-          <li><strong>Минимум</strong> — цена продажи = рассчитанный пол</li>
-          <li><strong>Целевая маржа</strong> — себестоимость + %</li>
-          <li><strong>Конкуренты</strong> — WB/YM (на Ozon данных нет → шаг пропускается)</li>
-          <li><strong>Продажи</strong> — при высокой скорости продаж поднимаем цену, при низкой снижаем</li>
-          <li><strong>Гибрид</strong> — маржа/пол → конкуренты → продажи</li>
-        </ul>
-        <p style={{ marginTop: 8, marginBottom: 0 }}>
-          Привязка к товару — на странице «Цены». Ниже — правила для брендов, категорий и отдельных МП.
+        <p>
+          <strong>Режимы:</strong>
         </p>
+        <ul>
+          <li>
+            <strong>Минимум</strong> — цена продажи = рассчитанный пол
+          </li>
+          <li>
+            <strong>Целевая маржа</strong> — себестоимость + %
+          </li>
+          <li>
+            <strong>Конкуренты</strong> — WB/YM (на Ozon данных нет → шаг пропускается)
+          </li>
+          <li>
+            <strong>Продажи</strong> — при высокой скорости поднимаем цену, при низкой снижаем
+          </li>
+          <li>
+            <strong>Гибрид</strong> — маржа/пол → конкуренты → продажи
+          </li>
+        </ul>
       </div>
 
       <div className="pricing-strategies-list" style={{ marginTop: 16 }}>
         {list.length === 0 ? (
-          <div className="empty-state">Стратегий пока нет — будут созданы пресеты при первом открытии.</div>
+          <div className="empty-state">
+            Стратегий пока нет — будут созданы пресеты при первом открытии.
+          </div>
         ) : (
           list.map((row) => (
             <div
               key={row.id}
-              className={`pricing-strategy-item ${row.is_active === false || !strategiesOn ? 'inactive' : ''}`}
+              className={`pricing-strategy-item ${
+                row.is_active === false || !strategiesOn ? 'inactive' : ''
+              }`}
             >
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>
@@ -412,17 +526,12 @@ export function PricingStrategies() {
                       {row.is_active === false && (
                         <span className="pricing-strategy-badge muted">не применяется</span>
                       )}
-                      {row.is_active !== false && (
-                        <span className="pricing-strategy-badge muted">
-                          товаров: {Number(row.products_count ?? row.productsCount ?? 0)}
-                          {Number(row.rules_count ?? row.rulesCount ?? 0) > 0
-                            ? ` · правил: ${Number(row.rules_count ?? row.rulesCount)}`
-                            : ''}
-                        </span>
-                      )}
                       {row.is_default === true && (
                         <span className="pricing-strategy-badge">дефолт</span>
                       )}
+                      <span className="pricing-strategy-badge muted">
+                        {assignmentSummary.get(row.id)}
+                      </span>
                     </>
                   )}
                 </div>
@@ -432,8 +541,15 @@ export function PricingStrategies() {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <Button variant="secondary" size="small" onClick={() => openEdit(row)}>Изменить</Button>
-                <Button variant="secondary" size="small" onClick={() => handleDelete(row)} style={{ color: '#fca5a5' }}>
+                <Button variant="secondary" size="small" onClick={() => openEdit(row)}>
+                  Изменить
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={() => handleDelete(row)}
+                  style={{ color: '#fca5a5' }}
+                >
                   Удалить
                 </Button>
               </div>
@@ -441,152 +557,6 @@ export function PricingStrategies() {
           ))
         )}
       </div>
-
-      {strategiesOn ? (
-        <div className="pricing-strategies-rules" style={{ marginTop: 24 }}>
-          <h2 className="h5" style={{ marginBottom: 8 }}>
-            Правила назначения
-          </h2>
-          <p className="text-muted small mb-3">
-            Приоритет: товар+МП → товар → бренд+МП → бренд → категория+МП → категория → дефолт кабинета.
-          </p>
-
-          <div
-            className="pricing-strategies-rule-form"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-              gap: 8,
-              alignItems: 'end',
-              marginBottom: 12,
-            }}
-          >
-            <label className="form-label mb-0">
-              Стратегия
-              <select
-                className="form-select form-select-sm mt-1"
-                value={ruleForm.strategyId}
-                onChange={(e) => setRuleForm((p) => ({ ...p, strategyId: e.target.value }))}
-              >
-                <option value="">Выберите…</option>
-                {list
-                  .filter((s) => s.is_active !== false)
-                  .map((s) => (
-                    <option key={s.id} value={String(s.id)}>
-                      {s.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label className="form-label mb-0">
-              Область
-              <select
-                className="form-select form-select-sm mt-1"
-                value={ruleForm.scopeType}
-                onChange={(e) =>
-                  setRuleForm((p) => ({ ...p, scopeType: e.target.value, scopeId: '' }))
-                }
-              >
-                <option value="brand">Бренд</option>
-                <option value="category">Категория</option>
-                <option value="profile">Весь кабинет</option>
-              </select>
-            </label>
-            {ruleForm.scopeType === 'brand' ? (
-              <label className="form-label mb-0">
-                Бренд
-                <select
-                  className="form-select form-select-sm mt-1"
-                  value={ruleForm.scopeId}
-                  onChange={(e) => setRuleForm((p) => ({ ...p, scopeId: e.target.value }))}
-                >
-                  <option value="">Выберите…</option>
-                  {brands.map((b) => (
-                    <option key={b.id} value={String(b.id)}>
-                      {b.name || `#${b.id}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {ruleForm.scopeType === 'category' ? (
-              <label className="form-label mb-0">
-                Категория
-                <select
-                  className="form-select form-select-sm mt-1"
-                  value={ruleForm.scopeId}
-                  onChange={(e) => setRuleForm((p) => ({ ...p, scopeId: e.target.value }))}
-                >
-                  <option value="">Выберите…</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={String(c.id)}>
-                      {c.name || `#${c.id}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <label className="form-label mb-0">
-              Маркетплейс
-              <select
-                className="form-select form-select-sm mt-1"
-                value={ruleForm.marketplace}
-                onChange={(e) => setRuleForm((p) => ({ ...p, marketplace: e.target.value }))}
-              >
-                <option value="">Все МП</option>
-                <option value="ozon">Ozon</option>
-                <option value="wb">Wildberries</option>
-                <option value="ym">Яндекс Маркет</option>
-              </select>
-            </label>
-            <Button
-              type="button"
-              variant="primary"
-              size="small"
-              onClick={handleSaveRule}
-              disabled={ruleSaving}
-            >
-              {ruleSaving ? '…' : 'Добавить правило'}
-            </Button>
-          </div>
-
-          {rules.length === 0 ? (
-            <div className="empty-state">Правил пока нет — стратегия берётся с товара или из дефолта.</div>
-          ) : (
-            <div className="pricing-strategies-list">
-              {rules.map((rule) => (
-                <div key={rule.id} className="pricing-strategy-item">
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>
-                      {rule.strategy_name || rule.strategyName || 'Стратегия'}
-                      <span className="pricing-strategy-badge muted">
-                        {SCOPE_LABELS[rule.scope_type] || rule.scope_type}
-                        {rule.scope_name ? `: ${rule.scope_name}` : ''}
-                      </span>
-                      <span className="pricing-strategy-badge muted">
-                        {rule.marketplace
-                          ? MP_LABELS[rule.marketplace] || rule.marketplace
-                          : 'Все МП'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-                      {MODE_LABELS[rule.strategy_mode] || rule.strategy_mode || ''}
-                    </div>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="small"
-                    onClick={() => handleDeleteRule(rule)}
-                    style={{ color: '#fca5a5' }}
-                  >
-                    Удалить
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
 
       <Modal
         isOpen={modalOpen}
@@ -611,7 +581,9 @@ export function PricingStrategies() {
               onChange={(e) => onModeChange(e.target.value)}
             >
               {Object.entries(MODE_LABELS).map(([k, label]) => (
-                <option key={k} value={k}>{label}</option>
+                <option key={k} value={k}>
+                  {label}
+                </option>
               ))}
             </select>
           </div>
@@ -658,7 +630,9 @@ export function PricingStrategies() {
 
           {showCompetitor && (
             <>
-              <div className="col-12"><h6 className="mb-0 mt-2">Конкуренты (WB / YM)</h6></div>
+              <div className="col-12">
+                <h6 className="mb-0 mt-2">Конкуренты (WB / YM)</h6>
+              </div>
               <div className="col-md-3">
                 <label className="form-label">Агрегация</label>
                 <select
@@ -677,7 +651,9 @@ export function PricingStrategies() {
                   type="number"
                   className="form-control form-control-sm"
                   value={form.config.competitor?.offset_percent ?? -1}
-                  onChange={(e) => setConfigField('competitor.offset_percent', Number(e.target.value))}
+                  onChange={(e) =>
+                    setConfigField('competitor.offset_percent', Number(e.target.value))
+                  }
                 />
               </div>
               <div className="col-md-3">
@@ -698,16 +674,22 @@ export function PricingStrategies() {
                     checked={form.config.competitor?.enabled !== false}
                     onChange={(e) => setConfigField('competitor.enabled', e.target.checked)}
                   />
-                  <label className="form-check-label" htmlFor="compEnabled">Учитывать конкурентов</label>
+                  <label className="form-check-label" htmlFor="compEnabled">
+                    Учитывать конкурентов
+                  </label>
                 </div>
-                <p className="text-muted small mb-0">На Ozon шаг конкурентов пропускается — нет данных витрины.</p>
+                <p className="text-muted small mb-0">
+                  На Ozon шаг конкурентов пропускается — нет данных витрины.
+                </p>
               </div>
             </>
           )}
 
           {showSales && (
             <>
-              <div className="col-12"><h6 className="mb-0 mt-2">Продажи (FBS, delivered)</h6></div>
+              <div className="col-12">
+                <h6 className="mb-0 mt-2">Продажи (FBS, delivered)</h6>
+              </div>
               <div className="col-md-3">
                 <label className="form-label">Окно, дней</label>
                 <input
@@ -743,7 +725,9 @@ export function PricingStrategies() {
                   type="number"
                   className="form-control form-control-sm"
                   value={form.config.sales?.high_step_percent ?? 3}
-                  onChange={(e) => setConfigField('sales.high_step_percent', Number(e.target.value))}
+                  onChange={(e) =>
+                    setConfigField('sales.high_step_percent', Number(e.target.value))
+                  }
                 />
               </div>
               <div className="col-md-3">
@@ -764,11 +748,191 @@ export function PricingStrategies() {
                     checked={form.config.sales?.enabled !== false}
                     onChange={(e) => setConfigField('sales.enabled', e.target.checked)}
                   />
-                  <label className="form-check-label" htmlFor="salesEnabled">Учитывать продажи</label>
+                  <label className="form-check-label" htmlFor="salesEnabled">
+                    Учитывать продажи
+                  </label>
                 </div>
               </div>
             </>
           )}
+
+          <div className="col-12">
+            <hr style={{ margin: '8px 0 12px', borderColor: 'var(--border, #333)' }} />
+            <h6 className="mb-1">Где применяется</h6>
+            <p className="text-muted small mb-2">
+              Назначьте стратегию на товары, бренды, категории или весь кабинет. Можно ограничить
+              одним маркетплейсом.
+            </p>
+
+            <div className="form-check form-switch mb-3">
+              <input
+                className="form-check-input"
+                type="checkbox"
+                id="stratDefault"
+                checked={form.is_default === true}
+                onChange={(e) => setForm((p) => ({ ...p, is_default: e.target.checked }))}
+              />
+              <label className="form-check-label" htmlFor="stratDefault">
+                Стратегия по умолчанию для всего кабинета
+              </label>
+            </div>
+
+            {(form.assignments || []).length === 0 ? (
+              <div className="empty-state" style={{ marginBottom: 12, padding: '8px 0' }}>
+                Пока только дефолт (если включён) или нигде — добавьте область ниже.
+              </div>
+            ) : (
+              <div className="pricing-strategies-list" style={{ marginBottom: 12 }}>
+                {(form.assignments || []).map((a) => {
+                  const key = assignmentKey(a);
+                  return (
+                    <div key={key} className="pricing-strategy-item" style={{ padding: '8px 10px' }}>
+                      <div style={{ flex: 1, fontSize: 13 }}>{formatAssignment(a)}</div>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="small"
+                        onClick={() => removeAssignment(key)}
+                        style={{ color: '#fca5a5' }}
+                      >
+                        Убрать
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                gap: 8,
+                alignItems: 'end',
+              }}
+            >
+              <label className="form-label mb-0">
+                Область
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={addScopeType}
+                  onChange={(e) => {
+                    setAddScopeType(e.target.value);
+                    setAddScopeId('');
+                    setProductQuery('');
+                    setProductHits([]);
+                  }}
+                >
+                  <option value="brand">Бренд</option>
+                  <option value="category">Категория</option>
+                  <option value="product">Товар</option>
+                  <option value="profile">Весь кабинет</option>
+                </select>
+              </label>
+
+              {addScopeType === 'brand' ? (
+                <label className="form-label mb-0">
+                  Бренд
+                  <select
+                    className="form-select form-select-sm mt-1"
+                    value={addScopeId}
+                    onChange={(e) => setAddScopeId(e.target.value)}
+                  >
+                    <option value="">Выберите…</option>
+                    {brands.map((b) => (
+                      <option key={b.id} value={String(b.id)}>
+                        {b.name || `#${b.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {addScopeType === 'category' ? (
+                <label className="form-label mb-0">
+                  Категория
+                  <select
+                    className="form-select form-select-sm mt-1"
+                    value={addScopeId}
+                    onChange={(e) => setAddScopeId(e.target.value)}
+                  >
+                    <option value="">Выберите…</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name || `#${c.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {addScopeType === 'product' ? (
+                <label className="form-label mb-0" style={{ gridColumn: 'span 2' }}>
+                  Поиск товара
+                  <input
+                    className="form-control form-control-sm mt-1"
+                    value={productQuery}
+                    placeholder="SKU или название…"
+                    onChange={(e) => setProductQuery(e.target.value)}
+                  />
+                </label>
+              ) : null}
+
+              <label className="form-label mb-0">
+                Маркетплейс
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={addMarketplace}
+                  onChange={(e) => setAddMarketplace(e.target.value)}
+                >
+                  <option value="">Все МП</option>
+                  <option value="ozon">Ozon</option>
+                  <option value="wb">Wildberries</option>
+                  <option value="ym">Яндекс Маркет</option>
+                </select>
+              </label>
+
+              {addScopeType !== 'product' ? (
+                <Button type="button" variant="secondary" size="small" onClick={handleAddAssignment}>
+                  Добавить
+                </Button>
+              ) : null}
+            </div>
+
+            {addScopeType === 'product' ? (
+              <div style={{ marginTop: 8 }}>
+                {productSearching ? (
+                  <div className="text-muted small">Поиск…</div>
+                ) : productHits.length === 0 && productQuery.trim().length >= 2 ? (
+                  <div className="text-muted small">Ничего не найдено</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {productHits.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ textAlign: 'left', fontSize: 12 }}
+                        onClick={() => {
+                          addAssignment({
+                            scopeType: 'product',
+                            scopeId: Number(p.id),
+                            scopeName: p.name || p.sku || `#${p.id}`,
+                            marketplace: addMarketplace || null,
+                          });
+                          setProductQuery('');
+                          setProductHits([]);
+                        }}
+                      >
+                        {p.sku ? `${p.sku} · ` : ''}
+                        {p.name || `#${p.id}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
 
           <div className="col-12 d-flex gap-4">
             <div className="form-check form-switch">
@@ -779,13 +943,17 @@ export function PricingStrategies() {
                 checked={form.is_active === true}
                 onChange={(e) => setForm((p) => ({ ...p, is_active: e.target.checked }))}
               />
-              <label className="form-check-label" htmlFor="stratActive">Активна</label>
+              <label className="form-check-label" htmlFor="stratActive">
+                Активна
+              </label>
             </div>
           </div>
         </div>
 
         <div className="d-flex justify-content-end gap-2 mt-4">
-          <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button>
+          <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
+            Отмена
+          </Button>
           <Button type="button" variant="primary" onClick={handleSave} disabled={saving}>
             {saving ? 'Сохранение…' : 'Сохранить'}
           </Button>

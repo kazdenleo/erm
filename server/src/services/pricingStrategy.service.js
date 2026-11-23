@@ -1095,6 +1095,185 @@ export async function getStrategy(id) {
   return r.rows?.[0] || null;
 }
 
+/**
+ * Назначения стратегии: дефолт кабинета + список областей (товар/бренд/категория ± МП).
+ * Товар без МП также отражается из products.pricing_strategy_id.
+ */
+export async function getStrategyAssignments(strategyId, { profileId = null } = {}) {
+  const sid = Number(strategyId);
+  if (!Number.isFinite(sid) || sid < 1) throw new Error('Некорректный id стратегии');
+  const st = await getStrategy(sid);
+  if (!st) return null;
+  if (
+    profileId != null &&
+    st.profile_id != null &&
+    Number(st.profile_id) !== Number(profileId)
+  ) {
+    throw new Error('Стратегия другого кабинета');
+  }
+  const pid = st.profile_id != null ? Number(st.profile_id) : Number(profileId);
+
+  const items = [];
+  const seen = new Set();
+
+  try {
+    const rulesRes = await query(
+      `SELECT r.*,
+              CASE r.scope_type
+                WHEN 'product' THEN (SELECT p.name FROM products p WHERE p.id = r.scope_id)
+                WHEN 'brand' THEN (SELECT b.name FROM brands b WHERE b.id = r.scope_id)
+                WHEN 'category' THEN (SELECT uc.name FROM user_categories uc WHERE uc.id = r.scope_id)
+                ELSE NULL
+              END AS scope_name
+       FROM pricing_strategy_rules r
+       WHERE r.strategy_id = $1 AND r.is_active = true
+       ORDER BY r.id ASC`,
+      [sid]
+    );
+    for (const row of rulesRes.rows || []) {
+      const mp = normalizeStrategyMarketplace(row.marketplace);
+      const key = `${row.scope_type}:${row.scope_id ?? ''}:${mp || ''}`;
+      seen.add(key);
+      items.push({
+        id: row.id,
+        scopeType: row.scope_type,
+        scopeId: row.scope_id != null ? Number(row.scope_id) : null,
+        scopeName: row.scope_name || null,
+        marketplace: mp,
+        source: 'rule',
+      });
+    }
+  } catch (err) {
+    if (String(err?.code) !== '42P01') throw err;
+  }
+
+  if (Number.isFinite(pid) && pid > 0) {
+    const prodRes = await query(
+      `SELECT id, name FROM products
+       WHERE pricing_strategy_id = $1 AND profile_id = $2
+       ORDER BY name ASC NULLS LAST, id ASC
+       LIMIT 500`,
+      [sid, pid]
+    );
+    for (const row of prodRes.rows || []) {
+      const key = `product:${row.id}:`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        id: null,
+        scopeType: 'product',
+        scopeId: Number(row.id),
+        scopeName: row.name || null,
+        marketplace: null,
+        source: 'product_column',
+      });
+    }
+  }
+
+  return {
+    strategyId: sid,
+    isDefault: st.is_default === true,
+    items,
+  };
+}
+
+/**
+ * Полная замена назначений стратегии (из модалки «Где применяется»).
+ * items: [{ scopeType, scopeId?, marketplace? }]
+ */
+export async function replaceStrategyAssignments(
+  strategyId,
+  { isDefault = false, items = [] } = {},
+  { profileId = null } = {}
+) {
+  const sid = Number(strategyId);
+  if (!Number.isFinite(sid) || sid < 1) throw new Error('Некорректный id стратегии');
+  const st = await getStrategy(sid);
+  if (!st) throw new Error('Стратегия не найдена');
+  const pid =
+    st.profile_id != null
+      ? Number(st.profile_id)
+      : profileId != null
+        ? Number(profileId)
+        : null;
+  if (!Number.isFinite(pid) || pid < 1) throw new Error('Нет профиля стратегии');
+  if (profileId != null && Number(profileId) !== pid) {
+    throw new Error('Стратегия другого кабинета');
+  }
+
+  const wantDefault = isDefault === true || isDefault === 'true' || isDefault === 1;
+  if (wantDefault) {
+    await setProfileDefaultStrategy(pid, sid);
+  } else if (st.is_default === true) {
+    await query(
+      `UPDATE pricing_strategies SET is_default = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [sid]
+    );
+  }
+
+  const normalized = [];
+  const productAllMpIds = new Set();
+  for (const raw of Array.isArray(items) ? items : []) {
+    const scopeType = String(raw.scopeType || raw.scope_type || '')
+      .trim()
+      .toLowerCase();
+    if (!['product', 'brand', 'category', 'profile'].includes(scopeType)) {
+      throw new Error('scopeType: product | brand | category | profile');
+    }
+    let scopeId = null;
+    if (scopeType === 'profile') {
+      scopeId = null;
+    } else {
+      scopeId = Number(raw.scopeId ?? raw.scope_id);
+      if (!Number.isFinite(scopeId) || scopeId < 1) {
+        throw new Error(`Укажите ${scopeType}`);
+      }
+    }
+    const mp = normalizeStrategyMarketplace(raw.marketplace);
+    normalized.push({ scopeType, scopeId, marketplace: mp });
+    if (scopeType === 'product' && mp == null) {
+      productAllMpIds.add(scopeId);
+    }
+  }
+
+  // Снимаем старые правила этой стратегии; чужие scope-конфликты разрулим через upsert
+  try {
+    await query(`DELETE FROM pricing_strategy_rules WHERE strategy_id = $1`, [sid]);
+  } catch (err) {
+    if (String(err?.code) !== '42P01') throw err;
+  }
+
+  for (const item of normalized) {
+    await upsertStrategyRule({
+      profileId: pid,
+      strategyId: sid,
+      scopeType: item.scopeType,
+      scopeId: item.scopeId,
+      marketplace: item.marketplace,
+      isActive: true,
+    });
+  }
+
+  // Колонка товара: только «товар / все МП»
+  await query(
+    `UPDATE products
+     SET pricing_strategy_id = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE pricing_strategy_id = $1 AND profile_id = $2
+       AND NOT (id = ANY($3::bigint[]))`,
+    [sid, pid, [...productAllMpIds]]
+  );
+  if (productAllMpIds.size) {
+    await query(
+      `UPDATE products
+       SET pricing_strategy_id = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ANY($2::bigint[]) AND profile_id = $3`,
+      [sid, [...productAllMpIds], pid]
+    );
+  }
+
+  return getStrategyAssignments(sid, { profileId: pid });
+}
+
 export async function createStrategy(data, { profileId = null } = {}) {
   const name = String(data.name || '').trim();
   if (!name) throw new Error('Укажите название стратегии');
@@ -1346,6 +1525,8 @@ export default {
   rulePriority,
   listStrategies,
   getStrategy,
+  getStrategyAssignments,
+  replaceStrategyAssignments,
   createStrategy,
   updateStrategy,
   deleteStrategy,

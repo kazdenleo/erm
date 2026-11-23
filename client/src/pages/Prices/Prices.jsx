@@ -776,22 +776,6 @@ export function Prices() {
     }
   };
 
-  const handleAssignStrategy = async (productId, strategyIdRaw) => {
-    const strategyId =
-      strategyIdRaw === '' || strategyIdRaw == null ? null : Number(strategyIdRaw);
-    const selected = pricingStrategies.find((s) => Number(s.id) === strategyId) || null;
-    try {
-      await pricingStrategiesApi.assignProduct(productId, strategyId);
-      patchProductStrategyLocal(productId, strategyId, selected?.name || null);
-      loadListRef.current?.();
-    } catch (e) {
-      setRecalcAllMessage(
-        'Не удалось привязать стратегию: ' + (e.response?.data?.message || e.message)
-      );
-      setTimeout(() => setRecalcAllMessage(null), 4000);
-    }
-  };
-
   const handleSaveMarketplacePrice = async ({
     productId,
     marketplace,
@@ -1474,40 +1458,21 @@ export function Prices() {
                             product.name || 'Без названия'
                           )}
                         </div>
-                        {pricingStrategiesEnabled ? (
-                          <div style={{ marginTop: 4 }}>
-                            <select
-                              className="form-select form-select-sm"
-                              style={{
-                                fontSize: 11,
-                                padding: '2px 6px',
-                                maxWidth: '100%',
-                                color:
-                                  explicitProductStrategyId != null || strategyLocked
-                                    ? '#d97706'
-                                    : 'var(--muted)',
-                              }}
-                              value={
-                                explicitProductStrategyId != null
-                                  ? String(explicitProductStrategyId)
-                                  : ''
-                              }
-                              title="Явная стратегия товара (все МП). Бренд/категория/отдельный МП — на «Стратегии цен»."
-                              onChange={(e) => handleAssignStrategy(product.id, e.target.value)}
+                        {pricingStrategiesEnabled && strategyLocked ? (
+                          <div style={{ marginTop: 4, fontSize: 11, color: '#d97706' }}>
+                            <Link
+                              to="/prices/strategies"
+                              title="Настройка в карточке стратегии"
+                              style={{ color: 'inherit' }}
                             >
-                              <option value="">
-                                {strategyLocked && explicitProductStrategyId == null
-                                  ? `Правило: ${strategyInfo.effectivePricingStrategyName || '…'}`
-                                  : 'Без стратегии / из правил'}
-                              </option>
-                              {pricingStrategies
-                                .filter((s) => s.is_active !== false)
-                                .map((s) => (
-                                  <option key={s.id} value={String(s.id)}>
-                                    {s.name}
-                                  </option>
-                                ))}
-                            </select>
+                              {strategyInfo.effectivePricingStrategyName ||
+                                (explicitProductStrategyId != null
+                                  ? pricingStrategies.find(
+                                      (s) => Number(s.id) === explicitProductStrategyId
+                                    )?.name
+                                  : null) ||
+                                'Стратегия'}
+                            </Link>
                           </div>
                         ) : null}
                       </td>
