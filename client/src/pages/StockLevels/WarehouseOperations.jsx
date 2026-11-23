@@ -1370,17 +1370,17 @@ export function WarehouseOperations({
           const scanned = await addressStorageApi.resolveScan(transferFromWarehouseId, raw);
           if (scanned?.type === 'location' || scanned?.location) {
             const loc = scanned.location;
-            const items = Array.isArray(scanned.items) ? scanned.items : [];
+            const items = (Array.isArray(scanned.items) ? scanned.items : []).filter(
+              (it) => it?.productId && Number(it.quantity) > 0
+            );
             clearScanField(transferScanInputRef.current);
             if (!items.length) {
               setOpMessage(`Ячейка ${loc?.code || raw} пуста — нечего перемещать`);
               window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
               return;
             }
-            let addedLines = 0;
-            let addedQty = 0;
-            for (const it of items) {
-              if (!it?.productId || !(Number(it.quantity) > 0)) continue;
+
+            const addFromCell = async (it) => {
               const n = await addTransferItemFromProduct(
                 { id: it.productId, sku: it.sku, name: it.name },
                 {
@@ -1391,16 +1391,38 @@ export function WarehouseOperations({
                 }
               );
               if (n > 0) {
-                addedLines += 1;
-                addedQty += n;
+                setOpMessage(
+                  `Из ячейки ${loc.code}: ${it.sku || it.name} — ${n} шт`
+                );
               }
+              window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            };
+
+            if (items.length === 1) {
+              await addFromCell(items[0]);
+              return;
             }
-            setOpMessage(
-              addedLines > 0
-                ? `Из ячейки ${loc.code}: ${addedLines} поз. / ${addedQty} шт`
-                : `В ячейке ${loc.code} нет доступного остатка`
+
+            const matches = items.map((it) => ({
+              id: it.productId,
+              sku: it.sku,
+              name: it.name,
+              _cellQty: it.quantity,
+            }));
+            openSuggest(
+              'transfer_scan',
+              `Ячейка ${loc.code}: выберите товар`,
+              matches,
+              async (p) => {
+                if (!p) return;
+                const it = items.find((x) => String(x.productId) === String(p.id));
+                if (!it) return;
+                await addFromCell(it);
+              }
             );
-            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            setOpMessage(
+              `В ячейке ${loc.code} несколько товаров — выберите один`
+            );
             return;
           }
           if ((scanned?.type === 'product' || scanned?.product) && scanned.product?.id) {
@@ -1468,6 +1490,7 @@ export function WarehouseOperations({
       transferToWarehouseId,
       lookupProductByAny,
       addTransferItemFromProduct,
+      openSuggest,
     ]
   );
 
@@ -5344,10 +5367,9 @@ export function WarehouseOperations({
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
           <p className="warehouse-ops-hint">
-            Перенос между складами одной организации. Можно сканировать{' '}
-            <strong>ячейку</strong> на складе-источнике (все товары из неё попадут в документ и снимутся с
-            этой ячейки) или <strong>товар</strong> (штрихкод / артикул). После оформления — документ ПМ-… в
-            списке ниже.
+            Перенос между складами одной организации. Скан <strong>ячейки</strong> на складе-источнике —
+            если в ней один товар, он добавится сразу; если несколько — выберите нужный. Скан{' '}
+            <strong>товара</strong> — +1 шт. После оформления — документ ПМ-… в списке ниже.
           </p>
 
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -5441,8 +5463,8 @@ export function WarehouseOperations({
           )}
 
           <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
-            Скан ячейки — все позиции из неё; скан товара — +1 шт (ячейка подставится из закрепления/остатка на
-            складе-источнике). Количество можно поправить в таблице.
+            Скан ячейки — один товар (при нескольких появится список выбора); скан товара — +1 шт. Ячейка
+            подставится из остатка на складе-источнике. Количество можно поправить в таблице.
           </p>
 
           <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
@@ -5479,7 +5501,10 @@ export function WarehouseOperations({
                           if (typeof fn === 'function') fn(p);
                         }}
                       >
-                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-sku">
+                          {p.sku || '—'}
+                          {p._cellQty != null ? ` · ${p._cellQty} шт` : ''}
+                        </div>
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
                       </button>
                     ))}

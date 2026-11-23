@@ -70,29 +70,24 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
       setMessage({ ok: false, text: 'Укажите количество больше 0' });
       return;
     }
-    const maxLeft = availableInCell(item.productId);
-    const already = qtyInCart(item.productId);
-    const maxTotal = maxLeft + already;
-    if (qty > maxTotal) {
-      setMessage({ ok: false, text: `В ячейке только ${maxTotal} шт «${item.sku}»` });
+    const maxInCell =
+      (cell?.items || []).find((it) => Number(it.productId) === Number(item.productId))?.quantity || 0;
+    if (qty > maxInCell) {
+      setMessage({ ok: false, text: `В ячейке только ${maxInCell} шт «${item.sku}»` });
       return;
     }
     setMessage(null);
-    setLines((prev) => {
-      const rest = prev.filter((l) => Number(l.productId) !== Number(item.productId));
-      return [
-        ...rest,
-        {
-          productId: item.productId,
-          sku: item.sku,
-          name: item.name,
-          quantity: qty,
-          maxQty: (cell?.items || []).find((it) => Number(it.productId) === Number(item.productId))
-            ?.quantity || qty,
-        },
-      ];
-    });
-    setDraftQty((d) => ({ ...d, [item.productId]: String(qty) }));
+    // Из ячейки с несколькими товарами — в документ только выбранная позиция.
+    setLines([
+      {
+        productId: item.productId,
+        sku: item.sku,
+        name: item.name,
+        quantity: qty,
+        maxQty: maxInCell || qty,
+      },
+    ]);
+    setDraftQty({ [item.productId]: String(qty) });
   };
 
   const removeLine = (productId) => {
@@ -225,9 +220,8 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
     <div className="address-moves address-transfer-out">
       <h4 className="address-settings__title">Документ перемещения (ПМ)</h4>
       <p className="muted-hint" style={{ marginBottom: 12 }}>
-        Склад-источник: <strong>{warehouse?.name}</strong>. Отсканируйте ячейку → добавьте товары с
-        количеством → укажите склад «куда». Создаётся один документ перемещения; товар снимается с этой
-        ячейки.
+        Склад-источник: <strong>{warehouse?.name}</strong>. Отсканируйте ячейку → если товаров несколько,
+        выберите один → укажите склад «куда». Товар снимается с этой ячейки.
       </p>
 
       <BarcodeScanField
@@ -273,8 +267,12 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
               сменить ячейку
             </button>
           </div>
+          {(cell.items || []).length > 1 ? (
+            <p className="muted-hint" style={{ marginTop: 8 }}>
+              В ячейке несколько товаров — выберите один
+            </p>
+          ) : null}
           {(cell.items || []).map((it) => {
-            const left = availableInCell(it.productId);
             const inDoc = qtyInCart(it.productId);
             return (
               <div key={it.productId} className="address-generate__row" style={{ marginTop: 8 }}>
@@ -283,8 +281,7 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
                   <span className="muted-hint">
                     {' '}
                     · в ячейке {it.quantity}
-                    {inDoc ? ` · в документе ${inDoc}` : ''}
-                    {left ? ` · ещё ${left}` : ''}
+                    {inDoc ? ` · выбран` : ''}
                   </span>
                 </span>
                 <span className="address-moves__field">
@@ -300,10 +297,10 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
                   />
                   <Button
                     size="small"
-                    disabled={busy || left < 1}
+                    disabled={busy}
                     onClick={() => addOrUpdateLine(it, draftQty[it.productId] ?? it.quantity)}
                   >
-                    {inDoc ? 'Обновить' : 'В документ'}
+                    {inDoc ? 'Выбран' : 'Выбрать'}
                   </Button>
                 </span>
               </div>

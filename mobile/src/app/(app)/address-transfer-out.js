@@ -235,8 +235,7 @@ export default function AddressTransferOutScreen() {
   return (
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.hint}>
-        Скан ячейки → товары с количеством → склад назначения. Один документ перемещения, товар снимается с
-        ячейки.
+        Скан ячейки → если товаров несколько, выберите один → склад назначения. Товар снимается с ячейки.
       </Text>
 
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
@@ -298,30 +297,60 @@ export default function AddressTransferOutScreen() {
                 <Button title="Сменить" variant="secondary" small onPress={resetDoc} disabled={busy} />
               </View>
               {(cell.items || []).length === 0 ? <Text style={styles.muted}>Пусто</Text> : null}
+              {(cell.items || []).length > 1 ? (
+                <Text style={styles.muted}>Выберите один товар</Text>
+              ) : null}
               {(cell.items || []).map((it) => {
                 const inDoc = qtyInCart(it.productId);
+                const selected = inDoc > 0;
                 return (
-                  <View key={it.productId} style={styles.itemBlock}>
-                    <Text style={styles.itemTitle}>
-                      {it.sku} · в ячейке {it.quantity}
-                      {inDoc ? ` · в документе ${inDoc}` : ''}
+                  <Pressable
+                    key={it.productId}
+                    disabled={busy}
+                    onPress={() => {
+                      // Один товар из ячейки: выбор заменяет предыдущие позиции из этого скана.
+                      setLines([
+                        {
+                          productId: it.productId,
+                          sku: it.sku,
+                          name: it.name,
+                          quantity: Math.max(1, Number(it.quantity) || 1),
+                        },
+                      ]);
+                      setDraftQty({ [it.productId]: String(it.quantity) });
+                      setMessage(null);
+                      scanOk();
+                    }}
+                    style={[styles.itemRow, selected && styles.itemRowActive]}
+                  >
+                    <Text style={[styles.itemTitle, selected && styles.itemTitleActive]}>
+                      {it.sku} · {it.quantity} шт
+                      {selected ? ' · выбран' : ''}
                     </Text>
                     <Text style={styles.muted}>{it.name}</Text>
-                    <Field
-                      label="Количество"
-                      value={draftQty[it.productId] ?? String(it.quantity)}
-                      onChangeText={(v) => setDraftQty((d) => ({ ...d, [it.productId]: v }))}
-                      keyboardType="number-pad"
-                    />
-                    <Button
-                      title={inDoc ? 'Обновить в документе' : 'В документ'}
-                      small
-                      disabled={busy}
-                      onPress={() => putLine(it, draftQty[it.productId] ?? it.quantity)}
-                    />
-                  </View>
+                  </Pressable>
                 );
               })}
+              {lines.length === 1 && cell.items?.length ? (
+                <Field
+                  label="Количество"
+                  value={draftQty[lines[0].productId] ?? String(lines[0].quantity)}
+                  onChangeText={(v) => {
+                    setDraftQty((d) => ({ ...d, [lines[0].productId]: v }));
+                    const qty = Math.floor(Number(v) || 0);
+                    if (qty >= 1) {
+                      setLines((prev) =>
+                        prev.map((l) =>
+                          Number(l.productId) === Number(lines[0].productId)
+                            ? { ...l, quantity: qty }
+                            : l
+                        )
+                      );
+                    }
+                  }}
+                  keyboardType="number-pad"
+                />
+              ) : null}
             </Card>
           ) : null}
 
@@ -377,6 +406,16 @@ const styles = StyleSheet.create({
   optionTextActive: { fontWeight: '700', color: colors.primary },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   itemBlock: { gap: 6, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  itemRow: {
+    gap: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  itemRowActive: { borderColor: colors.primary, backgroundColor: '#EEF5FF' },
   itemTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+  itemTitleActive: { color: colors.primary },
   lineRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
 });
