@@ -11,6 +11,7 @@ import { RackViewTab } from './RackViewTab';
 import { LayoutTab } from './LayoutTab';
 import { MovesTab } from './MovesTab';
 import { TransferIntoCellTab } from './TransferIntoCellTab';
+import { TransferFromCellTab } from './TransferFromCellTab';
 import './AddressStorage.css';
 
 const TABS = [
@@ -18,6 +19,7 @@ const TABS = [
   { key: 'racks', label: '🗄 Стеллажи' },
   { key: 'layout', label: '🗺 План склада' },
   { key: 'moves', label: '↔️ Размещение' },
+  { key: 'transfer-out', label: '📤 На другой склад' },
   { key: 'transfer-in', label: '📦 С другого склада' },
   { key: 'settings', label: '⚙️ Настройки' },
 ];
@@ -173,6 +175,9 @@ export function AddressStorage() {
       {tab === 'racks' && <RackViewTab {...tabProps} />}
       {tab === 'layout' && <LayoutTab {...tabProps} />}
       {tab === 'moves' && <MovesTab {...tabProps} onSettingsSaved={onSettingsSaved} />}
+      {tab === 'transfer-out' && (
+        <TransferFromCellTab {...tabProps} warehouses={warehouses} />
+      )}
       {tab === 'transfer-in' && (
         <TransferIntoCellTab {...tabProps} warehouses={warehouses} />
       )}

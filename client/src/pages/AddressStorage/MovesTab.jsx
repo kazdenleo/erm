@@ -231,8 +231,8 @@ export function MovesTab({ warehouseId, settings, locations, reloadLocations, on
         <section className="address-moves__form">
           <h4 className="address-settings__title">Перемещение по ячейкам</h4>
           <p className="muted-hint" style={{ marginBottom: 10 }}>
-            Сценарий: отсканируйте ячейку «откуда» (или товар) → затем ячейку «куда» → «Переместить».
-            Между складами — вкладка «С другого склада».
+            Перемещение товара внутри склада: ячейка «откуда» → ячейка «куда» (не обмен ячеек). Документ
+            ПМ между складами — вкладка «На другой склад».
           </p>
           <BarcodeScanField
             id="address-move-scan"

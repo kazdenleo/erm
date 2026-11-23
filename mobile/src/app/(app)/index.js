@@ -96,13 +96,19 @@ export default function HomeScreen() {
       />
       <Tile
         title="Ячейка → ячейка"
-        subtitle="Скан ячейки откуда и куда — переместить товар внутри склада"
+        subtitle="Товар внутри склада: из одной ячейки в другую"
         accent={colors.primary}
         onPress={() => router.push('/address-moves')}
       />
       <Tile
+        title="На другой склад"
+        subtitle="Скан ячейки — документ перемещения (ПМ) на другой склад"
+        accent={colors.warning}
+        onPress={() => router.push('/address-transfer-out')}
+      />
+      <Tile
         title="С другого склада"
-        subtitle="Скан ячейки куда — перемещение с другого склада в эту ячейку"
+        subtitle="Скан ячейки куда — принять перемещение в эту ячейку"
         accent={colors.success}
         onPress={() => router.push('/address-transfer')}
       />
