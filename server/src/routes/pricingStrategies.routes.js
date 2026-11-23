@@ -6,6 +6,9 @@ const router = express.Router();
 router.get('/defaults', (req, res, next) => pricingStrategiesController.defaults(req, res, next));
 router.get('/settings', (req, res, next) => pricingStrategiesController.getSettings(req, res, next));
 router.put('/settings', (req, res, next) => pricingStrategiesController.updateSettings(req, res, next));
+router.get('/rules', (req, res, next) => pricingStrategiesController.listRules(req, res, next));
+router.post('/rules', (req, res, next) => pricingStrategiesController.upsertRule(req, res, next));
+router.delete('/rules/:id', (req, res, next) => pricingStrategiesController.deleteRule(req, res, next));
 router.get('/price-changes', (req, res, next) =>
   pricingStrategiesController.priceChanges(req, res, next)
 );

@@ -727,8 +727,8 @@ export function Prices() {
     };
   };
 
-  const requestDisableStrategy = (productId) => {
-    const key = String(productId);
+  const requestDisableStrategy = (productId, marketplace = null) => {
+    const key = `${productId}:${marketplace || 'all'}`;
     const existing = disableStrategyResolversRef.current.get(key);
     if (existing?.promise) return existing.promise;
     let resolveFn = null;
@@ -738,7 +738,7 @@ export function Prices() {
       disableStrategyResolversRef.current.delete(key);
     });
     disableStrategyResolversRef.current.set(key, { promise, resolve: resolveFn });
-    setDisableStrategyPrompt({ productId, resolve: resolveFn });
+    setDisableStrategyPrompt({ productId, marketplace, resolve: resolveFn });
     return promise;
   };
 
@@ -755,8 +755,16 @@ export function Prices() {
       return;
     }
     try {
-      await pricingStrategiesApi.assignProduct(prompt.productId, null);
-      patchProductStrategyLocal(prompt.productId, null);
+      // Снимаем только правило на этот МП (если указан); общую привязку товара не трогаем —
+      // ручная цена дальше защищена флагом selling_price_manual.
+      await pricingStrategiesApi.assignProduct(
+        prompt.productId,
+        null,
+        prompt.marketplace || null
+      );
+      if (!prompt.marketplace) {
+        patchProductStrategyLocal(prompt.productId, null);
+      }
       closeDisableStrategyPrompt(true);
     } catch (e) {
       console.error('[Prices] disable strategy failed:', e);
@@ -798,11 +806,9 @@ export function Prices() {
     if (sellingPrice !== undefined) item.sellingPrice = sellingPrice;
     if (priceBeforeDiscount !== undefined) item.priceBeforeDiscount = priceBeforeDiscount;
     if (discountPercent !== undefined) item.discountPercent = discountPercent;
-    if (clearProductStrategy) item.clearProductStrategy = true;
+    // clearProductStrategy: только снять правило на этот МП, не всю привязку товара
+    if (clearProductStrategy) item.clearProductStrategy = false;
     await pricesApi.saveCommercial([item]);
-    if (clearProductStrategy) {
-      patchProductStrategyLocal(productId, null);
-    }
   };
 
   /** Пересчитать минимальные цены для одного товара на сервере (Ozon, WB, YM с учётом профиля). */
@@ -1416,7 +1422,16 @@ export function Prices() {
                   };
                   const isLoading = loadingPrices[productKey];
                   const strategyInfo = resolveProductStrategy(product);
+                  const strategyByMp = product?.pricingStrategiesByMarketplace || {};
+                  const lockedForMp = (mp) =>
+                    strategyByMp?.[mp] != null || strategyInfo.hasPricingStrategy === true;
                   const strategyLocked = strategyInfo.hasPricingStrategy === true;
+                  const explicitProductStrategyId =
+                    product?.pricingStrategyId != null
+                      ? Number(product.pricingStrategyId)
+                      : strategyOverrides[String(product?.id ?? '')]?.strategyId != null
+                        ? Number(strategyOverrides[String(product.id)].strategyId)
+                        : null;
                   const skuOzon =
                     product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
                   const skuWb =
@@ -1467,17 +1482,24 @@ export function Prices() {
                                 fontSize: 11,
                                 padding: '2px 6px',
                                 maxWidth: '100%',
-                                color: strategyLocked ? '#d97706' : 'var(--muted)',
+                                color:
+                                  explicitProductStrategyId != null || strategyLocked
+                                    ? '#d97706'
+                                    : 'var(--muted)',
                               }}
                               value={
-                                strategyInfo.pricingStrategyId != null
-                                  ? String(strategyInfo.pricingStrategyId)
+                                explicitProductStrategyId != null
+                                  ? String(explicitProductStrategyId)
                                   : ''
                               }
-                              title="Стратегия ценообразования для этого товара"
+                              title="Явная стратегия товара (все МП). Бренд/категория/отдельный МП — на «Стратегии цен»."
                               onChange={(e) => handleAssignStrategy(product.id, e.target.value)}
                             >
-                              <option value="">Без стратегии</option>
+                              <option value="">
+                                {strategyLocked && explicitProductStrategyId == null
+                                  ? `Правило: ${strategyInfo.effectivePricingStrategyName || '…'}`
+                                  : 'Без стратегии / из правил'}
+                              </option>
                               {pricingStrategies
                                 .filter((s) => s.is_active !== false)
                                 .map((s) => (
@@ -1584,7 +1606,7 @@ export function Prices() {
                         isLoading={isLoading}
                         hasSku={!!skuOzon}
                         skuBadge="OZ"
-                        strategyLocked={strategyLocked}
+                        strategyLocked={lockedForMp('ozon')}
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
@@ -1605,7 +1627,7 @@ export function Prices() {
                         isLoading={isLoading}
                         hasSku={!!skuWb}
                         skuBadge="WB"
-                        strategyLocked={strategyLocked}
+                        strategyLocked={lockedForMp('wb')}
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
@@ -1626,7 +1648,7 @@ export function Prices() {
                         isLoading={isLoading}
                         hasSku={!!skuYm}
                         skuBadge="YM"
-                        strategyLocked={strategyLocked}
+                        strategyLocked={lockedForMp('ym')}
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
@@ -1777,8 +1799,9 @@ export function Prices() {
         size="small"
       >
         <p style={{ marginTop: 0, lineHeight: 1.45 }}>
-          При изменении цен стратегия ценообразования для этого товара будет отключена.
-          Дальше фактическую цену задаёте вручную.
+          {disableStrategyPrompt?.marketplace
+            ? `Для ${String(disableStrategyPrompt.marketplace).toUpperCase()} фактическая цена станет ручной: стратегия больше не будет перезаписывать её на этом МП.`
+            : 'Фактическая цена станет ручной: стратегия не будет её перезаписывать, пока вы снова не назначите стратегию.'}
         </p>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <Button type="button" variant="secondary" onClick={() => closeDisableStrategyPrompt(false)}>

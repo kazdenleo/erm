@@ -11,8 +11,26 @@ export const pricingStrategiesApi = {
     return response.data;
   },
 
-  async updateSettings({ enabled }) {
-    const response = await api.put('/pricing-strategies/settings', { enabled });
+  async updateSettings({ enabled, defaultStrategyId } = {}) {
+    const response = await api.put('/pricing-strategies/settings', {
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(defaultStrategyId !== undefined ? { defaultStrategyId } : {}),
+    });
+    return response.data;
+  },
+
+  async listRules() {
+    const response = await api.get('/pricing-strategies/rules');
+    return response.data;
+  },
+
+  async upsertRule(payload) {
+    const response = await api.post('/pricing-strategies/rules', payload);
+    return response.data;
+  },
+
+  async deleteRule(id) {
+    const response = await api.delete(`/pricing-strategies/rules/${id}`);
     return response.data;
   },
 
@@ -49,11 +67,12 @@ export const pricingStrategiesApi = {
     return response.data;
   },
 
-  /** Привязать стратегию к товару (strategyId=null — снять). */
-  async assignProduct(productId, strategyId = null) {
+  /** Привязать стратегию к товару (strategyId=null — снять). marketplace — только этот МП. */
+  async assignProduct(productId, strategyId = null, marketplace = null) {
     const response = await api.put('/pricing-strategies/assign-product', {
       productId,
       strategyId,
+      ...(marketplace ? { marketplace } : {}),
     });
     return response.data;
   },

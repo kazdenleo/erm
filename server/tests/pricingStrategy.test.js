@@ -1,6 +1,8 @@
 import {
   computeSellingPriceFromInputs,
   defaultStrategyConfig,
+  normalizeStrategyMarketplace,
+  rulePriority,
 } from '../src/services/pricingStrategy.service.js';
 
 describe('pricingStrategy computeSellingPriceFromInputs', () => {
@@ -109,5 +111,19 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     });
     expect(r.sellingPrice).toBe(1000);
     expect(r.heldByBand).toBe(false);
+  });
+
+  test('normalizeStrategyMarketplace maps aliases', () => {
+    expect(normalizeStrategyMarketplace('wildberries')).toBe('wb');
+    expect(normalizeStrategyMarketplace('yandex')).toBe('ym');
+    expect(normalizeStrategyMarketplace('ozon')).toBe('ozon');
+    expect(normalizeStrategyMarketplace('all')).toBe(null);
+  });
+
+  test('rulePriority prefers product+marketplace over brand', () => {
+    expect(rulePriority('product', 'wb')).toBeGreaterThan(rulePriority('product', null));
+    expect(rulePriority('product', null)).toBeGreaterThan(rulePriority('brand', 'wb'));
+    expect(rulePriority('brand', null)).toBeGreaterThan(rulePriority('category', null));
+    expect(rulePriority('category', null)).toBeGreaterThan(rulePriority('profile', null));
   });
 });

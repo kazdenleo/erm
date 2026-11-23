@@ -133,6 +133,32 @@ async function attachProductAttributeValues(product) {
   return product;
 }
 
+function pricingRulePriority(scopeType, marketplace) {
+  const base =
+    scopeType === 'product'
+      ? 100
+      : scopeType === 'brand'
+        ? 60
+        : scopeType === 'category'
+          ? 40
+          : scopeType === 'profile'
+            ? 10
+            : 0;
+  return base + (marketplace ? 1 : 0);
+}
+
+function normalizeMpCode(raw) {
+  if (raw == null || raw === '' || raw === 'all') return null;
+  const s = String(raw).trim().toLowerCase();
+  if (s === 'wildberries' || s === 'wb') return 'wb';
+  if (s === 'yandex' || s === 'ym' || s === 'yandex_market') return 'ym';
+  if (s === 'ozon') return 'ozon';
+  return null;
+}
+
+/**
+ * Эффективная стратегия без МП + отдельно по ozon/wb/ym (для UI «Цены»).
+ */
 async function attachPricingStrategyFlags(products) {
   const list = Array.isArray(products) ? products.filter(Boolean) : [];
   if (!list.length) return;
@@ -142,74 +168,162 @@ async function attachPricingStrategyFlags(products) {
       return Number.isFinite(n) && n > 0 ? n : null;
     })
     .filter((n) => n != null);
+  const emptyInfo = () => ({
+    has: false,
+    id: null,
+    name: null,
+    source: null,
+    byMarketplace: { ozon: null, wb: null, ym: null },
+  });
   if (!productIds.length) {
     for (const product of list) {
-      product.hasPricingStrategy = false;
-      product.effectivePricingStrategyId = null;
-      product.effectivePricingStrategyName = null;
-      product.effectivePricingStrategySource = null;
+      const info = emptyInfo();
+      product.hasPricingStrategy = info.has;
+      product.effectivePricingStrategyId = info.id;
+      product.effectivePricingStrategyName = info.name;
+      product.effectivePricingStrategySource = info.source;
+      product.pricingStrategiesByMarketplace = info.byMarketplace;
     }
     return;
   }
   try {
-    const strategyFlags = await query(
-      `SELECT p.id,
-              CASE
-                WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                ELSE (
-                  SELECT ps.id FROM pricing_strategies ps
-                  WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                  LIMIT 1
-                )
-              END AS effective_strategy_id,
-              CASE
-                WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                WHEN EXISTS (
-                  SELECT 1 FROM pricing_strategies ps
-                  WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                ) THEN 'product'
-                ELSE NULL
-              END AS effective_strategy_source,
-              (
-                SELECT ps.name FROM pricing_strategies ps
-                WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                LIMIT 1
-              ) AS effective_strategy_name
+    const metaRes = await query(
+      `SELECT p.id, p.profile_id, p.brand_id, p.user_category_id, p.pricing_strategy_id,
+              COALESCE(pr.pricing_strategies_enabled, true) AS strategies_enabled
        FROM products p
        LEFT JOIN profiles pr ON pr.id = p.profile_id
        WHERE p.id = ANY($1::bigint[])`,
       [productIds]
     );
-    const byId = new Map(
-      (strategyFlags.rows || []).map((r) => [
-        String(r.id),
-        {
-          has: r.effective_strategy_id != null,
-          id: r.effective_strategy_id != null ? Number(r.effective_strategy_id) : null,
-          name: r.effective_strategy_name || null,
-          source: r.effective_strategy_source || null,
-        },
-      ])
-    );
+    const metaById = new Map((metaRes.rows || []).map((r) => [String(r.id), r]));
+    const profileIds = [
+      ...new Set(
+        (metaRes.rows || [])
+          .map((r) => (r.profile_id != null ? Number(r.profile_id) : null))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+
+    const strategyById = new Map();
+    const defaultsByProfile = new Map();
+    if (profileIds.length) {
+      const stRes = await query(
+        `SELECT id, profile_id, name, is_active, is_default
+         FROM pricing_strategies
+         WHERE profile_id = ANY($1::bigint[]) AND is_active = true`,
+        [profileIds]
+      );
+      for (const row of stRes.rows || []) {
+        strategyById.set(Number(row.id), row);
+        if (row.is_default === true) {
+          defaultsByProfile.set(Number(row.profile_id), row);
+        }
+      }
+    }
+
+    let rules = [];
+    if (profileIds.length) {
+      try {
+        const rulesRes = await query(
+          `SELECT r.profile_id, r.scope_type, r.scope_id, r.marketplace, r.strategy_id
+           FROM pricing_strategy_rules r
+           JOIN pricing_strategies ps ON ps.id = r.strategy_id AND ps.is_active = true
+           WHERE r.profile_id = ANY($1::bigint[]) AND r.is_active = true`,
+          [profileIds]
+        );
+        rules = rulesRes.rows || [];
+      } catch (err) {
+        if (String(err?.code) !== '42P01') throw err;
+      }
+    }
+
+    const resolveFor = (meta, marketplace) => {
+      if (!meta || meta.strategies_enabled === false) return null;
+      const mp = normalizeMpCode(marketplace);
+      const profileId = meta.profile_id != null ? Number(meta.profile_id) : null;
+      const brandId = meta.brand_id != null ? Number(meta.brand_id) : null;
+      const categoryId = meta.user_category_id != null ? Number(meta.user_category_id) : null;
+      const productId = Number(meta.id);
+      const candidates = [];
+
+      for (const rule of rules) {
+        if (profileId == null || Number(rule.profile_id) !== profileId) continue;
+        const ruleMp = normalizeMpCode(rule.marketplace);
+        if (mp != null && ruleMp != null && ruleMp !== mp) continue;
+        if (mp == null && ruleMp != null) continue;
+        const scope = rule.scope_type;
+        const scopeId = rule.scope_id != null ? Number(rule.scope_id) : null;
+        if (scope === 'product' && scopeId !== productId) continue;
+        if (scope === 'brand' && (brandId == null || scopeId !== brandId)) continue;
+        if (scope === 'category' && (categoryId == null || scopeId !== categoryId)) continue;
+        if (scope === 'profile' && scopeId != null) continue;
+        if (!['product', 'brand', 'category', 'profile'].includes(scope)) continue;
+        const st = strategyById.get(Number(rule.strategy_id));
+        if (!st) continue;
+        candidates.push({
+          id: Number(st.id),
+          name: st.name || null,
+          source: `rule:${scope}${ruleMp ? `:${ruleMp}` : ''}`,
+          priority: pricingRulePriority(scope, ruleMp),
+        });
+      }
+
+      if (meta.pricing_strategy_id != null) {
+        const st = strategyById.get(Number(meta.pricing_strategy_id));
+        if (st) {
+          candidates.push({
+            id: Number(st.id),
+            name: st.name || null,
+            source: 'product',
+            priority: pricingRulePriority('product', null),
+          });
+        }
+      }
+
+      if (profileId != null) {
+        const def = defaultsByProfile.get(profileId);
+        if (def) {
+          candidates.push({
+            id: Number(def.id),
+            name: def.name || null,
+            source: 'profile_default',
+            priority: pricingRulePriority('profile', null),
+          });
+        }
+      }
+
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => b.priority - a.priority || String(a.source).localeCompare(String(b.source)));
+      return candidates[0];
+    };
+
     for (const product of list) {
-      const info = byId.get(String(product.id)) || {
-        has: false,
-        id: null,
-        name: null,
-        source: null,
+      const meta = metaById.get(String(product.id));
+      const base = resolveFor(meta, null);
+      const byMarketplace = {
+        ozon: resolveFor(meta, 'ozon'),
+        wb: resolveFor(meta, 'wb'),
+        ym: resolveFor(meta, 'ym'),
       };
-      product.hasPricingStrategy = info.has;
-      product.effectivePricingStrategyId = info.id;
-      product.effectivePricingStrategyName = info.name;
-      product.effectivePricingStrategySource = info.source;
+      product.hasPricingStrategy = base != null;
+      product.effectivePricingStrategyId = base?.id ?? null;
+      product.effectivePricingStrategyName = base?.name ?? null;
+      product.effectivePricingStrategySource = base?.source ?? null;
+      product.pricingStrategiesByMarketplace = byMarketplace;
+      // Явная привязка на товаре (для select «все МП»)
+      if (meta?.pricing_strategy_id != null && strategyById.has(Number(meta.pricing_strategy_id))) {
+        product.pricingStrategyId = Number(meta.pricing_strategy_id);
+      }
     }
   } catch (e) {
     console.warn('[Products Repository] pricing strategy flags:', e.message);
     for (const product of list) {
-      product.hasPricingStrategy = false;
-      product.effectivePricingStrategyId = null;
-      product.effectivePricingStrategyName = null;
-      product.effectivePricingStrategySource = null;
+      const info = emptyInfo();
+      product.hasPricingStrategy = info.has;
+      product.effectivePricingStrategyId = info.id;
+      product.effectivePricingStrategyName = info.name;
+      product.effectivePricingStrategySource = info.source;
+      product.pricingStrategiesByMarketplace = info.byMarketplace;
     }
   }
 }

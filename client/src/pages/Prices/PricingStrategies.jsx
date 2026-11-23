@@ -8,6 +8,8 @@ import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { pricingStrategiesApi } from '../../services/pricingStrategies.api.js';
+import { brandsApi } from '../../services/brands.api.js';
+import { userCategoriesApi } from '../../services/userCategories.api.js';
 import './PricingStrategies.css';
 
 const MODE_LABELS = {
@@ -16,6 +18,19 @@ const MODE_LABELS = {
   competitor: 'От конкурентов (WB/YM)',
   sales: 'От продаж',
   hybrid: 'Гибрид: конкуренты + продажи',
+};
+
+const SCOPE_LABELS = {
+  product: 'Товар',
+  brand: 'Бренд',
+  category: 'Категория',
+  profile: 'Весь кабинет',
+};
+
+const MP_LABELS = {
+  ozon: 'Ozon',
+  wb: 'Wildberries',
+  ym: 'Яндекс Маркет',
 };
 
 function emptyForm(defaultsHybrid) {
@@ -55,14 +70,27 @@ export function PricingStrategies() {
   const [form, setForm] = useState(() => emptyForm());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
+  const [rules, setRules] = useState([]);
+  const [brands, setBrands] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [ruleForm, setRuleForm] = useState({
+    strategyId: '',
+    scopeType: 'brand',
+    scopeId: '',
+    marketplace: '',
+  });
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const [listRes, defRes] = await Promise.all([
+      const [listRes, defRes, rulesRes, brandsRes, catsRes] = await Promise.all([
         pricingStrategiesApi.list(),
         pricingStrategiesApi.getDefaults(),
+        pricingStrategiesApi.listRules().catch(() => ({ data: [] })),
+        brandsApi.getAll().catch(() => ({ data: [] })),
+        userCategoriesApi.getAll().catch(() => ({ data: [] })),
       ]);
       setList(listRes?.data || []);
       setSettings(
@@ -72,6 +100,11 @@ export function PricingStrategies() {
         }
       );
       setDefaults(defRes?.data || null);
+      setRules(Array.isArray(rulesRes?.data) ? rulesRes.data : []);
+      const brandList = Array.isArray(brandsRes?.data) ? brandsRes.data : Array.isArray(brandsRes) ? brandsRes : [];
+      setBrands(brandList.filter(Boolean));
+      const catList = Array.isArray(catsRes?.data) ? catsRes.data : Array.isArray(catsRes) ? catsRes : [];
+      setCategories(catList.filter(Boolean));
     } catch (e) {
       setError(e.response?.data?.message || e.message);
     } finally {
@@ -200,6 +233,62 @@ export function PricingStrategies() {
     }
   };
 
+  const setDefaultStrategy = async (strategyIdRaw) => {
+    setSettingsSaving(true);
+    setMessage(null);
+    try {
+      const res = await pricingStrategiesApi.updateSettings({
+        defaultStrategyId: strategyIdRaw === '' ? null : strategyIdRaw,
+      });
+      setSettings(res?.data || settings);
+      setMessage('Дефолт кабинета обновлён');
+      setTimeout(() => setMessage(null), 3000);
+    } catch (e) {
+      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const handleSaveRule = async () => {
+    if (!ruleForm.strategyId) {
+      setMessage('Выберите стратегию для правила');
+      return;
+    }
+    if (ruleForm.scopeType !== 'profile' && !ruleForm.scopeId) {
+      setMessage('Выберите бренд или категорию');
+      return;
+    }
+    setRuleSaving(true);
+    setMessage(null);
+    try {
+      await pricingStrategiesApi.upsertRule({
+        strategyId: ruleForm.strategyId,
+        scopeType: ruleForm.scopeType,
+        scopeId: ruleForm.scopeType === 'profile' ? null : ruleForm.scopeId,
+        marketplace: ruleForm.marketplace || null,
+      });
+      setRuleForm((p) => ({ ...p, scopeId: '' }));
+      await load();
+      setMessage('Правило сохранено');
+      setTimeout(() => setMessage(null), 3000);
+    } catch (e) {
+      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const handleDeleteRule = async (rule) => {
+    if (!window.confirm('Удалить это правило назначения?')) return;
+    try {
+      await pricingStrategiesApi.deleteRule(rule.id);
+      await load();
+    } catch (e) {
+      setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
+    }
+  };
+
   if (loading) return <div className="loading">Загрузка стратегий...</div>;
   if (error) return <div className="error">Ошибка: {error}</div>;
 
@@ -242,9 +331,8 @@ export function PricingStrategies() {
           <div className="pricing-strategies-master-desc">
             {strategiesOn ? (
               <>
-                Стратегия действует только у товаров, к которым она привязана на странице «Цены».
-                Категории и «все товары» больше не покрываются автоматически. Ручное изменение цены
-                снимает стратегию с этого товара.
+                Назначение: товар (+опционально МП) → бренд → категория → дефолт кабинета. Более
+                узкое правило побеждает. Ручная цена на МП снимает правило только для этого МП.
               </>
             ) : (
               <>
@@ -265,6 +353,32 @@ export function PricingStrategies() {
         </label>
       </div>
 
+      {strategiesOn ? (
+        <div className="pricing-strategies-default" style={{ marginTop: 12 }}>
+          <label className="form-label" style={{ marginBottom: 4 }}>
+            Стратегия по умолчанию для кабинета
+          </label>
+          <select
+            className="form-select form-select-sm"
+            style={{ maxWidth: 360 }}
+            disabled={settingsSaving}
+            value={
+              settings.defaultStrategy?.id != null ? String(settings.defaultStrategy.id) : ''
+            }
+            onChange={(e) => setDefaultStrategy(e.target.value)}
+          >
+            <option value="">Нет (только явные привязки и правила)</option>
+            {list
+              .filter((s) => s.is_active !== false)
+              .map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.name}
+                </option>
+              ))}
+          </select>
+        </div>
+      ) : null}
+
       <div className="pricing-strategies-hint">
         <p><strong>Режимы:</strong></p>
         <ul>
@@ -275,9 +389,7 @@ export function PricingStrategies() {
           <li><strong>Гибрид</strong> — маржа/пол → конкуренты → продажи</li>
         </ul>
         <p style={{ marginTop: 8, marginBottom: 0 }}>
-          Чтобы стратегия работала: она должна быть <strong>активна</strong> и привязана к конкретным
-          товарам на странице «Цены» (выпадающий список под названием). Выключенные в списке не
-          применяются.
+          Привязка к товару — на странице «Цены». Ниже — правила для брендов, категорий и отдельных МП.
         </p>
       </div>
 
@@ -303,7 +415,13 @@ export function PricingStrategies() {
                       {row.is_active !== false && (
                         <span className="pricing-strategy-badge muted">
                           товаров: {Number(row.products_count ?? row.productsCount ?? 0)}
+                          {Number(row.rules_count ?? row.rulesCount ?? 0) > 0
+                            ? ` · правил: ${Number(row.rules_count ?? row.rulesCount)}`
+                            : ''}
                         </span>
+                      )}
+                      {row.is_default === true && (
+                        <span className="pricing-strategy-badge">дефолт</span>
                       )}
                     </>
                   )}
@@ -323,6 +441,152 @@ export function PricingStrategies() {
           ))
         )}
       </div>
+
+      {strategiesOn ? (
+        <div className="pricing-strategies-rules" style={{ marginTop: 24 }}>
+          <h2 className="h5" style={{ marginBottom: 8 }}>
+            Правила назначения
+          </h2>
+          <p className="text-muted small mb-3">
+            Приоритет: товар+МП → товар → бренд+МП → бренд → категория+МП → категория → дефолт кабинета.
+          </p>
+
+          <div
+            className="pricing-strategies-rule-form"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+              gap: 8,
+              alignItems: 'end',
+              marginBottom: 12,
+            }}
+          >
+            <label className="form-label mb-0">
+              Стратегия
+              <select
+                className="form-select form-select-sm mt-1"
+                value={ruleForm.strategyId}
+                onChange={(e) => setRuleForm((p) => ({ ...p, strategyId: e.target.value }))}
+              >
+                <option value="">Выберите…</option>
+                {list
+                  .filter((s) => s.is_active !== false)
+                  .map((s) => (
+                    <option key={s.id} value={String(s.id)}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="form-label mb-0">
+              Область
+              <select
+                className="form-select form-select-sm mt-1"
+                value={ruleForm.scopeType}
+                onChange={(e) =>
+                  setRuleForm((p) => ({ ...p, scopeType: e.target.value, scopeId: '' }))
+                }
+              >
+                <option value="brand">Бренд</option>
+                <option value="category">Категория</option>
+                <option value="profile">Весь кабинет</option>
+              </select>
+            </label>
+            {ruleForm.scopeType === 'brand' ? (
+              <label className="form-label mb-0">
+                Бренд
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={ruleForm.scopeId}
+                  onChange={(e) => setRuleForm((p) => ({ ...p, scopeId: e.target.value }))}
+                >
+                  <option value="">Выберите…</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={String(b.id)}>
+                      {b.name || `#${b.id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {ruleForm.scopeType === 'category' ? (
+              <label className="form-label mb-0">
+                Категория
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={ruleForm.scopeId}
+                  onChange={(e) => setRuleForm((p) => ({ ...p, scopeId: e.target.value }))}
+                >
+                  <option value="">Выберите…</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={String(c.id)}>
+                      {c.name || `#${c.id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label className="form-label mb-0">
+              Маркетплейс
+              <select
+                className="form-select form-select-sm mt-1"
+                value={ruleForm.marketplace}
+                onChange={(e) => setRuleForm((p) => ({ ...p, marketplace: e.target.value }))}
+              >
+                <option value="">Все МП</option>
+                <option value="ozon">Ozon</option>
+                <option value="wb">Wildberries</option>
+                <option value="ym">Яндекс Маркет</option>
+              </select>
+            </label>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              onClick={handleSaveRule}
+              disabled={ruleSaving}
+            >
+              {ruleSaving ? '…' : 'Добавить правило'}
+            </Button>
+          </div>
+
+          {rules.length === 0 ? (
+            <div className="empty-state">Правил пока нет — стратегия берётся с товара или из дефолта.</div>
+          ) : (
+            <div className="pricing-strategies-list">
+              {rules.map((rule) => (
+                <div key={rule.id} className="pricing-strategy-item">
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>
+                      {rule.strategy_name || rule.strategyName || 'Стратегия'}
+                      <span className="pricing-strategy-badge muted">
+                        {SCOPE_LABELS[rule.scope_type] || rule.scope_type}
+                        {rule.scope_name ? `: ${rule.scope_name}` : ''}
+                      </span>
+                      <span className="pricing-strategy-badge muted">
+                        {rule.marketplace
+                          ? MP_LABELS[rule.marketplace] || rule.marketplace
+                          : 'Все МП'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                      {MODE_LABELS[rule.strategy_mode] || rule.strategy_mode || ''}
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={() => handleDeleteRule(rule)}
+                    style={{ color: '#fca5a5' }}
+                  >
+                    Удалить
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <Modal
         isOpen={modalOpen}

@@ -143,7 +143,7 @@ export function MarketplacePriceCells({
   const ensureStrategyUnlocked = async () => {
     if (!commercialLocked) return true;
     if (typeof onRequestDisableStrategy !== 'function') return false;
-    const ok = await onRequestDisableStrategy(productId);
+    const ok = await onRequestDisableStrategy(productId, marketplace);
     if (ok) setStrategyUnlocked(true);
     return Boolean(ok);
   };

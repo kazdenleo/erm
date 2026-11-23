@@ -391,11 +391,39 @@ async function isProfilePricingStrategiesEnabled(profileId) {
   }
 }
 
+/** Нормализация кода МП для правил и пересчёта. */
+export function normalizeStrategyMarketplace(raw) {
+  if (raw == null || raw === '' || raw === 'all') return null;
+  const s = String(raw).trim().toLowerCase();
+  if (s === 'wildberries' || s === 'wb') return 'wb';
+  if (s === 'yandex' || s === 'ym' || s === 'yandex_market') return 'ym';
+  if (s === 'ozon') return 'ozon';
+  return null;
+}
+
 /**
- * Стратегия только с явной привязки к товару (products.pricing_strategy_id).
- * Организации и «по умолчанию для кабинета» больше не применяются.
+ * Приоритет правила: выше = сильнее.
+ * product+МП > product > brand+МП > brand > category+МП > category > profile.
  */
-async function resolveStrategyRow({ productId, profileId, strategyId }) {
+export function rulePriority(scopeType, marketplace) {
+  const base =
+    scopeType === 'product'
+      ? 100
+      : scopeType === 'brand'
+        ? 60
+        : scopeType === 'category'
+          ? 40
+          : scopeType === 'profile'
+            ? 10
+            : 0;
+  return base + (marketplace ? 1 : 0);
+}
+
+/**
+ * Эффективная стратегия для товара на МП.
+ * Приоритет: правило product+МП → product (колонка/правило) → brand → category → default кабинета.
+ */
+export async function resolveStrategyRow({ productId, profileId, strategyId, marketplace = null }) {
   const enabled = await isProfilePricingStrategiesEnabled(profileId);
   if (!enabled) return null;
 
@@ -404,42 +432,166 @@ async function resolveStrategyRow({ productId, profileId, strategyId }) {
       `SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true LIMIT 1`,
       [strategyId]
     );
-    if (r.rows?.[0]) return r.rows[0];
+    if (r.rows?.[0]) return { ...r.rows[0], _source: 'explicit' };
   }
-  if (productId) {
-    const p = await query(`SELECT pricing_strategy_id FROM products WHERE id = $1`, [productId]);
-    const sid = p.rows?.[0]?.pricing_strategy_id;
-    if (sid) {
-      const r = await query(
-        `SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true`,
-        [sid]
+
+  const mp = normalizeStrategyMarketplace(marketplace);
+  const pid = productId != null ? Number(productId) : null;
+  if (!Number.isFinite(pid) || pid < 1) return null;
+
+  const prodRes = await query(
+    `SELECT id, profile_id, brand_id, user_category_id, pricing_strategy_id
+     FROM products WHERE id = $1`,
+    [pid]
+  );
+  const product = prodRes.rows?.[0];
+  if (!product) return null;
+  const effectiveProfileId =
+    profileId != null && Number.isFinite(Number(profileId))
+      ? Number(profileId)
+      : product.profile_id != null
+        ? Number(product.profile_id)
+        : null;
+
+  const candidates = [];
+
+  // Правила назначения
+  if (effectiveProfileId != null) {
+    try {
+      const rulesRes = await query(
+        `SELECT r.id AS rule_id, r.scope_type, r.scope_id, r.marketplace, r.strategy_id,
+                ps.id, ps.name, ps.mode, ps.config, ps.is_active, ps.profile_id, ps.is_default
+         FROM pricing_strategy_rules r
+         JOIN pricing_strategies ps ON ps.id = r.strategy_id AND ps.is_active = true
+         WHERE r.profile_id = $1
+           AND r.is_active = true
+           AND (
+             (r.scope_type = 'product' AND r.scope_id = $2)
+             OR (r.scope_type = 'brand' AND $3::bigint IS NOT NULL AND r.scope_id = $3)
+             OR (r.scope_type = 'category' AND $4::bigint IS NOT NULL AND r.scope_id = $4)
+             OR (r.scope_type = 'profile' AND r.scope_id IS NULL)
+           )
+           AND (r.marketplace IS NULL OR r.marketplace = $5 OR ($5 IS NULL AND r.marketplace IS NULL))`,
+        [
+          effectiveProfileId,
+          pid,
+          product.brand_id != null ? Number(product.brand_id) : null,
+          product.user_category_id != null ? Number(product.user_category_id) : null,
+          mp,
+        ]
       );
-      if (r.rows?.[0]) return r.rows[0];
+      for (const row of rulesRes.rows || []) {
+        const ruleMp = normalizeStrategyMarketplace(row.marketplace);
+        // Правило на конкретный МП не подходит, если считаем «все» без МП; при конкретном МП
+        // берём и NULL, и совпадение.
+        if (mp != null && ruleMp != null && ruleMp !== mp) continue;
+        if (mp == null && ruleMp != null) continue;
+        candidates.push({
+          row,
+          priority: rulePriority(row.scope_type, ruleMp),
+          source: `rule:${row.scope_type}${ruleMp ? `:${ruleMp}` : ''}`,
+        });
+      }
+    } catch (err) {
+      // Таблица правил может ещё не быть на старых инстансах
+      if (String(err?.code) !== '42P01') throw err;
     }
   }
-  return null;
+
+  // Явная привязка на товаре (все МП) — как product без МП
+  if (product.pricing_strategy_id) {
+    const r = await query(
+      `SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true`,
+      [product.pricing_strategy_id]
+    );
+    if (r.rows?.[0]) {
+      candidates.push({
+        row: r.rows[0],
+        priority: rulePriority('product', null),
+        source: 'product',
+      });
+    }
+  }
+
+  // Дефолт кабинета (is_default)
+  if (effectiveProfileId != null) {
+    const def = await query(
+      `SELECT * FROM pricing_strategies
+       WHERE profile_id = $1 AND is_default = true AND is_active = true
+       LIMIT 1`,
+      [effectiveProfileId]
+    );
+    if (def.rows?.[0]) {
+      candidates.push({
+        row: def.rows[0],
+        priority: rulePriority('profile', null),
+        source: 'profile_default',
+      });
+    }
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.priority - a.priority || String(a.source).localeCompare(String(b.source)));
+  const best = candidates[0];
+  return { ...best.row, _source: best.source, _priority: best.priority };
 }
 
-/** Снять стратегию с товара (ручное изменение цен). */
-export async function clearProductPricingStrategy(productId) {
+/** Снять стратегию с товара (и опционально правило на конкретный МП). */
+export async function clearProductPricingStrategy(productId, { marketplace = null } = {}) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный productId');
+  const mp = normalizeStrategyMarketplace(marketplace);
+
+  const prod = await query(`SELECT profile_id FROM products WHERE id = $1`, [pid]);
+  const profileId = prod.rows?.[0]?.profile_id != null ? Number(prod.rows[0].profile_id) : null;
+
+  if (mp) {
+    if (profileId != null) {
+      try {
+        await query(
+          `DELETE FROM pricing_strategy_rules
+           WHERE profile_id = $1 AND scope_type = 'product' AND scope_id = $2 AND marketplace = $3`,
+          [profileId, pid, mp]
+        );
+      } catch (err) {
+        if (String(err?.code) !== '42P01') throw err;
+      }
+    }
+    return { productId: pid, strategyId: null, marketplace: mp };
+  }
+
   await query(
     `UPDATE products
      SET pricing_strategy_id = NULL, updated_at = CURRENT_TIMESTAMP
      WHERE id = $1 AND pricing_strategy_id IS NOT NULL`,
     [pid]
   );
+  if (profileId != null) {
+    try {
+      await query(
+        `DELETE FROM pricing_strategy_rules
+         WHERE profile_id = $1 AND scope_type = 'product' AND scope_id = $2`,
+        [profileId, pid]
+      );
+    } catch (err) {
+      if (String(err?.code) !== '42P01') throw err;
+    }
+  }
   return { productId: pid, strategyId: null };
 }
 
 /**
  * Привязать стратегию к товару или снять (strategyId = null).
- * При назначении сбрасывает selling_price_manual и пересчитывает цены.
+ * marketplace — только для этого МП (правило); без marketplace — для всех МП (колонка товара).
  */
-export async function assignProductPricingStrategy(productId, strategyId, { profileId = null } = {}) {
+export async function assignProductPricingStrategy(
+  productId,
+  strategyId,
+  { profileId = null, marketplace = null } = {}
+) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный productId');
+  const mp = normalizeStrategyMarketplace(marketplace);
 
   const prod = await query(`SELECT id, profile_id FROM products WHERE id = $1`, [pid]);
   if (!prod.rows?.[0]) throw new Error('Товар не найден');
@@ -451,6 +603,7 @@ export async function assignProductPricingStrategy(productId, strategyId, { prof
   ) {
     throw new Error('Товар принадлежит другому кабинету');
   }
+  if (productProfileId == null) throw new Error('У товара нет профиля');
 
   let sid = null;
   if (strategyId != null && strategyId !== '' && strategyId !== 'null') {
@@ -470,6 +623,28 @@ export async function assignProductPricingStrategy(productId, strategyId, { prof
     ) {
       throw new Error('Стратегия другого кабинета');
     }
+  }
+
+  if (mp) {
+    if (sid == null) {
+      await clearProductPricingStrategy(pid, { marketplace: mp });
+      return { productId: pid, strategyId: null, marketplace: mp, recalculated: null };
+    }
+    await upsertStrategyRule({
+      profileId: productProfileId,
+      strategyId: sid,
+      scopeType: 'product',
+      scopeId: pid,
+      marketplace: mp,
+    });
+    await query(
+      `UPDATE product_marketplace_prices
+       SET selling_price_manual = false, updated_at = CURRENT_TIMESTAMP
+       WHERE product_id = $1 AND marketplace = $2`,
+      [pid, mp]
+    );
+    const recalc = await recalculateSellingPricesForProduct(pid, { marketplace: mp });
+    return { productId: pid, strategyId: sid, marketplace: mp, recalculated: recalc };
   }
 
   await query(
@@ -542,12 +717,6 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   const product = prodRes.rows?.[0];
   if (!product) return { ok: false, error: 'product_not_found' };
 
-  const strategy = await resolveStrategyRow({
-    productId: pid,
-    profileId: product.profile_id,
-    strategyId: null,
-  });
-
   // Пол стратегии = тот же выбор FBS/FBO, что и при пуше мин. цен на МП.
   let pushSchemes = parsePricePushSettings(null);
   try {
@@ -563,7 +732,8 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   let floorsRes;
   try {
     floorsRes = await query(
-      `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, max_price, price_before_discount
+      `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, max_price,
+              price_before_discount, COALESCE(selling_price_manual, false) AS selling_price_manual
        FROM product_marketplace_prices
        WHERE product_id = $1
          AND (
@@ -580,12 +750,14 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       !msg.includes('max_price') &&
       !msg.includes('price_before_discount') &&
       !msg.includes('min_price_fbs') &&
-      !msg.includes('min_price_fbo')
+      !msg.includes('min_price_fbo') &&
+      !msg.includes('selling_price_manual')
     ) {
       throw colErr;
     }
     floorsRes = await query(
-      `SELECT marketplace, min_price, selling_price
+      `SELECT marketplace, min_price, selling_price,
+              COALESCE(selling_price_manual, false) AS selling_price_manual
        FROM product_marketplace_prices
        WHERE product_id = $1
          AND min_price IS NOT NULL AND min_price > 0
@@ -609,6 +781,63 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
         ? Number(row.price_before_discount)
         : null;
     const floorRounded = floorRub(floor);
+    const isManual = row.selling_price_manual === true;
+
+    // Ручная цена на МП важнее любой стратегии (в т.ч. бренда/категории/дефолта).
+    if (isManual) {
+      const finalSelling =
+        previousSelling != null && Number.isFinite(previousSelling)
+          ? floorRub(previousSelling)
+          : null;
+      const manualBelowFloor =
+        finalSelling != null && floorRounded != null && finalSelling < floorRounded;
+      const details = {
+        mode: 'manual',
+        reason: 'manual_selling_price',
+        sellingPrice: finalSelling,
+        floor: floorRounded,
+        manualBelowFloor,
+      };
+      await query(
+        `UPDATE product_marketplace_prices
+         SET pricing_strategy_id = NULL,
+             strategy_details = $1::jsonb,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE product_id = $2 AND marketplace = $3`,
+        [JSON.stringify(details), pid, mp]
+      );
+      const reason = formatPriceChangeReason({ source: 'manual', meta: details });
+      await logMarketplacePriceChange({
+        productId: pid,
+        marketplace: mp,
+        source: 'manual',
+        reason,
+        minPriceBefore: floorRounded,
+        minPriceAfter: floorRounded,
+        sellingPriceBefore: previousSelling,
+        sellingPriceAfter: finalSelling,
+        profileId: product.profile_id,
+        meta: details,
+      });
+      results.push({
+        marketplace: mp,
+        sellingPrice: finalSelling,
+        sellingPriceBefore: previousSelling,
+        priceBeforeDiscount: previousBefore,
+        floor: floorRounded,
+        mode: 'manual',
+        reason,
+        changed: false,
+      });
+      continue;
+    }
+
+    const strategy = await resolveStrategyRow({
+      productId: pid,
+      profileId: product.profile_id,
+      strategyId: null,
+      marketplace: mp,
+    });
 
     if (!strategy) {
       // Нет стратегии: не затираем ручную цену; иначе подставляем пол.
@@ -727,6 +956,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       ...computed.details,
       strategyId: Number(strategy.id),
       strategyName: strategy.name,
+      strategySource: strategy._source || null,
       sellingPrice: computed.sellingPrice,
       floor: computed.floor,
       ceiling: computed.ceiling,
@@ -794,7 +1024,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     console.warn('[pricingStrategy] sync system price attributes:', err?.message || err);
   }
 
-  return { ok: true, productId: pid, strategyId: strategy ? Number(strategy.id) : null, results };
+  return { ok: true, productId: pid, results };
 }
 
 function sameMoneyLocal(a, b) {
@@ -815,19 +1045,41 @@ function pickToolSyncPrices(results) {
 
 export async function listStrategies({ profileId = null } = {}) {
   if (profileId != null) {
-    const r = await query(
-      `SELECT ps.*,
-              (
-                SELECT count(*)::int FROM products p
-                WHERE p.pricing_strategy_id = ps.id
-                  AND (p.profile_id = $1 OR p.profile_id IS NULL)
-              ) AS products_count
-       FROM pricing_strategies ps
-       WHERE ps.profile_id = $1 OR ps.profile_id IS NULL
-       ORDER BY ps.name ASC`,
-      [profileId]
-    );
-    return r.rows || [];
+    try {
+      const r = await query(
+        `SELECT ps.*,
+                (
+                  SELECT count(*)::int FROM products p
+                  WHERE p.pricing_strategy_id = ps.id
+                    AND (p.profile_id = $1 OR p.profile_id IS NULL)
+                ) AS products_count,
+                (
+                  SELECT count(*)::int FROM pricing_strategy_rules r
+                  WHERE r.strategy_id = ps.id AND r.is_active = true
+                ) AS rules_count
+         FROM pricing_strategies ps
+         WHERE ps.profile_id = $1 OR ps.profile_id IS NULL
+         ORDER BY ps.name ASC`,
+        [profileId]
+      );
+      return r.rows || [];
+    } catch (err) {
+      if (String(err?.code) !== '42P01') throw err;
+      const r = await query(
+        `SELECT ps.*,
+                (
+                  SELECT count(*)::int FROM products p
+                  WHERE p.pricing_strategy_id = ps.id
+                    AND (p.profile_id = $1 OR p.profile_id IS NULL)
+                ) AS products_count,
+                0 AS rules_count
+         FROM pricing_strategies ps
+         WHERE ps.profile_id = $1 OR ps.profile_id IS NULL
+         ORDER BY ps.name ASC`,
+        [profileId]
+      );
+      return r.rows || [];
+    }
   }
   const r = await query(
     `SELECT ps.*,
@@ -878,7 +1130,6 @@ export async function updateStrategy(id, data) {
        name = COALESCE($2, name),
        description = COALESCE($3, description),
        is_active = COALESCE($4, is_active),
-       is_default = false,
        mode = $5,
        config = $6::jsonb,
        updated_at = CURRENT_TIMESTAMP
@@ -903,15 +1154,135 @@ export async function deleteStrategy(id) {
   return r.rows.length > 0;
 }
 
+export async function upsertStrategyRule({
+  profileId,
+  strategyId,
+  scopeType,
+  scopeId = null,
+  marketplace = null,
+  isActive = true,
+}) {
+  const pid = Number(profileId);
+  const sid = Number(strategyId);
+  const scope = String(scopeType || '').trim().toLowerCase();
+  if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный профиль');
+  if (!Number.isFinite(sid) || sid < 1) throw new Error('Некорректная стратегия');
+  if (!['product', 'brand', 'category', 'profile'].includes(scope)) {
+    throw new Error('scopeType: product | brand | category | profile');
+  }
+  let scopeIdNum = null;
+  if (scope === 'profile') {
+    scopeIdNum = null;
+  } else {
+    scopeIdNum = Number(scopeId);
+    if (!Number.isFinite(scopeIdNum) || scopeIdNum < 1) {
+      throw new Error('Укажите scopeId');
+    }
+  }
+  const mp = normalizeStrategyMarketplace(marketplace);
+
+  const st = await query(
+    `SELECT id, profile_id, is_active FROM pricing_strategies WHERE id = $1`,
+    [sid]
+  );
+  const strategy = st.rows?.[0];
+  if (!strategy) throw new Error('Стратегия не найдена');
+  if (strategy.is_active === false) throw new Error('Стратегия неактивна');
+  if (strategy.profile_id != null && Number(strategy.profile_id) !== pid) {
+    throw new Error('Стратегия другого кабинета');
+  }
+
+  const r = await query(
+    `INSERT INTO pricing_strategy_rules
+       (profile_id, strategy_id, scope_type, scope_id, marketplace, is_active, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+     ON CONFLICT (profile_id, scope_type, scope_id, marketplace)
+     DO UPDATE SET
+       strategy_id = EXCLUDED.strategy_id,
+       is_active = EXCLUDED.is_active,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING *`,
+    [pid, sid, scope, scopeIdNum, mp, isActive !== false]
+  );
+  return r.rows?.[0] || null;
+}
+
+export async function listStrategyRules({ profileId } = {}) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return [];
+  try {
+    const r = await query(
+      `SELECT r.*,
+              ps.name AS strategy_name,
+              ps.mode AS strategy_mode,
+              CASE r.scope_type
+                WHEN 'product' THEN (SELECT p.name FROM products p WHERE p.id = r.scope_id)
+                WHEN 'brand' THEN (SELECT b.name FROM brands b WHERE b.id = r.scope_id)
+                WHEN 'category' THEN (SELECT uc.name FROM user_categories uc WHERE uc.id = r.scope_id)
+                ELSE NULL
+              END AS scope_name
+       FROM pricing_strategy_rules r
+       JOIN pricing_strategies ps ON ps.id = r.strategy_id
+       WHERE r.profile_id = $1
+       ORDER BY
+         CASE r.scope_type
+           WHEN 'product' THEN 1
+           WHEN 'brand' THEN 2
+           WHEN 'category' THEN 3
+           ELSE 4
+         END,
+         r.marketplace NULLS FIRST,
+         r.id DESC`,
+      [pid]
+    );
+    return r.rows || [];
+  } catch (err) {
+    if (String(err?.code) === '42P01') return [];
+    throw err;
+  }
+}
+
+export async function deleteStrategyRule(ruleId, { profileId = null } = {}) {
+  const id = Number(ruleId);
+  if (!Number.isFinite(id) || id < 1) throw new Error('Некорректный id правила');
+  const params = [id];
+  let sql = `DELETE FROM pricing_strategy_rules WHERE id = $1`;
+  if (profileId != null && Number.isFinite(Number(profileId))) {
+    params.push(Number(profileId));
+    sql += ` AND profile_id = $2`;
+  }
+  sql += ` RETURNING id`;
+  const r = await query(sql, params);
+  return (r.rowCount || 0) > 0;
+}
+
+export async function setProfileDefaultStrategy(profileId, strategyId) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный профиль');
+  await query(
+    `UPDATE pricing_strategies SET is_default = false, updated_at = CURRENT_TIMESTAMP
+     WHERE profile_id = $1 AND is_default = true`,
+    [pid]
+  );
+  if (strategyId == null || strategyId === '' || strategyId === 'null') {
+    return getProfilePricingSettings(pid);
+  }
+  const sid = Number(strategyId);
+  if (!Number.isFinite(sid) || sid < 1) throw new Error('Некорректная стратегия');
+  const r = await query(
+    `UPDATE pricing_strategies
+     SET is_default = true, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND profile_id = $2 AND is_active = true
+     RETURNING id`,
+    [sid, pid]
+  );
+  if (!r.rows?.[0]) throw new Error('Стратегия не найдена или неактивна');
+  return getProfilePricingSettings(pid);
+}
+
 export async function ensureDefaultStrategies(profileId) {
   if (profileId == null) return [];
-  // Стратегии только на товары: снимаем кабинетный default и привязки организаций.
   try {
-    await query(
-      `UPDATE pricing_strategies SET is_default = false
-       WHERE profile_id = $1 AND is_default = true`,
-      [profileId]
-    );
     await query(
       `UPDATE organizations SET pricing_strategy_id = NULL
        WHERE profile_id = $1 AND pricing_strategy_id IS NOT NULL`,
@@ -970,6 +1341,9 @@ export default {
   defaultStrategyConfig,
   computeSellingPriceFromInputs,
   recalculateSellingPricesForProduct,
+  resolveStrategyRow,
+  normalizeStrategyMarketplace,
+  rulePriority,
   listStrategies,
   getStrategy,
   createStrategy,
@@ -978,4 +1352,10 @@ export default {
   ensureDefaultStrategies,
   getProfilePricingSettings,
   setProfilePricingStrategiesEnabled,
+  setProfileDefaultStrategy,
+  upsertStrategyRule,
+  listStrategyRules,
+  deleteStrategyRule,
+  assignProductPricingStrategy,
+  clearProductPricingStrategy,
 };

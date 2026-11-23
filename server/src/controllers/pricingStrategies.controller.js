@@ -52,14 +52,75 @@ export const pricingStrategiesController = {
         req.body?.enabled ??
         req.body?.pricing_strategies_enabled ??
         req.body?.pricingStrategiesEnabled;
-      if (enabled === undefined) {
-        return res.status(400).json({ ok: false, message: 'Передайте enabled: true|false' });
+      const defaultStrategyId =
+        req.body?.defaultStrategyId ??
+        req.body?.default_strategy_id ??
+        req.body?.defaultStrategy?.id;
+      let settings = null;
+      if (enabled !== undefined) {
+        settings = await pricingStrategyService.setProfilePricingStrategiesEnabled(
+          profileId,
+          enabled
+        );
       }
-      const settings = await pricingStrategyService.setProfilePricingStrategiesEnabled(
-        profileId,
-        enabled
-      );
+      if (defaultStrategyId !== undefined) {
+        settings = await pricingStrategyService.setProfileDefaultStrategy(
+          profileId,
+          defaultStrategyId
+        );
+      }
+      if (!settings) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Передайте enabled и/или defaultStrategyId',
+        });
+      }
       res.json({ ok: true, data: settings });
+    } catch (e) {
+      res.status(400).json({ ok: false, message: e.message || String(e) });
+    }
+  },
+
+  async listRules(req, res, next) {
+    try {
+      const profileId = profileIdFromReq(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Нет профиля' });
+      }
+      const data = await pricingStrategyService.listStrategyRules({ profileId });
+      res.json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  },
+
+  async upsertRule(req, res, next) {
+    try {
+      const profileId = profileIdFromReq(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Нет профиля' });
+      }
+      const body = req.body || {};
+      const data = await pricingStrategyService.upsertStrategyRule({
+        profileId,
+        strategyId: body.strategyId ?? body.strategy_id,
+        scopeType: body.scopeType ?? body.scope_type,
+        scopeId: body.scopeId ?? body.scope_id,
+        marketplace: body.marketplace,
+        isActive: body.isActive ?? body.is_active,
+      });
+      res.json({ ok: true, data });
+    } catch (e) {
+      res.status(400).json({ ok: false, message: e.message || String(e) });
+    }
+  },
+
+  async deleteRule(req, res, next) {
+    try {
+      const profileId = profileIdFromReq(req);
+      const ok = await pricingStrategyService.deleteStrategyRule(req.params.id, { profileId });
+      if (!ok) return res.status(404).json({ ok: false, message: 'Правило не найдено' });
+      res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ ok: false, message: e.message || String(e) });
     }
@@ -158,6 +219,7 @@ export const pricingStrategiesController = {
           : Number(rawSid);
       const data = await pricingStrategyService.assignProductPricingStrategy(productId, strategyId, {
         profileId,
+        marketplace: req.body?.marketplace || null,
       });
       res.json({ ok: true, data });
     } catch (e) {

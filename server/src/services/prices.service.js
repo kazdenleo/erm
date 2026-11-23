@@ -4351,10 +4351,15 @@ class PricesService {
       if (clearProductStrategy || (hasSelling && sellingRaw != null)) {
         try {
           const { clearProductPricingStrategy } = await import('./pricingStrategy.service.js');
-          await clearProductPricingStrategy(productId);
+          // Снимаем правило на этот МП; общую привязку товара не трогаем — остальные МП остаются.
+          await clearProductPricingStrategy(productId, { marketplace });
+          if (clearProductStrategy) {
+            await clearProductPricingStrategy(productId);
+          }
         } catch (e) {
           logger.warn('[Prices Service] clear product strategy on manual save failed', {
             productId,
+            marketplace,
             error: e?.message || e,
           });
         }
