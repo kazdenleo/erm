@@ -3,11 +3,27 @@
  * Страница входа в систему
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Button } from '../../components/common/Button/Button';
+import { BrandLogo } from '../../components/brand/BrandLogo.jsx';
 import './Login.css';
+
+function reasonMessage(search) {
+  try {
+    const reason = new URLSearchParams(search || '').get('reason');
+    if (reason === 'session') {
+      return 'Вы вошли с другого устройства. Эта сессия завершена — войдите снова.';
+    }
+    if (reason === 'daily') {
+      return 'Сессия истекла: требуется повторный вход в новый день.';
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
 
 export function Login({ mode = 'user' }) {
   const [loginValue, setLoginValue] = useState('');
@@ -18,6 +34,7 @@ export function Login({ mode = 'user' }) {
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || (mode === 'platform' ? '/platform/accounts' : '/');
+  const reasonHint = useMemo(() => reasonMessage(location.search), [location.search]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -29,7 +46,7 @@ export function Login({ mode = 'user' }) {
         navigate('/first-login-change-password', { replace: true });
         return;
       }
-      // Раздельные входы: platform-login → только в админку продукта; login → только в ERP.
+      // Раздельные входы: platform-login → только в админку продукта; login → только в MySell.
       if (mode === 'platform') {
         if (result?.user?.role && String(result.user.role) !== 'admin') {
           logout();
@@ -71,18 +88,23 @@ export function Login({ mode = 'user' }) {
   return (
     <div className="login-page">
       <div className="login-card card">
+        <div className="login-brand">
+          <Link to="/" aria-label="MySell">
+            <BrandLogo height={36} />
+          </Link>
+        </div>
         <h1 className="login-title">{mode === 'platform' ? 'Вход администратора продукта' : 'Вход в систему'}</h1>
         <p className="login-subtitle">
           {mode === 'platform' ? (
             'Админка продукта'
           ) : (
             <>
-              <Link to="/">Программа Ирина</Link> — личный кабинет
+              <Link to="/">MySell</Link> — личный кабинет
             </>
           )}
         </p>
         <form onSubmit={handleSubmit} className="login-form">
-          {error && <div className="login-error">{error}</div>}
+          {(error || reasonHint) && <div className="login-error">{error || reasonHint}</div>}
           <label className="login-label">
             Email или телефон
             <input

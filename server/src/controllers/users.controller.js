@@ -416,9 +416,11 @@ export const usersController = {
         applyBirthDateToUpdates(updates, updates.birthDate ?? updates.birth_date);
         delete updates.birthDate;
       }
+      let passwordChanged = false;
       if (updates.password) {
         updates.password_hash = await bcrypt.hash(updates.password, SALT_ROUNDS);
         delete updates.password;
+        passwordChanged = true;
       }
       if (
         updates.is_profile_admin !== undefined &&
@@ -480,6 +482,10 @@ export const usersController = {
       delete updates.warehouse_ids;
 
       const item = await usersRepo.update(id, updates);
+      if (passwordChanged) {
+        // Смена пароля админом/коллегой — выкидываем все активные сессии пользователя.
+        await usersRepo.bumpSessionVersion(id);
+      }
       const mergedAccountRole =
         updates.account_role !== undefined ? updates.account_role : existing.account_role;
       const mergedIsAdmin =

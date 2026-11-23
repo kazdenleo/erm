@@ -138,7 +138,10 @@ export function Cabinet() {
     setSavingPwd(true);
     setError('');
     try {
-      await authApi.changePassword(pwd.current, pwd.next);
+      const res = await authApi.changePassword(pwd.current, pwd.next);
+      if (res?.data?.token) {
+        localStorage.setItem('token', res.data.token);
+      }
       setPwd({ current: '', next: '', next2: '' });
       alert('Пароль изменён');
     } catch (err) {

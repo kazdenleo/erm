@@ -276,7 +276,13 @@ export const authController = {
       if (!match) {
         return res.status(401).json({ ok: false, message: 'Неверный логин или пароль' });
       }
-      const token = jwt.sign({ userId: user.id }, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
+      // Новый вход сбрасывает сессии на других устройствах.
+      const sessionVersion = await usersRepo.bumpSessionVersion(user.id);
+      const token = jwt.sign(
+        { userId: user.id, sv: sessionVersion },
+        config.jwt.secret,
+        { expiresIn: config.jwt.expiresIn }
+      );
       res.json({
         ok: true,
         data: {
@@ -326,7 +332,13 @@ export const authController = {
       }
       const password_hash = await bcrypt.hash(np, 10);
       await usersRepo.update(row.id, { password_hash, must_change_password: false });
-      res.json({ ok: true, message: 'Пароль изменён' });
+      const sessionVersion = await usersRepo.bumpSessionVersion(row.id);
+      const token = jwt.sign(
+        { userId: row.id, sv: sessionVersion },
+        config.jwt.secret,
+        { expiresIn: config.jwt.expiresIn }
+      );
+      res.json({ ok: true, message: 'Пароль изменён', data: { token } });
     } catch (error) {
       next(error);
     }
@@ -420,7 +432,11 @@ export const authController = {
       const password_hash = await bcrypt.hash(newPassword, 10);
       await transaction(async (client) => {
         await client.query(
-          `UPDATE users SET password_hash = $1, must_change_password = false, updated_at = CURRENT_TIMESTAMP
+          `UPDATE users SET
+             password_hash = $1,
+             must_change_password = false,
+             session_version = COALESCE(session_version, 0) + 1,
+             updated_at = CURRENT_TIMESTAMP
            WHERE id = $2`,
           [password_hash, row.user_id]
         );

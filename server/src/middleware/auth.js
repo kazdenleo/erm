@@ -89,13 +89,25 @@ export async function optionalAuth(req, res, next) {
   try {
     const result = await query(
       `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin, account_role,
-              COALESCE(must_change_password, false) AS must_change_password, created_at
+              COALESCE(must_change_password, false) AS must_change_password,
+              COALESCE(session_version, 0) AS session_version, created_at
        FROM users WHERE id = $1`,
       [decoded.userId]
     );
     const user = result.rows[0];
     if (!user) {
       req.user = null;
+      return next();
+    }
+    // Одна активная сессия: sv в JWT должен совпадать с users.session_version.
+    const tokenSv = Number(decoded.sv ?? decoded.sessionVersion ?? 0);
+    const userSv = Number(user.session_version ?? 0);
+    if (!Number.isFinite(tokenSv) || tokenSv !== userSv) {
+      req.user = null;
+      req.authError = {
+        code: 'SESSION_SUPERSEDED',
+        message: 'Вы вошли с другого устройства. Эта сессия завершена.',
+      };
       return next();
     }
     let effectiveProfileId = profileIdFromDb(user.profile_id);
@@ -134,6 +146,13 @@ export async function optionalAuth(req, res, next) {
 export function requireAuth(req, res, next) {
   if (config.auth?.disabled) return next();
   if (!req.user) {
+    if (req.authError?.code) {
+      return res.status(401).json({
+        ok: false,
+        code: req.authError.code,
+        message: req.authError.message || 'Требуется авторизация',
+      });
+    }
     return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
   }
   next();

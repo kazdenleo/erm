@@ -6,7 +6,7 @@ import { query } from '../config/database.js';
 import { looksLikeEmail, normalizePhone } from '../utils/userPhone.js';
 
 const USER_SELECT =
-  'id, email, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date::text AS birth_date, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at';
+  'id, email, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date::text AS birth_date, role, profile_id, is_profile_admin, account_role, must_change_password, COALESCE(session_version, 0) AS session_version, created_at, updated_at';
 
 class UsersRepositoryPG {
   async findAll(filters = {}) {
@@ -210,6 +210,22 @@ class UsersRepositoryPG {
   async delete(id) {
     const result = await query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
     return result.rows.length > 0;
+  }
+
+  /**
+   * Инвалидирует все ранее выданные JWT пользователя (новая сессия).
+   * @returns {Promise<number>} актуальный session_version
+   */
+  async bumpSessionVersion(id) {
+    const result = await query(
+      `UPDATE users
+       SET session_version = COALESCE(session_version, 0) + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+       RETURNING COALESCE(session_version, 0) AS session_version`,
+      [id]
+    );
+    return Number(result.rows[0]?.session_version ?? 0);
   }
 }
 

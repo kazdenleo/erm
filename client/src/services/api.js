@@ -184,7 +184,13 @@ api.interceptors.response.use(
       if (!isMarketplaceProxy) {
         localStorage.removeItem('token');
         if (!window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login';
+          const reason =
+            code === 'SESSION_SUPERSEDED'
+              ? 'session'
+              : code === 'DAILY_LOGOUT'
+                ? 'daily'
+                : '';
+          window.location.href = reason ? `/login?reason=${encodeURIComponent(reason)}` : '/login';
         }
       }
     }

@@ -35,6 +35,9 @@ export function FirstLoginChangePassword() {
       if (!res?.ok) {
         throw new Error(res?.message || 'Не удалось сменить пароль');
       }
+      if (res?.data?.token) {
+        localStorage.setItem('token', res.data.token);
+      }
       await refreshUser();
       navigate('/', { replace: true });
     } catch (err) {
