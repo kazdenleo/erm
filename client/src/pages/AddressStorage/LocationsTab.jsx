@@ -5,11 +5,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import api from '../../services/api';
 import { addressStorageApi, addressStorageError } from '../../services/addressStorage.api';
 import {
   locationProductMatchesSearch,
   normalizeProductSearchQuery,
 } from '../../utils/productSearch';
+import { getLabelPrinter } from '../../utils/labelPrinterSettings.js';
+import {
+  canReachPrintHelper,
+  normalizePrintHelperBase,
+  printViaPrintHelper,
+} from '../../utils/printHelperClient.js';
+import {
+  cachePrintHelperUrl,
+  resolvePrintHelperUrl,
+} from '../../hooks/useProductLabelPrint.js';
 import { AssignProductModal } from './AssignProductModal';
 import { LOCATION_TYPE_LABELS, downloadBlob, splitAddress, compareText } from './addressStorageUtils';
 
@@ -354,6 +365,7 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [pageMode, setPageMode] = useState(() => readCellLabelsPageMode(warehouseId));
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
 
   useEffect(() => {
     setPageMode(readCellLabelsPageMode(warehouseId));
@@ -366,6 +378,26 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
       /* ignore */
     }
   }, [warehouseId, pageMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/config');
+        const url = (res?.data?.data?.printHelperUrl ?? res?.data?.printHelperUrl ?? '').trim();
+        if (!cancelled) {
+          const next = url || 'http://127.0.0.1:9100';
+          setPrintHelperUrl(next);
+          cachePrintHelperUrl(next);
+        }
+      } catch {
+        if (!cancelled) setPrintHelperUrl('http://127.0.0.1:9100');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const sep = settings.separator;
   const rackKeys = useMemo(() => {
@@ -477,14 +509,36 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
     setNotice(null);
     try {
       const blob = await addressStorageApi.labelsPdf(warehouseId, ids, { pageMode });
-      downloadBlob(
-        blob,
-        pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`
-      );
+      const filename =
+        pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`;
+      const base = normalizePrintHelperBase(resolvePrintHelperUrl(printHelperUrl));
+      const printer = getLabelPrinter('cell');
+      let printed = { ok: false, message: '' };
+      if (base && canReachPrintHelper(base) && blob instanceof Blob && blob.size > 0) {
+        printed = await printViaPrintHelper({
+          printHelperUrl: base,
+          kind: 'cell',
+          pdfBuffer: blob,
+          orderId: `cells-${warehouseId}-${Date.now()}`,
+          printer,
+          timeoutMs: 120000,
+        });
+      }
+      if (printed.ok) {
+        setNotice({
+          ok: true,
+          text: printer
+            ? `Отправлено на принтер «${printer}»: ${ids.length} этикеток`
+            : `Отправлено на принтер по умолчанию: ${ids.length} этикеток`,
+        });
+        return;
+      }
+      downloadBlob(blob, filename);
       setNotice({
         ok: true,
-        text:
-          pageMode === 'a4'
+        text: printed.message
+          ? `Print Helper: ${printed.message}. Скачан PDF (${ids.length}). Принтер ячеек — в Настройки → Этикетки.`
+          : pageMode === 'a4'
             ? `Скачан лист А4: ${ids.length} этикеток`
             : `Скачано этикеток: ${ids.length}`,
       });

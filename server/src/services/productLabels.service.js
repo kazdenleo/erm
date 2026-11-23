@@ -850,13 +850,21 @@ async function buildLabelSvg({
             : cell.warehouseName;
       const text = String(raw || '').trim();
       if (text && y < slotMaxY) {
-        const fs = resolveFontSizePx(el.fontSize, mmToPx, 48);
+        const fs = resolveFontSizePx(el.fontSize, mmToPx, 96);
+        const weight =
+          el.type === 'code'
+            ? el.bold === false
+              ? 'normal'
+              : 'bold'
+            : el.bold === true
+              ? 'bold'
+              : 'normal';
         y = appendWrappedTextSvg(blocks, {
           text,
           x: padL,
           y,
           fontSize: fs,
-          fontWeight: el.bold || el.type === 'code' ? 'bold' : 'normal',
+          fontWeight: weight,
           fill: '#000',
           maxWidthPx: innerW,
           maxY: Math.max(y + fs, slotMaxY),
@@ -866,7 +874,7 @@ async function buildLabelSvg({
         y += blockGap;
       }
     } else if (el.type === 'name') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 48 : 24);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 24);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -883,7 +891,7 @@ async function buildLabelSvg({
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 48 : 20);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 20);
       const sku =
         String(product.sku || '').trim() ||
         (packaging ? String(product.name || '').trim() : '');

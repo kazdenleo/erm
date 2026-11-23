@@ -6,7 +6,7 @@
 export const LABEL_PRINTER_STORAGE_KEY = 'erm_label_printers';
 
 /**
- * @typedef {'order'|'product'|'packaging'|'shipment'|'box_ozon'|'box_wb'|'box_ym'|'pallet'|'cargo'|'box'} LabelPrintKind
+ * @typedef {'order'|'product'|'packaging'|'cell'|'shipment'|'box_ozon'|'box_wb'|'box_ym'|'pallet'|'cargo'|'box'} LabelPrintKind
  */
 
 export const LABEL_PRINT_KINDS = [
@@ -29,6 +29,11 @@ export const LABEL_PRINT_KINDS = [
     id: 'packaging',
     label: 'ШК упаковок товара',
     hint: 'Печать штрихкода упаковки из карточки товара (коробка с N шт.)',
+  },
+  {
+    id: 'cell',
+    label: 'Этикетки ячеек склада',
+    hint: 'Адресное хранение: печать этикеток ячеек через Print Helper',
   },
   {
     id: 'box_ozon',
@@ -63,6 +68,7 @@ function emptyMap() {
     shipment: '',
     product: '',
     packaging: '',
+    cell: '',
     box_ozon: '',
     box_wb: '',
     box_ym: '',

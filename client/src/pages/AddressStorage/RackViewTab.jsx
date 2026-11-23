@@ -4,11 +4,22 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import api from '../../services/api';
 import { addressStorageApi } from '../../services/addressStorage.api';
 import { AssignProductModal } from './AssignProductModal';
 import { ProductPicker } from './ProductPicker';
 import { HeatControls } from './HeatLegend';
 import { useHeatmap } from './useHeatmap';
+import { getLabelPrinter } from '../../utils/labelPrinterSettings.js';
+import {
+  canReachPrintHelper,
+  normalizePrintHelperBase,
+  printViaPrintHelper,
+} from '../../utils/printHelperClient.js';
+import {
+  cachePrintHelperUrl,
+  resolvePrintHelperUrl,
+} from '../../hooks/useProductLabelPrint.js';
 import {
   LOCATION_TYPE_LABELS,
   downloadBlob,
@@ -25,7 +36,28 @@ export function RackViewTab({ warehouseId, settings, locations, reloadLocations,
   const [assignOpen, setAssignOpen] = useState(false);
   const [highlightProduct, setHighlightProduct] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
   const firstHitRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/config');
+        const url = (res?.data?.data?.printHelperUrl ?? res?.data?.printHelperUrl ?? '').trim();
+        if (!cancelled) {
+          const next = url || 'http://127.0.0.1:9100';
+          setPrintHelperUrl(next);
+          cachePrintHelperUrl(next);
+        }
+      } catch {
+        if (!cancelled) setPrintHelperUrl('http://127.0.0.1:9100');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const rackParam = searchParams.get('rack');
   const productParam = Number(searchParams.get('product')) || null;
@@ -229,12 +261,27 @@ export function RackViewTab({ warehouseId, settings, locations, reloadLocations,
               <button
                 type="button"
                 className="btn btn-sm btn-secondary"
-                onClick={() =>
-                  addressStorageApi
-                    .labelsPdf(warehouseId, [selected.id])
-                    .then((blob) => downloadBlob(blob, `cell-${selected.code}.pdf`))
-                    .catch(() => {})
-                }
+                onClick={async () => {
+                  try {
+                    const blob = await addressStorageApi.labelsPdf(warehouseId, [selected.id]);
+                    const base = normalizePrintHelperBase(resolvePrintHelperUrl(printHelperUrl));
+                    const printer = getLabelPrinter('cell');
+                    if (base && canReachPrintHelper(base) && blob instanceof Blob && blob.size > 0) {
+                      const printed = await printViaPrintHelper({
+                        printHelperUrl: base,
+                        kind: 'cell',
+                        pdfBuffer: blob,
+                        orderId: `cell-${selected.code || selected.id}-${Date.now()}`,
+                        printer,
+                        timeoutMs: 60000,
+                      });
+                      if (printed.ok) return;
+                    }
+                    downloadBlob(blob, `cell-${selected.code}.pdf`);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
               >
                 🖨 Этикетка
               </button>

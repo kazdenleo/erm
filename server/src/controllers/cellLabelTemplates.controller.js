@@ -17,10 +17,10 @@ function normalizeElements(body) {
       id: el.id || `${el.type}-${idx}`,
       type: el.type,
       enabled: el.enabled !== false,
-      fontSize: el.fontSize != null ? Math.min(48, Math.max(6, Number(el.fontSize))) : undefined,
+      fontSize: el.fontSize != null ? Math.min(96, Math.max(6, Number(el.fontSize))) : undefined,
       textFontSize:
-        el.textFontSize != null ? Math.min(36, Math.max(6, Number(el.textFontSize))) : undefined,
-      bold: el.bold === true,
+        el.textFontSize != null ? Math.min(72, Math.max(6, Number(el.textFontSize))) : undefined,
+      bold: el.type === 'code' ? el.bold !== false : el.bold === true,
       heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
       widthMm: el.widthMm != null ? Number(el.widthMm) : undefined,
       showText: el.showText !== false,

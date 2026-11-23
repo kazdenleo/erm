@@ -218,10 +218,20 @@ function parseMmValue(v, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+const CELL_FONT_SIZE_MAX = 96;
+const PACKAGING_FONT_SIZE_MAX = 72;
+const PRODUCT_FONT_SIZE_MAX = 24;
+
 function clampFontSize(v, fallback, max = 24) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(6, n));
+}
+
+function textFontSizeMax({ packaging = false, cell = false } = {}) {
+  if (cell) return CELL_FONT_SIZE_MAX;
+  if (packaging) return PACKAGING_FONT_SIZE_MAX;
+  return PRODUCT_FONT_SIZE_MAX;
 }
 
 function normalizeAlign(v, fallback = 'left') {
@@ -233,8 +243,8 @@ function normalizeAlign(v, fallback = 'left') {
 }
 
 function clampElementsForSave(elements, { packaging = false, cell = false } = {}) {
-  const textMax = packaging || cell ? 48 : 24;
-  const barcodeTextMax = packaging || cell ? 36 : 14;
+  const textMax = textFontSizeMax({ packaging, cell });
+  const barcodeTextMax = packaging || cell ? 48 : 14;
   return (elements || []).map((el) => {
     const next = { ...el };
     if (el.type === 'barcode') {
@@ -264,13 +274,19 @@ function clampElementsForSave(elements, { packaging = false, cell = false } = {}
       if (next.fontSize != null) {
         next.fontSize = clampFontSize(
           next.fontSize,
-          el.type === 'name' ? 11 : el.type === 'units_per_box' ? 16 : 9,
+          el.type === 'name' ? 11 : el.type === 'units_per_box' ? 16 : el.type === 'code' ? 22 : 9,
           textMax
         );
       }
       if (next.titleFontSize != null) {
-        next.titleFontSize = clampFontSize(next.titleFontSize, 8, packaging || cell ? 36 : 20);
+        next.titleFontSize = clampFontSize(
+          next.titleFontSize,
+          8,
+          packaging || cell ? Math.min(48, textMax) : 20
+        );
       }
+      if (el.type === 'code') next.bold = next.bold !== false;
+      else if (next.bold != null) next.bold = next.bold === true;
       next.align = normalizeAlign(
         next.align,
         el.type === 'units_per_box' ||
@@ -1313,12 +1329,30 @@ export function LabelConstructor() {
                             <input
                               type="number"
                               min={6}
-                              max={isPackaging || isCell ? 48 : 24}
+                              max={textFontSizeMax({ packaging: isPackaging, cell: isCell })}
                               value={el.fontSize ?? 9}
                               onChange={(e) =>
-                                updateElement(idx, { fontSize: Number(e.target.value) || 9 })
+                                updateElement(idx, {
+                                  fontSize: clampFontSize(
+                                    e.target.value,
+                                    9,
+                                    textFontSizeMax({ packaging: isPackaging, cell: isCell })
+                                  ),
+                                })
                               }
                             />
+                          </label>
+                          <label className="label-constructor-mini">
+                            <input
+                              type="checkbox"
+                              checked={
+                                el.type === 'code'
+                                  ? el.bold !== false
+                                  : el.bold === true
+                              }
+                              onChange={(e) => updateElement(idx, { bold: e.target.checked })}
+                            />
+                            Жирный
                           </label>
                           <label className="label-constructor-mini">
                             Выравнивание
@@ -1326,7 +1360,9 @@ export function LabelConstructor() {
                               className="label-constructor-select-sm"
                               value={normalizeAlign(
                                 el.align,
-                                el.type === 'units_per_box' ? 'center' : 'left'
+                                el.type === 'units_per_box' || el.type === 'code' || el.type === 'legend'
+                                  ? 'center'
+                                  : 'left'
                               )}
                               onChange={(e) => updateElement(idx, { align: e.target.value })}
                             >
