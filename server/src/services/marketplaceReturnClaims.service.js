@@ -374,7 +374,119 @@ async function resolveWbDisplayOrderIdBySrid(profileId, srid, hint = {}) {
     logger.warn('[ReturnClaims] WB srid→order resolve FBO failed', { error: e?.message });
   }
 
-  return resolveWbOrderIdFromOrdersTable(pid, hint);
+  // FBO: в marketplace_fbo_orders order_id = srid, человекочитаемый номер — g_number.
+  try {
+    const fboOrd = await query(
+      `SELECT NULLIF(TRIM(g_number), '') AS g_number
+       FROM marketplace_fbo_orders
+       WHERE profile_id = $1
+         AND marketplace = 'wb'
+         AND order_id = $2
+         AND g_number IS NOT NULL
+         AND TRIM(g_number) <> ''
+       ORDER BY ordered_at DESC NULLS LAST
+       LIMIT 1`,
+      [pid, key]
+    );
+    const g = fboOrd.rows[0]?.g_number != null ? String(fboOrd.rows[0].g_number).trim() : '';
+    if (g && !looksLikeWbSrid(g)) return g;
+  } catch (e) {
+    // колонка g_number может ещё не быть на старых инстансах
+    if (!/g_number/i.test(String(e?.message || ''))) {
+      logger.warn('[ReturnClaims] WB srid→order resolve FBO orders table failed', { error: e?.message });
+    }
+  }
+
+  const fromOrders = await resolveWbOrderIdFromOrdersTable(pid, hint);
+  if (fromOrders) return fromOrders;
+
+  // Старые FBO: gNumber только в Statistics API (flag=1 по дате заказа).
+  return resolveWbOrderIdFromStatsApi(pid, key, hint);
+}
+
+function wbYmdMsk(d) {
+  return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+}
+
+async function resolveWbOrderIdFromStatsApi(profileId, srid, hint = {}) {
+  const key = String(srid ?? '').trim();
+  const orderDt = hint?.orderDt ? new Date(hint.orderDt) : null;
+  if (!key || !orderDt || Number.isNaN(orderDt.getTime())) return null;
+
+  let scopes = [];
+  try {
+    scopes = await listWbClaimScopes(profileId);
+  } catch (e) {
+    logger.warn('[ReturnClaims] WB stats resolve: no scopes', { error: e?.message });
+    return null;
+  }
+  if (!scopes.length) return null;
+
+  const dates = [
+    wbYmdMsk(orderDt),
+    orderDt.toISOString().slice(0, 10),
+    wbYmdMsk(new Date(orderDt.getTime() - 86400000)),
+  ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+  const core = wbSridCore(key);
+  for (const scope of scopes) {
+    const token = String(scope.apiKey || '').trim();
+    if (!token) continue;
+    for (const day of dates) {
+      try {
+        const url = `https://statistics-api.wildberries.ru/api/v1/supplier/orders?dateFrom=${encodeURIComponent(day)}&flag=1`;
+        const resp = await fetch(url, {
+          method: 'GET',
+          headers: { Authorization: token, Accept: 'application/json' },
+          signal: AbortSignal.timeout(90000),
+        });
+        if (resp.status === 429) {
+          logger.warn('[ReturnClaims] WB stats resolve rate-limited', { day });
+          continue;
+        }
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => '');
+          logger.warn('[ReturnClaims] WB stats resolve failed', {
+            day,
+            status: resp.status,
+            body: String(text).slice(0, 200),
+          });
+          continue;
+        }
+        const data = await resp.json().catch(() => []);
+        const rows = Array.isArray(data) ? data : [];
+        const hit = rows.find((o) => {
+          const s = String(o?.srid || '').trim();
+          return s === key || (core && s.includes(core));
+        });
+        if (!hit) continue;
+        const g =
+          hit.gNumber != null && String(hit.gNumber).trim() !== ''
+            ? String(hit.gNumber).trim()
+            : hit.g_number != null && String(hit.g_number).trim() !== ''
+              ? String(hit.g_number).trim()
+              : '';
+        if (g && !looksLikeWbSrid(g)) {
+          // Подтянем g_number в FBO-заказы на будущее (best-effort).
+          try {
+            await query(
+              `UPDATE marketplace_fbo_orders
+               SET g_number = $3, updated_at = CURRENT_TIMESTAMP
+               WHERE profile_id = $1 AND marketplace = 'wb' AND order_id = $2
+                 AND (g_number IS NULL OR TRIM(g_number) = '')`,
+              [profileId, key, g]
+            );
+          } catch {
+            /* ignore */
+          }
+          return g;
+        }
+      } catch (e) {
+        logger.warn('[ReturnClaims] WB stats resolve error', { day, error: e?.message });
+      }
+    }
+  }
+  return null;
 }
 
 async function resolveWbDisplayOrderIdsBatch(profileId, srids) {

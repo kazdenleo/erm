@@ -91,6 +91,7 @@ export function mapWbOrders(rows) {
     const orderId = str(o.srid, 128) || str(`${o.gNumber}:${o.nmId}:${o.date}`, 128);
     if (!orderId) continue;
     const cancelled = o.isCancel === true;
+    const gNumber = str(o.gNumber ?? o.g_number, 64);
     byId.set(orderId, {
       order_id: orderId,
       line_key: '1',
@@ -103,6 +104,7 @@ export function mapWbOrders(rows) {
       is_cancelled: cancelled,
       ordered_at: `${String(o.date).slice(0, 19)}+03:00`,
       warehouse_name: str(o.warehouseName),
+      g_number: gNumber || null,
     });
   }
   return [...byId.values()];

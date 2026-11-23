@@ -180,14 +180,15 @@ async function upsertLines(profileId, organizationId, marketplace, lines) {
         l.status,
         l.is_cancelled,
         l.ordered_at,
-        l.warehouse_name
+        l.warehouse_name,
+        l.g_number ?? null
       );
-      return `(${Array.from({ length: 14 }, (_, k) => `$${base + k + 1}`).join(', ')})`;
+      return `(${Array.from({ length: 15 }, (_, k) => `$${base + k + 1}`).join(', ')})`;
     });
     await query(
       `INSERT INTO marketplace_fbo_orders
          (profile_id, organization_id, marketplace, order_id, line_key, offer_id, sku, product_name,
-          quantity, price, status, is_cancelled, ordered_at, warehouse_name)
+          quantity, price, status, is_cancelled, ordered_at, warehouse_name, g_number)
        VALUES ${values.join(', ')}
        ON CONFLICT (profile_id, marketplace, order_id, line_key) DO UPDATE SET
          organization_id = EXCLUDED.organization_id,
@@ -200,6 +201,7 @@ async function upsertLines(profileId, organizationId, marketplace, lines) {
          is_cancelled = EXCLUDED.is_cancelled,
          ordered_at = EXCLUDED.ordered_at,
          warehouse_name = EXCLUDED.warehouse_name,
+         g_number = COALESCE(EXCLUDED.g_number, marketplace_fbo_orders.g_number),
          updated_at = CURRENT_TIMESTAMP`,
       params
     );
