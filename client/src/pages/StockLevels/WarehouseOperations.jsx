@@ -1157,36 +1157,105 @@ export function WarehouseOperations({
   };
 
   const addTransferItemFromProduct = useCallback(
-    async (product) => {
+    async (product, opts = {}) => {
       if (!product?.id) return 0;
       const fromId = String(transferFromWarehouseId || '').trim();
       if (!fromId) {
         setOpMessage('Сначала выберите склад-источник');
         return 0;
       }
-      const maxQty = await warehouseQtyForProduct(product, fromId);
+      let fromLocationId =
+        opts.fromLocationId != null && String(opts.fromLocationId).trim() !== ''
+          ? Number(opts.fromLocationId)
+          : null;
+      let fromLocationCode =
+        opts.fromLocationCode != null ? String(opts.fromLocationCode).trim() : '';
+      let cellMax =
+        opts.cellMaxQty != null && Number.isFinite(Number(opts.cellMaxQty))
+          ? Math.max(0, Number(opts.cellMaxQty))
+          : null;
+
+      if (fromLocationId == null || !fromLocationCode || cellMax == null) {
+        try {
+          const info = await addressStorageApi.productLocations(product.id);
+          const wh =
+            (info?.warehouses || []).find((w) => String(w.warehouseId) === String(fromId)) || null;
+          const assigned = wh?.assigned || null;
+          const stockLoc =
+            Array.isArray(wh?.stocks) && wh.stocks[0]?.location ? wh.stocks[0] : null;
+          const loc = assigned || stockLoc?.location || null;
+          if (loc?.id != null && fromLocationId == null) {
+            fromLocationId = Number(loc.id);
+            fromLocationCode = String(loc.code || '').trim();
+          }
+          if (cellMax == null && stockLoc) {
+            const match = (wh.stocks || []).find(
+              (s) => Number(s.location?.id) === Number(fromLocationId)
+            );
+            if (match) cellMax = Math.max(0, Number(match.quantity) || 0);
+          }
+        } catch {
+          /* ячейка необязательна, если учёт по ячейкам выключен */
+        }
+      }
+
+      const warehouseMax = await warehouseQtyForProduct(product, fromId);
+      const maxQty =
+        cellMax != null && cellMax > 0 ? Math.min(warehouseMax || cellMax, cellMax) : warehouseMax;
       if (maxQty < 1) {
-        setOpMessage('Нет свободного остатка на складе-источнике');
+        setOpMessage(
+          fromLocationCode
+            ? `В ячейке ${fromLocationCode} нет остатка этого товара`
+            : 'Нет свободного остатка на складе-источнике'
+        );
         return 0;
       }
-    const pid = String(product.id);
-    const sku = String(product.sku || product.article || product.vendorCode || '').trim();
-    const name = String(product.name || product.title || '—').trim();
+      const pid = String(product.id);
+      const sku = String(product.sku || product.article || product.vendorCode || '').trim();
+      const name = String(product.name || product.title || '—').trim();
+      const addQty = Math.max(
+        1,
+        Math.min(
+          maxQty,
+          opts.quantity != null && Number.isFinite(Number(opts.quantity))
+            ? Math.floor(Number(opts.quantity))
+            : 1
+        )
+      );
       let added = 0;
-    setTransferList((prev) => {
-      const out = Array.isArray(prev) ? [...prev] : [];
-      const idx = out.findIndex((x) => String(x.productId) === pid);
+      setTransferList((prev) => {
+        const out = Array.isArray(prev) ? [...prev] : [];
+        const idx = out.findIndex((x) => {
+          if (String(x.productId) !== pid) return false;
+          const a = x.fromLocationId != null ? String(x.fromLocationId) : '';
+          const b = fromLocationId != null ? String(fromLocationId) : '';
+          return a === b;
+        });
         if (idx >= 0) {
-          const nextQty = Math.min(Number(out[idx].quantity || 0) + 1, maxQty);
+          const nextQty = Math.min(Number(out[idx].quantity || 0) + addQty, maxQty);
           if (nextQty <= Number(out[idx].quantity || 0)) return prev;
-          added = 1;
-          out[idx] = { ...out[idx], quantity: nextQty, warehouseMaxQty: maxQty };
+          added = nextQty - Number(out[idx].quantity || 0);
+          out[idx] = {
+            ...out[idx],
+            quantity: nextQty,
+            warehouseMaxQty: maxQty,
+            fromLocationId: fromLocationId || out[idx].fromLocationId || null,
+            fromLocationCode: fromLocationCode || out[idx].fromLocationCode || '',
+          };
         } else {
-          added = 1;
-          out.push({ productId: pid, sku, name, quantity: 1, warehouseMaxQty: maxQty });
+          added = addQty;
+          out.push({
+            productId: pid,
+            sku,
+            name,
+            quantity: addQty,
+            warehouseMaxQty: maxQty,
+            fromLocationId: fromLocationId || null,
+            fromLocationCode: fromLocationCode || '',
+          });
         }
-      return out;
-    });
+        return out;
+      });
       return added;
     },
     [transferFromWarehouseId]
@@ -1201,9 +1270,18 @@ export function WarehouseOperations({
     setTransferList((prev) => prev.map((it, i) => (i === index ? { ...it, quantity: qty } : it)));
   };
 
-  const removeTransferItem = (pid) => {
+  const removeTransferItem = (pid, fromLocationId = null) => {
     const id = String(pid);
-    setTransferList((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x.productId) !== id) : []));
+    const loc = fromLocationId != null && String(fromLocationId).trim() !== '' ? String(fromLocationId) : '';
+    setTransferList((prev) =>
+      Array.isArray(prev)
+        ? prev.filter((x) => {
+            if (String(x.productId) !== id) return true;
+            if (!loc) return false;
+            return String(x.fromLocationId || '') !== loc;
+          })
+        : []
+    );
   };
 
   const submitTransfer = async () => {
@@ -1240,8 +1318,11 @@ export function WarehouseOperations({
         lines: items.map((it) => ({
           productId: it.productId,
           quantity: Number(it.quantity),
+          ...(it.fromLocationId
+            ? { fromLocationId: Number(it.fromLocationId) }
+            : {}),
         })),
-        });
+      });
       const receiptNo =
         res?.data?.receipt?.receipt_number ||
         res?.receipt?.receipt_number ||
@@ -1283,11 +1364,90 @@ export function WarehouseOperations({
           setOpMessage('Укажите склад-источник и склад-получатель');
           return;
         }
+
+        // Сначала пробуем ячейку/товар на складе-источнике (адресное хранение).
+        try {
+          const scanned = await addressStorageApi.resolveScan(transferFromWarehouseId, raw);
+          if (scanned?.type === 'location' || scanned?.location) {
+            const loc = scanned.location;
+            const items = Array.isArray(scanned.items) ? scanned.items : [];
+            clearScanField(transferScanInputRef.current);
+            if (!items.length) {
+              setOpMessage(`Ячейка ${loc?.code || raw} пуста — нечего перемещать`);
+              window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+              return;
+            }
+            let addedLines = 0;
+            let addedQty = 0;
+            for (const it of items) {
+              if (!it?.productId || !(Number(it.quantity) > 0)) continue;
+              const n = await addTransferItemFromProduct(
+                { id: it.productId, sku: it.sku, name: it.name },
+                {
+                  fromLocationId: loc.id,
+                  fromLocationCode: loc.code,
+                  cellMaxQty: it.quantity,
+                  quantity: it.quantity,
+                }
+              );
+              if (n > 0) {
+                addedLines += 1;
+                addedQty += n;
+              }
+            }
+            setOpMessage(
+              addedLines > 0
+                ? `Из ячейки ${loc.code}: ${addedLines} поз. / ${addedQty} шт`
+                : `В ячейке ${loc.code} нет доступного остатка`
+            );
+            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            return;
+          }
+          if ((scanned?.type === 'product' || scanned?.product) && scanned.product?.id) {
+            const wh = scanned.warehouse || null;
+            const assigned = wh?.assigned || null;
+            const stockLoc =
+              Array.isArray(wh?.stocks) && wh.stocks[0]?.location ? wh.stocks[0] : null;
+            const loc = assigned || stockLoc?.location || null;
+            const cellQty = stockLoc
+              ? (wh.stocks || []).find((s) => Number(s.location?.id) === Number(loc?.id))
+                  ?.quantity
+              : null;
+            const added = await addTransferItemFromProduct(
+              {
+                id: scanned.product.id,
+                sku: scanned.product.sku,
+                name: scanned.product.name,
+              },
+              loc
+                ? {
+                    fromLocationId: loc.id,
+                    fromLocationCode: loc.code,
+                    cellMaxQty: cellQty,
+                    quantity: 1,
+                  }
+                : { quantity: 1 }
+            );
+            clearScanField(transferScanInputRef.current);
+            if (added > 0) {
+              setOpMessage(
+                loc?.code
+                  ? `В список: ${scanned.product.sku || scanned.product.name} из ${loc.code} — +${added} шт`
+                  : `В список перемещения: ${scanned.product.name || scanned.product.sku} — +${added} шт`
+              );
+            }
+            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            return;
+          }
+        } catch {
+          /* не ячейка / адресное хранение недоступно — обычный поиск товара */
+        }
+
         const p = await lookupProductByAny(raw, {
           title: 'Выберите товар для перемещения',
           allowLinkBarcode: true,
           organizationId: transferOrganizationId,
-          useServerSearch: true
+          useServerSearch: true,
         });
         const added = await addTransferItemFromProduct(p);
         clearScanField(transferScanInputRef.current);
@@ -5184,8 +5344,10 @@ export function WarehouseOperations({
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
           <p className="warehouse-ops-hint">
-            Перенос свободного остатка между складами одной организации. Поиск товара: штрихкод, артикул или название.
-            После оформления документ сохраняется в списке ниже (номер ПМ-…); в журнале движений — две записи на каждую позицию.
+            Перенос между складами одной организации. Можно сканировать{' '}
+            <strong>ячейку</strong> на складе-источнике (все товары из неё попадут в документ и снимутся с
+            этой ячейки) или <strong>товар</strong> (штрихкод / артикул). После оформления — документ ПМ-… в
+            списке ниже.
           </p>
 
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -5279,8 +5441,8 @@ export function WarehouseOperations({
           )}
 
           <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
-            Количество измените в таблице ниже.
+            Скан ячейки — все позиции из неё; скан товара — +1 шт (ячейка подставится из закрепления/остатка на
+            складе-источнике). Количество можно поправить в таблице.
           </p>
 
           <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
@@ -5291,7 +5453,7 @@ export function WarehouseOperations({
                 onManualQuery={handleTransferManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Штрихкод, артикул или название"
+                placeholder="Ячейка, штрихкод, артикул или название"
                 disabled={
                   !transferOrganizationId || !transferFromWarehouseId || !transferToWarehouseId
                 }
@@ -5342,6 +5504,7 @@ export function WarehouseOperations({
                   <tr>
                     <th>Артикул</th>
                     <th>Название</th>
+                    <th>Ячейка</th>
                     <th className="text-end">Кол-во</th>
                     <th />
                   </tr>
@@ -5349,10 +5512,18 @@ export function WarehouseOperations({
                 <tbody>
                   {transferList.map((row, index) => {
                     const maxQty = Math.max(1, Number(row.warehouseMaxQty) || 1);
+                    const rowKey = `${row.productId}:${row.fromLocationId || ''}`;
                     return (
-                    <tr key={row.productId}>
+                    <tr key={rowKey}>
                       <td>{row.sku || '—'}</td>
                       <td>{row.name || '—'}</td>
+                      <td>
+                        {row.fromLocationCode ? (
+                          <code className="address-code">{row.fromLocationCode}</code>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
                         <td className="text-end">
                           <input
                             type="number"
@@ -5368,7 +5539,7 @@ export function WarehouseOperations({
                         <Button
                           type="button"
                           variant="secondary"
-                          onClick={() => removeTransferItem(row.productId)}
+                          onClick={() => removeTransferItem(row.productId, row.fromLocationId)}
                           disabled={opLoading}
                         >
                           Удалить
