@@ -889,13 +889,15 @@ async function buildLabelSvg({
         (packaging ? String(product.name || '').trim() : '');
       if (sku && y < slotMaxY) {
         const weight = el.bold ? 'bold' : 'normal';
+        // Упаковка и ячейка — только значение; на товарной этикетке оставляем подпись «SKU:».
+        const plainSku = Boolean(packaging || cell);
         y = appendWrappedTextSvg(blocks, {
-          text: packaging ? sku : `SKU: ${sku}`,
+          text: plainSku ? sku : `SKU: ${sku}`,
           x: padL,
           y,
           fontSize: fs,
           fontWeight: weight,
-          fill: packaging ? '#000' : '#333',
+          fill: plainSku ? '#000' : '#333',
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
