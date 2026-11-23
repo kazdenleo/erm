@@ -19,6 +19,97 @@
   user-select: none;
 }
 
+.app-brand-logo,
+.brand-logo {
+  display: block;
+  height: 28px;
+  width: auto;
+  max-width: 100%;
+  user-select: none;
+  pointer-events: none;
+}
+
+.app-header__logo {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px;
+}
+
+.app-header__logo .app-brand-logo {
+  margin-right: 0;
+  flex-shrink: 0;
+  display: block;
+}
+
+.app-header__logo .header__pane {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center;
+  height: auto !important;
+  margin: 0 0 0 auto !important;
+  padding: 0 !important;
+}
+
+.app-header__logo .hamburger.close-sidebar-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  line-height: 0;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.app-header__logo .hamburger.close-sidebar-btn .hamburger-box {
+  display: block;
+  width: 20px;
+  height: 14px;
+  margin: 0;
+}
+
+/* Крестик (is-active) визуально чуть выше из‑за translate — компенсируем */
+.app-header__logo .hamburger.close-sidebar-btn.is-active .hamburger-box {
+  transform: translateY(1px);
+}
+
+.app-brand-logo--collapsed {
+  width: 28px;
+  height: 28px;
+}
+
+/* В свёрнутом сайдбаре — MS + крестик как пара по центру полосы */
+.closed-sidebar:not(.sidebar-mobile-open) .app-header .app-header__logo,
+.closed-sidebar:not(.closed-sidebar-mobile) .app-header .app-header__logo {
+  width: 80px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 6px;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-header .app-header__logo .header__pane,
+.closed-sidebar:not(.closed-sidebar-mobile) .app-header .app-header__logo .header__pane {
+  margin: 0 !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-header__logo .app-brand-logo {
+  width: 28px;
+  height: 28px;
+}
+
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 1rem;
+}
+
+.login-brand .brand-logo {
+  height: 36px;
+}
+
 /* Светлый фон приложения / хрома ArchitectUI */
 .app-container,
 .app-main,
@@ -506,6 +597,127 @@
 .app-sidebar .vertical-nav-menu > li > a:hover > i.metismenu-icon,
 .app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle:hover > i.metismenu-icon {
   opacity: 0.55;
+}
+
+/* Активный пункт — зелёный бренд вместо синего ArchitectUI */
+.app-sidebar .vertical-nav-menu li a.mm-active,
+.app-sidebar .vertical-nav-menu ul > li > a.mm-active,
+.app-sidebar .vertical-nav-menu > li > a.mm-active,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle.mm-active {
+  background: var(--primary-50, #e8f8f0) !important;
+  color: var(--brand, #1faa6e) !important;
+  font-weight: 600;
+}
+
+.app-sidebar .vertical-nav-menu > li.mm-active > a > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu > li.mm-active > button.metismenu-link--toggle > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu > li > a.mm-active > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle.mm-active > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu li ul li.mm-active > a > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu li ul li > a.mm-active > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu li a.mm-active > i.metismenu-icon {
+  color: var(--brand, #1faa6e) !important;
+  opacity: 1 !important;
+}
+
+.app-sidebar .vertical-nav-menu > li.mm-active > a,
+.app-sidebar .vertical-nav-menu > li.mm-active > button.metismenu-link--toggle,
+.app-sidebar .vertical-nav-menu li ul li.mm-active > a {
+  color: var(--brand, #1faa6e);
+  font-weight: 600;
+}
+
+.app-sidebar .vertical-nav-menu li a:hover {
+  background: var(--hover, #eaf3ee) !important;
+}
+
+/*
+ * Свёрнутый сайдбар: тема ArchitectUI ставит text-indent:-99rem и absolute left:50%.
+ * Наш flex ломает центрирование — явно центрируем иконки и подсветку.
+ */
+.closed-sidebar .app-sidebar .app-sidebar__inner ul li a,
+.closed-sidebar .app-sidebar .app-sidebar__inner ul li button.metismenu-link--toggle {
+  text-indent: 0 !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .app-sidebar__inner {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu {
+  padding: 0 10px !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > a,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > button.metismenu-link--toggle {
+  justify-content: center !important;
+  align-items: center !important;
+  width: 48px !important;
+  min-width: 48px !important;
+  max-width: 48px !important;
+  min-height: 44px !important;
+  height: 44px !important;
+  margin: 0.12rem auto !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  text-indent: 0 !important;
+  border-radius: 0.5rem;
+  overflow: hidden !important;
+  box-sizing: border-box;
+  /* прячет текстовые узлы у групп (если без .sidebar-nav-label) */
+  font-size: 0 !important;
+  line-height: 0 !important;
+  color: transparent !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > a > i.metismenu-icon,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > button.metismenu-link--toggle > i.metismenu-icon {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  margin: 0 !important;
+  text-indent: 0 !important;
+  width: 1.75rem !important;
+  min-width: 1.75rem !important;
+  height: 1.75rem !important;
+  line-height: 1.75rem !important;
+  font-size: 1.35rem !important;
+  /* parent color:transparent прячет текст — иконке задаём цвет явно */
+  color: #6c757d !important;
+  opacity: 0.55;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu .sidebar-nav-label,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu .metismenu-state-icon,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu .sidebar-menu-badge,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > ul {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > a.mm-active,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > button.metismenu-link--toggle.mm-active,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu li a.mm-active {
+  background: var(--primary-50, #e8f8f0) !important;
+  color: var(--brand, #1faa6e) !important;
+}
+
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > a.mm-active > i.metismenu-icon,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu > li > button.metismenu-link--toggle.mm-active > i.metismenu-icon,
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:not(:hover) .vertical-nav-menu li a.mm-active > i.metismenu-icon {
+  color: var(--brand, #1faa6e) !important;
+  opacity: 1 !important;
 }
 
 .app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle > i.metismenu-state-icon {

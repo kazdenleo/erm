@@ -18,15 +18,29 @@
   z-index: 100;
 }
 
+.platform-header__brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.platform-header__logo {
+  display: block;
+  flex-shrink: 0;
+}
+
 .platform-header__title {
   font-weight: 600;
   font-size: 1.05rem;
   color: var(--text, #333);
   text-decoration: none;
+  white-space: nowrap;
 }
 
-.platform-header__title:hover {
-  color: var(--primary, #3f6ad8);
+.platform-header__brand-link:hover .platform-header__title {
+  color: var(--primary, #1faa6e);
 }
 
 .platform-header__nav {

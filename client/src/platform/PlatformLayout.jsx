@@ -1,10 +1,11 @@
 /**
- * Оболочка админки продукта: без ERP-сайдбара, отдельная навигация.
+ * Оболочка админки продукта: без MySell-сайдбара, отдельная навигация.
  */
 
 import React from 'react';
 import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { BrandLogo } from '../components/brand/BrandLogo.jsx';
 import { shortUserName } from '../utils/userName.js';
 import './platform.css';
 
@@ -28,8 +29,9 @@ export function PlatformLayout() {
     <div className="platform-shell app-theme-white">
       <header className="platform-header">
         <div className="platform-header__brand">
-          <Link to="/platform/accounts" className="platform-header__title">
-            Администрирование продукта
+          <Link to="/platform/accounts" className="platform-header__brand-link" aria-label="MySell — админка">
+            <BrandLogo height={28} className="platform-header__logo" />
+            <span className="platform-header__title">Админка продукта</span>
           </Link>
         </div>
         <nav className="platform-header__nav" aria-label="Разделы админки">

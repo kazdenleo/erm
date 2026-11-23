@@ -1,0 +1,24 @@
+{
+  "name": "MySell",
+  "short_name": "MySell",
+  "description": "Система для продавцов на маркетплейсах и интернет-магазинов",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f7f5",
+  "theme_color": "#1faa6e",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

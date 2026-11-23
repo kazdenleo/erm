@@ -93,10 +93,10 @@ export function Login({ mode = 'user' }) {
             <BrandLogo height={36} />
           </Link>
         </div>
-        <h1 className="login-title">{mode === 'platform' ? 'Вход администратора продукта' : 'Вход в систему'}</h1>
+        <h1 className="login-title">{mode === 'platform' ? 'Вход в админку MySell' : 'Вход в систему'}</h1>
         <p className="login-subtitle">
           {mode === 'platform' ? (
-            'Админка продукта'
+            <>Администрирование продукта <strong>MySell</strong></>
           ) : (
             <>
               <Link to="/">MySell</Link> — личный кабинет

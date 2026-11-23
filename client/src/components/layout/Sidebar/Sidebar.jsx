@@ -459,7 +459,7 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
       <div className="scrollbar-sidebar">
         <div className="app-sidebar__inner">
           <ul className="vertical-nav-menu">
-            <li className="app-sidebar__heading">ERP</li>
+            <li className="app-sidebar__heading">MySell</li>
 
             {visibleMenu.map((item) => {
               const hasChildren = Array.isArray(item.children) && item.children.length > 0;

@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { useNotificationsCount } from '../../../hooks/useNotificationsCount';
 import { buildFullName, shortUserName } from '../../../utils/userName.js';
+import { BrandLogo } from '../../brand/BrandLogo.jsx';
 import { GlobalSearch } from './GlobalSearch';
 import './Header.css';
 
@@ -59,20 +60,22 @@ export function Header({
   return (
     <div className="app-header header-shadow">
       <div className="app-header__logo">
-        <div className="app-brand-text" aria-label="Программа Ирина">Программа Ирина</div>
-        <div className="header__pane ms-auto">
-          <div>
-            <button
-              type="button"
-              className={`hamburger close-sidebar-btn hamburger--elastic ${isSidebarClosed ? 'is-active' : ''}`}
-              onClick={onToggleSidebar}
-              aria-label={isSidebarClosed ? 'Развернуть меню' : 'Свернуть меню'}
-            >
-              <span className="hamburger-box">
-                <span className="hamburger-inner" />
-              </span>
-            </button>
-          </div>
+        <BrandLogo
+          variant={isSidebarClosed ? 'mark' : 'full'}
+          className={`app-brand-logo${isSidebarClosed ? ' app-brand-logo--collapsed' : ''}`}
+          height={28}
+        />
+        <div className="header__pane">
+          <button
+            type="button"
+            className={`hamburger close-sidebar-btn hamburger--elastic ${isSidebarClosed ? 'is-active' : ''}`}
+            onClick={onToggleSidebar}
+            aria-label={isSidebarClosed ? 'Развернуть меню' : 'Свернуть меню'}
+          >
+            <span className="hamburger-box">
+              <span className="hamburger-inner" />
+            </span>
+          </button>
         </div>
       </div>
 
