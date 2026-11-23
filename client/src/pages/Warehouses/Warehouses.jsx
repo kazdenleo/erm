@@ -329,7 +329,7 @@ export function Warehouses() {
     : mappingForm.marketplaceWarehouseId || '';
 
   return (
-    <div className="card">
+    <div className="card" data-tour="page-warehouses">
       <h1 className="title">📦 Склады</h1>
       <p className="subtitle">Управление складами и остатками товаров</p>
       

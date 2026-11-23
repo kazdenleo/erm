@@ -217,7 +217,7 @@ export function Labels() {
   };
 
   return (
-    <div className="settings-page card settings-labels">
+    <div className="settings-page card settings-labels" data-tour="page-labels">
       <h1 className="title">Этикетки</h1>
       <nav className="settings-labels-tabs" aria-label="Разделы настроек этикеток">
         <button

@@ -187,7 +187,7 @@ export function FboSupplies() {
   };
 
   return (
-    <div className="fbo-supplies-page">
+    <div className="fbo-supplies-page" data-tour="page-fbo">
       <FboSuppliesSubNav />
       <FboOpenCalcSessionsBanner />
 

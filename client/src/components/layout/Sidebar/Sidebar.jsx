@@ -21,6 +21,7 @@ import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api'
 import { marketplaceReturnClaimsApi } from '../../../services/marketplaceReturnClaims.api';
 import { employeeTasksApi } from '../../../services/employeeTasks.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
+import { OPEN_NAV_EVENT } from '../../../context/TrainingTourContext.jsx';
 
 /** Подпункты «Склад»: операции склада (?op=) + закупка */
 const opsByKey = Object.fromEntries((WAREHOUSE_OPERATION_OPS || []).map((t) => [t.op, t]));
@@ -438,6 +439,16 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
       return activeGroup;
     });
   }, [location.pathname, location.search, findActiveGroup, location]);
+
+  useEffect(() => {
+    const onOpenNav = (e) => {
+      const groupPath = e?.detail?.groupPath;
+      if (!groupPath) return;
+      setOpenGroup(String(groupPath));
+    };
+    window.addEventListener(OPEN_NAV_EVENT, onOpenNav);
+    return () => window.removeEventListener(OPEN_NAV_EVENT, onOpenNav);
+  }, []);
 
   const visibleMenu = useMemo(() => {
     const filterChildren = (item) => {

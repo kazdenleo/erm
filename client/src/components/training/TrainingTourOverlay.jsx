@@ -1,7 +1,16 @@
 import React from 'react';
 import './TrainingTourOverlay.css';
 
-export function TrainingTourOverlay({ tour, step, stepIndex, targetRect, onNext, onPrev, onClose }) {
+export function TrainingTourOverlay({
+  tour,
+  step,
+  stepIndex,
+  targetRect,
+  targetReady = true,
+  onNext,
+  onPrev,
+  onClose,
+}) {
   const pad = 8;
   const hole = targetRect
     ? {
@@ -55,9 +64,11 @@ export function TrainingTourOverlay({ tour, step, stepIndex, targetRect, onNext,
         </div>
         <h3 className="training-tour__title">{step.title}</h3>
         <p className="training-tour__body">{step.body}</p>
-        {!hole ? (
+        {!targetReady ? (
+          <p className="training-tour__hint text-muted">Открываем раздел…</p>
+        ) : !hole ? (
           <p className="training-tour__hint text-muted">
-            Элемент на экране не найден — откройте нужный раздел вручную или нажмите «Далее».
+            Страница открыта. Если подсветка не появилась — смотрите содержимое раздела или нажмите «Далее».
           </p>
         ) : null}
         <div className="training-tour__actions">

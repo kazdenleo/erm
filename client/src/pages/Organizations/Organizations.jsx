@@ -120,7 +120,7 @@ export function Organizations() {
   );
 
   return (
-    <div className="card">
+    <div className="card" data-tour="page-organizations">
       <div className="organizations-page-header">
         <div>
           <h1 className="title">Организации</h1>

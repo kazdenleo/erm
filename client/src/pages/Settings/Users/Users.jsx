@@ -265,7 +265,7 @@ export function SettingsUsers() {
   };
 
   return (
-    <div className="card settings-users-page">
+    <div className="card settings-users-page" data-tour="page-users">
       <h1 className="title">Пользователи</h1>
 
       <nav className="settings-users-tabs" aria-label="Разделы пользователей">

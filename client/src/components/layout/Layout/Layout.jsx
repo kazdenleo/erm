@@ -12,7 +12,6 @@ import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 import { SubscriptionBanner } from '../../SubscriptionBanner/SubscriptionBanner.jsx';
-import { TrainingTourProvider } from '../../../context/TrainingTourContext.jsx';
 
 const MOBILE_LAYOUT_MQ = '(max-width: 991.98px)';
 
@@ -73,7 +72,6 @@ export function Layout({ children }) {
 
   return (
     <ProductCardModalProvider>
-      <TrainingTourProvider>
       <div
         className={[
           'app-container',
@@ -124,7 +122,6 @@ export function Layout({ children }) {
           </div>
         </div>
       </div>
-      </TrainingTourProvider>
     </ProductCardModalProvider>
   );
 }

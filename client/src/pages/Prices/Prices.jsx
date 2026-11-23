@@ -991,7 +991,7 @@ export function Prices() {
   }
 
   return (
-    <div className="card">
+    <div className="card" data-tour="page-prices">
       <h1 className="title mb-2">💰 Цены</h1>
 
       <div className="main-card mb-3 card">

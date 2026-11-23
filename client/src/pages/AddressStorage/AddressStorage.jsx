@@ -119,7 +119,7 @@ export function AddressStorage() {
   };
 
   return (
-    <div className="address-storage">
+    <div className="address-storage" data-tour="page-address-storage">
       <div className="address-storage__top">
         <label className="address-storage__wh">
           <span>Склад</span>

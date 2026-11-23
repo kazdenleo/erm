@@ -1,5 +1,5 @@
 /**
- * Интерактивные туры: шаги с data-tour селекторами и маршрутами.
+ * Интерактивные туры: шаги с маршрутом и data-tour на странице (не только в меню).
  */
 
 export const TRAINING_TOURS = {
@@ -9,13 +9,17 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/organizations',
-        selector: '[data-tour="nav-organizations"]',
+        selector: '[data-tour="page-organizations"]',
+        fallbackSelectors: ['[data-tour="nav-organizations"]'],
+        openNavGroup: '/settings',
         title: 'Организации',
         body: 'Здесь создают и правят организации аккаунта. Без организации нельзя нормально работать со складом и МП.',
       },
       {
         route: '/warehouses',
-        selector: '[data-tour="nav-warehouses"]',
+        selector: '[data-tour="page-warehouses"]',
+        fallbackSelectors: ['[data-tour="nav-warehouses"]'],
+        openNavGroup: '/settings',
         title: 'Склады',
         body: 'После организации создайте хотя бы один склад — на него пойдут приёмки и остатки.',
       },
@@ -27,14 +31,10 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/integrations',
-        selector: '[data-tour="nav-integrations"]',
-        title: 'Пункт «Интеграции»',
-        body: 'Откройте интеграции в меню настроек.',
-      },
-      {
-        route: '/integrations',
         selector: '[data-tour="page-integrations"]',
-        title: 'Ключи API',
+        fallbackSelectors: ['[data-tour="nav-integrations"]'],
+        openNavGroup: '/settings',
+        title: 'Интеграции',
         body: 'Добавьте кабинеты Ozon, Wildberries или Яндекс Маркет и сохраните ключи. Дождитесь статуса подключения.',
       },
     ],
@@ -45,7 +45,9 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/settings/users',
-        selector: '[data-tour="nav-settings-users"]',
+        selector: '[data-tour="page-users"]',
+        fallbackSelectors: ['[data-tour="nav-settings-users"]'],
+        openNavGroup: '/settings',
         title: 'Пользователи',
         body: 'Приглашайте сотрудников и назначайте роли с нужным набором разделов.',
       },
@@ -57,7 +59,9 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/settings/labels',
-        selector: '[data-tour="nav-settings-labels"]',
+        selector: '[data-tour="page-labels"]',
+        fallbackSelectors: ['[data-tour="nav-settings-labels"]'],
+        openNavGroup: '/settings',
         title: 'Этикетки',
         body: 'Скачайте Print Helper, назначьте принтеры по типам стикеров и проверьте статус подключения.',
       },
@@ -69,15 +73,10 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/products',
-        selector: '[data-tour="nav-products"]',
-        title: 'Каталог',
-        body: 'Здесь весь каталог: поиск, фильтры, создание и печать этикеток.',
-      },
-      {
-        route: '/products',
         selector: '[data-tour="page-products"]',
-        title: 'Список товаров',
-        body: 'Откройте карточку или создайте новый товар. Привяжите offer_id / артикулы маркетплейсов.',
+        fallbackSelectors: ['[data-tour="nav-products"]'],
+        title: 'Каталог товаров',
+        body: 'Здесь весь каталог: поиск, фильтры, создание и печать этикеток. Откройте карточку или создайте новый товар.',
       },
     ],
   },
@@ -87,7 +86,8 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/orders',
-        selector: '[data-tour="nav-orders"]',
+        selector: '[data-tour="page-orders"]',
+        fallbackSelectors: ['[data-tour="nav-orders"]'],
         title: 'Заказы FBS',
         body: 'Лента заказов с площадок. Фильтруйте по статусу и переходите к сборке.',
       },
@@ -111,15 +111,11 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/stock-levels/warehouse',
-        selector: '[data-tour="nav-warehouse"]',
-        title: 'Меню склада',
-        body: 'Раскройте «Склад»: остатки, закупка, приёмка, перемещения и другие операции.',
-      },
-      {
-        route: '/stock-levels/warehouse',
         selector: '[data-tour="page-warehouse"]',
-        title: 'Остатки',
-        body: 'Таблица остатков — точка входа в ежедневный контроль склада.',
+        fallbackSelectors: ['[data-tour="nav-warehouse"]'],
+        openNavGroup: '/stock-levels/warehouse',
+        title: 'Остатки на складе',
+        body: 'Таблица остатков — точка входа в ежедневный контроль склада. Справа в меню — приёмка, перемещения и другие операции.',
       },
     ],
   },
@@ -129,7 +125,9 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/stock-levels/address-storage',
-        selector: '[data-tour="nav-address-storage"]',
+        selector: '[data-tour="page-address-storage"]',
+        fallbackSelectors: ['[data-tour="nav-address-storage"]'],
+        openNavGroup: '/stock-levels/warehouse',
         title: 'Адресное хранение',
         body: 'Настройте ячейки, разложите товар и печатайте этикетки ячеек.',
       },
@@ -141,7 +139,8 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/stock-levels/fbo-supplies',
-        selector: '[data-tour="nav-fbo"]',
+        selector: '[data-tour="page-fbo"]',
+        fallbackSelectors: ['[data-tour="nav-fbo"]'],
         title: 'Поставки FBO',
         body: 'Импорт, резерв, упаковка и отправка поставок на склады маркетплейсов.',
       },
@@ -153,9 +152,11 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/prices',
-        selector: '[data-tour="nav-prices"]',
+        selector: '[data-tour="page-prices"]',
+        fallbackSelectors: ['[data-tour="nav-prices"]'],
+        openNavGroup: '/prices',
         title: 'Цены',
-        body: 'Минимальные цены, стратегии и акции — в этом разделе меню.',
+        body: 'Минимальные цены, стратегии и акции — в этом разделе.',
       },
     ],
   },
@@ -165,9 +166,11 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/analytics/sales',
-        selector: '[data-tour="nav-analytics"]',
-        title: 'Аналитика',
-        body: 'Продажи, юнит-экономика и операционные отчёты — раскройте подменю.',
+        selector: '[data-tour="page-analytics-sales"]',
+        fallbackSelectors: ['[data-tour="nav-analytics"]'],
+        openNavGroup: '/analytics/sales',
+        title: 'Аналитика продаж',
+        body: 'Продажи FBS, юнит-экономика и операционные отчёты — в подменю аналитики.',
       },
     ],
   },
@@ -177,7 +180,8 @@ export const TRAINING_TOURS = {
     steps: [
       {
         route: '/questions',
-        selector: '[data-tour="nav-questions"]',
+        selector: '[data-tour="page-questions"]',
+        fallbackSelectors: ['[data-tour="nav-questions"]'],
         title: 'Вопросы покупателей',
         body: 'Отвечайте на вопросы с маркетплейсов из одного окна.',
       },

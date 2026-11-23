@@ -100,6 +100,7 @@ import { Admin } from './pages/Admin/Admin';
 import { Cabinet } from './pages/Cabinet/Cabinet';
 import { Support } from './pages/Support/Support';
 import { Training } from './pages/Training/Training.jsx';
+import { TrainingTourProvider } from './context/TrainingTourContext.jsx';
 import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
@@ -211,6 +212,7 @@ function App() {
     <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <ErrorBoundary>
         <AuthProvider>
+          <TrainingTourProvider>
           <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/platform-login" element={<Login mode="platform" />} />
@@ -389,6 +391,7 @@ function App() {
           <Route path="/settings/roles" element={<Navigate to="/settings/users?tab=roles" replace />} />
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />
         </Routes>
+          </TrainingTourProvider>
       </AuthProvider>
       </ErrorBoundary>
     </BrowserRouter>

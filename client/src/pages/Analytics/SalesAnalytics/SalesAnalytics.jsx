@@ -109,7 +109,7 @@ export function SalesAnalytics() {
   const taxMeta = data?.taxMeta || null;
 
   return (
-    <div className="sales-analytics fbo-sales-analytics">
+    <div className="sales-analytics fbo-sales-analytics" data-tour="page-analytics-sales">
       <PageTitle
         iconClass="pe-7s-graph2"
         iconBgClass="bg-mean-fruit"
@@ -322,7 +322,7 @@ export function SalesAnalytics() {
       )}
 
       <p className="sales-analytics__hint">
-        Таблица и карточки всегда строятся по отчётам, уже сохранённым в ERP (ночная загрузка и ручная
+        Таблица и карточки всегда строятся по отчётам, уже сохранённым в MySell (ночная загрузка и ручная
         кнопка). Смена периода или маркетплейса только пересчитывает эти данные — без запросов к API МП.
         Чтобы подтянуть свежий период вне расписания, нажмите «Загрузить с маркетплейсов» (WB —
         reportDetailByPeriod FBS, Ozon — finance/transaction/list FBS, Яндекс — united-netting FBS). Даты —

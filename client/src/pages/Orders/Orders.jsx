@@ -228,7 +228,7 @@ function orderArticleLabel(o) {
   return s !== '' ? s : '—';
 }
 
-/** Наш склад ERP, на который пришёл заказ. Числовой ID склада МП не показываем. */
+/** Наш склад MySell, на который пришёл заказ. Числовой ID склада МП не показываем. */
 function orderIncomingWarehouseLabel(order, warehouses, mappings) {
   const asTitle = (value) => {
     const t = String(value ?? '').trim();
@@ -2552,7 +2552,7 @@ export function Orders() {
   }
 
   return (
-    <div className="card orders-page">
+    <div className="card orders-page" data-tour="page-orders">
       {ordersAutoSyncPaused && (
         <div
           role="status"

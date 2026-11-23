@@ -1774,7 +1774,7 @@ export function Assembly() {
 
   if (loading) {
     return (
-      <div className="card assembly-page">
+      <div className="card assembly-page" data-tour="page-assembly">
         <div className="loading">Загрузка заказов...</div>
       </div>
     );
@@ -1782,7 +1782,7 @@ export function Assembly() {
 
   if (error) {
     return (
-      <div className="card assembly-page">
+      <div className="card assembly-page" data-tour="page-assembly">
         <div className="error">Ошибка: {error}</div>
       </div>
     );

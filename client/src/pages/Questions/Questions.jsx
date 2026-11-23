@@ -347,7 +347,7 @@ export function Questions() {
   const dateSortLabel = sortField === 'date' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   return (
-    <div className="card questions-page">
+    <div className="card questions-page" data-tour="page-questions">
       <h1 className="title">Вопросы</h1>
       <p className="subtitle">
         Только неотвеченные вопросы с маркетплейсов. Нажмите на строку, чтобы открыть переписку и ответить. После
