@@ -8,7 +8,7 @@
 #define MyAppExeName "erm-print-helper.exe"
 
 ; Версию можно подставлять из package.json вручную или скриптом (см. build-installer.ps1)
-#define MyAppVersion "1.0.5"
+#define MyAppVersion "1.0.6"
 
 [Setup]
 AppId={{8B5B7F35-8A66-4A4E-A8C3-0D5C2B9F1E4A}
@@ -44,12 +44,13 @@ Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion restar
 Source: "..\dist\SumatraPDF.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "..\dist\tray.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\README.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\run-tray.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\traybin\*"; DestDir: "{app}\traybin"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startup
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; IconFilename: "{app}\tray.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; IconFilename: "{app}\tray.ico"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; Tasks: startup
 
 [Code]
 procedure KillPrintHelperProcesses;
@@ -77,4 +78,4 @@ end;
 [Run]
 ; runasoriginaluser + nowait: родительский процесс сразу выходит (фоновый child) —
 ; не ждём его и не считаем это ошибкой установки
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить Print Helper"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\run-tray.vbs"""; Description: "Запустить Print Helper"; Flags: nowait postinstall skipifsilent runasoriginaluser

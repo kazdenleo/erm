@@ -36,24 +36,30 @@ const { spawn } = require('child_process'); // Sumatra + restart
 const { PDFDocument } = require('pdf-lib');
 
 const PORT = Number(process.env.PRINT_HELPER_PORT) || 9100;
+const SUMATRA_TIMEOUT_MS = Number(process.env.PRINT_HELPER_SUMATRA_TIMEOUT_MS) || 45000;
+const POWERSHELL_TIMEOUT_MS = Number(process.env.PRINT_HELPER_PS_TIMEOUT_MS) || 12000;
+const FETCH_TIMEOUT_MS = Number(process.env.PRINT_HELPER_FETCH_TIMEOUT_MS) || 30000;
+const PRINTERS_CACHE_MS = 60000;
+const CLEAN_EXIT_FLAG = '.erm-print-helper-clean-exit';
+
 const app = express();
-// Chrome Private Network Access: HTTPS-сайт → http://127.0.0.1 требует этот заголовок в preflight.
+// Chrome Private Network Access: HTTPS-сайт → http://127.0.0.1 требует этот заголовок
+// и на preflight, и на самом ответе (иначе fetch падает → в ERM открывается окно печати).
 app.use((req, res, next) => {
-  if (String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true') {
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
-  }
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
   next();
 });
 app.use(
   cors({
     origin: true,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   })
 );
 app.use(
   express.raw({
-    type: ['application/pdf', 'application/octet-stream', 'image/png'],
+    // Любой Content-Type: браузер/axios иногда шлёт charset или octet-stream.
+    type: () => true,
     limit: '40mb',
   })
 );
@@ -61,6 +67,44 @@ app.use(
 function getExeDir() {
   return path.dirname(process.execPath);
 }
+
+function logLine(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  try {
+    console.log(line);
+  } catch (_) {}
+  try {
+    fs.appendFileSync(path.join(getExeDir(), 'print-helper.log'), line + '\n');
+  } catch (_) {}
+}
+
+function markCleanExit() {
+  try {
+    fs.writeFileSync(path.join(getExeDir(), CLEAN_EXIT_FLAG), String(Date.now()));
+  } catch (_) {}
+}
+
+function clearCleanExitFlag() {
+  try {
+    const p = path.join(getExeDir(), CLEAN_EXIT_FLAG);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch (_) {}
+}
+
+process.on('uncaughtException', (err) => {
+  logLine(`uncaughtException: ${err && err.stack ? err.stack : err}`);
+});
+process.on('unhandledRejection', (reason) => {
+  logLine(`unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
+process.on('exit', (code) => {
+  try {
+    fs.appendFileSync(
+      path.join(getExeDir(), 'print-helper.log'),
+      `[${new Date().toISOString()}] process exit code=${code}\n`
+    );
+  } catch (_) {}
+});
 
 // Трей ищет ./traybin относительно cwd — всегда «дом» = папка exe.
 try {
@@ -185,13 +229,26 @@ function runPowerShell(command) {
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', wrapped],
       { windowsHide: true, shell: false }
     );
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch (_) {}
+      finish({ names: [], err: `powershell timeout ${POWERSHELL_TIMEOUT_MS}ms` });
+    }, POWERSHELL_TIMEOUT_MS);
     const chunks = [];
     let err = '';
     proc.stdout.on('data', (d) => chunks.push(Buffer.from(d)));
     proc.stderr.on('data', (d) => {
       err += Buffer.from(d).toString('utf8');
     });
-    proc.on('error', (e) => resolve({ names: [], err: e.message || 'powershell spawn failed' }));
+    proc.on('error', (e) => finish({ names: [], err: e.message || 'powershell spawn failed' }));
     proc.on('close', () => {
       const raw = Buffer.concat(chunks);
       // Иногда PS всё равно отдаёт UTF-16 — определяем по BOM / нулевым байтам.
@@ -208,7 +265,7 @@ function runPowerShell(command) {
         .map((s) => s.replace(/\u0000/g, '').trim())
         .filter(Boolean)
         .filter((s) => !/^name$/i.test(s));
-      resolve({ names: [...new Set(names)], err: err.trim() });
+      finish({ names: [...new Set(names)], err: err.trim() });
     });
   });
 }
@@ -217,8 +274,13 @@ function runPowerShell(command) {
  * Список принтеров Windows.
  * Get-Printer есть не везде (PrintManagement); Win32_Printer / wmic — запасные пути.
  */
+let printersCache = { at: 0, value: null };
+
 async function listWindowsPrinters() {
   if (process.platform !== 'win32') return { printers: [], source: null, error: null };
+  if (printersCache.value && Date.now() - printersCache.at < PRINTERS_CACHE_MS) {
+    return printersCache.value;
+  }
 
   const attempts = [
     {
@@ -241,41 +303,58 @@ async function listWindowsPrinters() {
   for (const attempt of attempts) {
     const { names, err } = await runPowerShell(attempt.command);
     if (names.length) {
-      logTrayDiag(getExeDir(), `printers via ${attempt.source}: ${names.length}`);
-      return { printers: names, source: attempt.source, error: null };
+      logLine(`printers via ${attempt.source}: ${names.length}`);
+      const value = { printers: names, source: attempt.source, error: null };
+      printersCache = { at: Date.now(), value };
+      return value;
     }
     if (err) {
       errors.push(`${attempt.source}: ${err.slice(0, 180)}`);
-      console.warn(`[print-helper] ${attempt.source}:`, err.slice(0, 200));
+      logLine(`${attempt.source}: ${err.slice(0, 200)}`);
     }
   }
 
   // Последний запасной: wmic (OEM-кодировка, но имена латиницей обычно ок).
   const wmic = await new Promise((resolve) => {
     const proc = spawn('wmic', ['printer', 'get', 'name'], { windowsHide: true, shell: false });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch (_) {}
+      finish({ names: [], err: `wmic timeout ${POWERSHELL_TIMEOUT_MS}ms` });
+    }, POWERSHELL_TIMEOUT_MS);
     const chunks = [];
     let err = '';
     proc.stdout.on('data', (d) => chunks.push(Buffer.from(d)));
     proc.stderr.on('data', (d) => {
       err += Buffer.from(d).toString('utf8');
     });
-    proc.on('error', (e) => resolve({ names: [], err: e.message }));
+    proc.on('error', (e) => finish({ names: [], err: e.message }));
     proc.on('close', () => {
       const text = Buffer.concat(chunks).toString('utf8');
       const names = text
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter((s) => s && !/^name$/i.test(s));
-      resolve({ names: [...new Set(names)], err: err.trim() });
+      finish({ names: [...new Set(names)], err: err.trim() });
     });
   });
   if (wmic.names.length) {
-    return { printers: wmic.names, source: 'wmic', error: null };
+    const value = { printers: wmic.names, source: 'wmic', error: null };
+    printersCache = { at: Date.now(), value };
+    return value;
   }
   if (wmic.err) errors.push(`wmic: ${wmic.err.slice(0, 180)}`);
 
   const error = errors.join('; ') || 'Windows не вернул ни одного принтера';
-  logTrayDiag(getExeDir(), `printers empty: ${error}`);
+  logLine(`printers empty: ${error}`);
   return { printers: [], source: null, error };
 }
 
@@ -300,13 +379,36 @@ function runSumatraOnce(sumatra, fullPath, printer, printSettings) {
       shell: false,
       cwd: path.dirname(fullPath),
     });
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else {
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch (_) {}
+      finish(() =>
         reject(
           new Error(
-            `SumatraPDF exit code ${code}${printer ? ` (принтер: ${printer})` : ''}${printSettings ? ` [${printSettings}]` : ''}`
+            `SumatraPDF timeout ${SUMATRA_TIMEOUT_MS}ms${printer ? ` (принтер: ${printer})` : ''}${
+              printSettings ? ` [${printSettings}]` : ''
+            }`
+          )
+        )
+      );
+    }, SUMATRA_TIMEOUT_MS);
+    proc.on('error', (e) => finish(() => reject(e)));
+    proc.on('close', (code) => {
+      if (code === 0) finish(() => resolve());
+      else {
+        finish(() =>
+          reject(
+            new Error(
+              `SumatraPDF exit code ${code}${printer ? ` (принтер: ${printer})` : ''}${printSettings ? ` [${printSettings}]` : ''}`
+            )
           )
         );
       }
@@ -429,7 +531,7 @@ app.get('/print', async (req, res) => {
   }
 
   try {
-    const response = await fetch(String(labelUrl), { redirect: 'follow' });
+    const response = await fetch(String(labelUrl), { redirect: 'follow', timeout: FETCH_TIMEOUT_MS });
     if (!response.ok) {
       return res.status(502).json({ ok: false, message: `Не удалось загрузить этикетку: ${response.status}` });
     }
@@ -497,6 +599,8 @@ app.get('/health', (req, res) => {
 
 // Управление без окна: выход и перезапуск (для запуска через run-tray.vbs)
 app.get('/exit', (req, res) => {
+  markCleanExit();
+  logLine('exit requested via /exit');
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send('<html><body><p>Print Helper завершён.</p><p><a href="http://127.0.0.1:' + PORT + '">Запустить снова</a> — запустите run-tray.vbs из папки с exe.</p></body></html>');
   setTimeout(() => process.exit(0), 300);
@@ -511,7 +615,9 @@ app.get('/restart', (req, res) => {
   if (!fs.existsSync(vbsPath)) {
     return res.status(404).send('Файл run-tray.vbs не найден рядом с exe. Перезапустите вручную.');
   }
-  spawn('wscript.exe', [vbsPath], { cwd: exeDir, detached: true, stdio: 'ignore', windowsHide: true });
+  // Без clean-exit: watchdog в run-tray.vbs сам поднимет процесс снова.
+  logLine('restart requested via /restart');
+  spawn('wscript.exe', [vbsPath], { cwd: exeDir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send('<html><body><p>Перезапуск… Окно закроется.</p></body></html>');
   setTimeout(() => process.exit(0), 500);
@@ -537,8 +643,9 @@ function startTray() {
       checked: false,
       enabled: true,
       click: () => {
+        logLine('restart requested via tray');
         if (fs.existsSync(vbsPath)) {
-          spawn('wscript.exe', [vbsPath], { cwd: exeDir, detached: true, stdio: 'ignore', windowsHide: true });
+          spawn('wscript.exe', [vbsPath], { cwd: exeDir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
         }
         process.exit(0);
       },
@@ -549,6 +656,8 @@ function startTray() {
       checked: false,
       enabled: true,
       click: () => {
+        markCleanExit();
+        logLine('exit requested via tray');
         if (systrayRef) systrayRef.kill(false);
         process.exit(0);
       },
@@ -583,7 +692,17 @@ function startTray() {
   }
 }
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[print-helper] http://127.0.0.1:${PORT}`);
+clearCleanExitFlag();
+const server = app.listen(PORT, '127.0.0.1', () => {
+  logLine(`listening http://127.0.0.1:${PORT} pid=${process.pid}`);
   startTray();
 });
+server.on('error', (err) => {
+  logLine(`listen error: ${err && err.message ? err.message : err}`);
+  if (err && err.code === 'EADDRINUSE') {
+    process.exit(1);
+  }
+});
+// Не даём зависшим keep-alive/сокетам держать сервер «мёртвым» бесконечно.
+server.headersTimeout = 120000;
+server.requestTimeout = 120000;
