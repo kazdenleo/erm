@@ -7,5 +7,7 @@ APP_ROOT="${APP_ROOT:-/opt/erm}"
 
 cd "$APP_ROOT/client"
 umask 022
+export DISABLE_ESLINT_PLUGIN=true
+export CI="${CI:-false}"
 npm run build
 bash "$APP_ROOT/scripts/vps-fix-client-build-perms.sh"

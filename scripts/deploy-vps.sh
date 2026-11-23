@@ -52,6 +52,10 @@ BUILD_NEW="$APP_ROOT/client/build.new"
 BUILD_OLD="$APP_ROOT/client/build.old"
 rm -rf "$BUILD_NEW"
 export BUILD_PATH=build.new
+# На VPS после npm ci иногда ломается eslint (Cannot find module './no-await-in-loop').
+# Сборка в prod не должна зависеть от lint-плагина webpack.
+export DISABLE_ESLINT_PLUGIN=true
+export CI="${CI:-false}"
 npm run build
 has_main_js() {
   local dir="$1/static/js"
@@ -114,7 +118,7 @@ pm2 list
 echo "==> health check"
 sleep 2
 curl -sf "http://127.0.0.1:${PORT:-3001}/health" | head -c 400 || echo "WARN: /health failed — см. pm2 logs $PM2_NAME"
-DOMAIN="${DOMAIN:-dttrade.ru}"
+DOMAIN="${DOMAIN:-mysell.su}"
 curl -sf -o /dev/null -w "HTTPS /api/auth/me → %{http_code}\n" -k -H "Host: $DOMAIN" "https://127.0.0.1/api/auth/me" 2>/dev/null \
   || echo "WARN: nginx HTTPS check skipped"
 
