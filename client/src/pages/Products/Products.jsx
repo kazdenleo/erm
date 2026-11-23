@@ -1084,7 +1084,7 @@ export function Products() {
   }
 
   return (
-    <div>
+    <div data-tour="page-products">
       <PageTitle
         iconClass="pe-7s-box2"
         iconBgClass="bg-mean-fruit"

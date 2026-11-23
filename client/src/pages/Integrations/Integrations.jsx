@@ -351,7 +351,7 @@ export function Integrations() {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-tour="page-integrations">
       <h1 className="title">Интеграции</h1>
       <p className="subtitle">
         Настройка подключений к маркетплейсам

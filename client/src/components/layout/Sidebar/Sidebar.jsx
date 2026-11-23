@@ -83,6 +83,7 @@ const stockWarehouseChildren = [
     label: '🗄 Адресное хранение',
     iconClass: 'pe-7s-angle-right',
     sectionKey: 'warehouse_stock',
+    tourId: 'nav-address-storage',
   },
   {
     path: '/stock-levels/marking',
@@ -116,28 +117,30 @@ const analyticsChildren = [
 ];
 
 const menuItems = [
-  { path: '/', label: 'Главная', iconClass: 'pe-7s-home', sectionKey: 'analytics' },
+  { path: '/', label: 'Главная', iconClass: 'pe-7s-home', sectionKey: 'analytics', tourId: 'nav-home' },
   {
     path: '/analytics/sales',
     label: 'Аналитика',
     iconClass: 'pe-7s-graph2',
+    tourId: 'nav-analytics',
     children: analyticsChildren,
   },
   { path: '/card-work', label: 'Работа с карточками', iconClass: 'pe-7s-note2', sectionKey: 'card_work' },
-  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
-  { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
+  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products', tourId: 'nav-products' },
+  { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders', tourId: 'nav-orders' },
   { path: '/customers', label: 'Клиенты', iconClass: 'pe-7s-users', sectionKey: 'customers', requiresPrivateOrders: true },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
-  { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
-  { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
+  { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo', tourId: 'nav-fbo' },
+  { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions', tourId: 'nav-questions' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2', sectionKey: 'reviews' },
   {
     path: '/stock-levels/warehouse',
     label: 'Склад',
     iconClass: 'pe-7s-display2',
+    tourId: 'nav-warehouse',
     children: stockWarehouseChildren,
   },
-  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices', children: [
+  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices', tourId: 'nav-prices', children: [
     { path: '/prices', label: 'Минимальные цены', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/settings', label: 'Настройки', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/strategies', label: 'Стратегии', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
@@ -171,19 +174,40 @@ const menuItems = [
       },
       { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket', sectionKey: 'settings_attributes' },
       { path: '/settings/certificates', label: 'Сертификаты', iconClass: 'pe-7s-portfolio', sectionKey: 'settings_certificates' },
-      { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels' },
+      { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels', tourId: 'nav-settings-labels' },
       { path: '/settings/app', label: 'Приложение', iconClass: 'pe-7s-phone', sectionKey: 'settings_app' },
       { path: '/settings/content', label: 'Контент', iconClass: 'pe-7s-photo', sectionKey: 'settings_video_cover' },
-      { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', tenantAdminOnly: true, sectionKey: 'settings_users' },
-      { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture', sectionKey: 'organizations' },
-      { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home', sectionKey: 'warehouses' },
+      { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', tenantAdminOnly: true, sectionKey: 'settings_users', tourId: 'nav-settings-users' },
+      { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture', sectionKey: 'organizations', tourId: 'nav-organizations' },
+      { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home', sectionKey: 'warehouses', tourId: 'nav-warehouses' },
       { path: '/suppliers', label: 'Поставщики', iconClass: 'pe-7s-truck', sectionKey: 'suppliers' },
       { path: '/categories', label: 'Категории', iconClass: 'pe-7s-folder', sectionKey: 'categories' },
       { path: '/brands', label: 'Бренды', iconClass: 'pe-7s-star', sectionKey: 'brands' },
-      { path: '/integrations', label: 'Интеграции', iconClass: 'pe-7s-plug', sectionKey: 'integrations' }
+      { path: '/integrations', label: 'Интеграции', iconClass: 'pe-7s-plug', sectionKey: 'integrations', tourId: 'nav-integrations' }
     ]
-  }
+  },
+  { path: '/training', label: 'Обучение', iconClass: 'pe-7s-study', tourId: 'nav-training' },
 ];
+
+/** data-tour для интерактивных туров обучения */
+function tourAttrForMenuItem(item) {
+  if (item?.tourId) return item.tourId;
+  const path = String(item?.path || '').split('?')[0];
+  const map = {
+    '/': 'nav-home',
+    '/analytics/sales': 'nav-analytics',
+    '/products': 'nav-products',
+    '/orders': 'nav-orders',
+    '/questions': 'nav-questions',
+    '/reviews': 'nav-reviews',
+    '/prices': 'nav-prices',
+    '/stock-levels/warehouse': 'nav-warehouse',
+    '/stock-levels/address-storage': 'nav-address-storage',
+    '/stock-levels/fbo-supplies': 'nav-fbo',
+    '/training': 'nav-training',
+  };
+  return map[path] || undefined;
+}
 
 export function Sidebar({ onNavigate, isSidebarClosed = false }) {
   const location = useLocation();
@@ -487,11 +511,13 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
                     : showTBadge
                       ? 'Моих открытых задач'
                       : '';
+                const tourId = tourAttrForMenuItem(item);
                 return (
                   <li key={item.path}>
                     <Link
                       to={item.path}
                       className={active ? 'mm-active' : ''}
+                      data-tour={tourId}
                       onClick={() => {
                         onNavigate?.();
                       }}
@@ -508,6 +534,7 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
                 );
               }
 
+              const groupTourId = tourAttrForMenuItem(item);
               return (
                 <li key={item.path} className={isOpen ? 'mm-active' : ''}>
                   <button
@@ -519,6 +546,7 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
                     }}
                     aria-expanded={isOpen ? 'true' : 'false'}
                     className={`metismenu-link metismenu-link--toggle ${active ? 'mm-active' : ''}`}
+                    data-tour={groupTourId}
                   >
                     <i className={`metismenu-icon ${item.iconClass}`} />
                     {item.label}
@@ -532,11 +560,13 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
                         sub.warehouseOp === 'return_customer' && returnsBadgeTotal > 0;
                       const returnsBadgeText =
                         returnsBadgeTotal > 99 ? '99+' : String(returnsBadgeTotal);
+                      const subTourId = tourAttrForMenuItem(sub);
                       return (
                         <li key={sub.warehouseOp ?? sub.settingsTab ?? sub.path}>
                           <Link
                             to={sub.path}
                             className={subActive ? 'mm-active' : ''}
+                            data-tour={subTourId}
                             onClick={() => onNavigate?.()}
                           >
                             <i className={`metismenu-icon ${sub.iconClass || ''}`} />

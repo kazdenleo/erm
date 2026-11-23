@@ -223,7 +223,7 @@ export function Onboarding() {
     <div className="onboarding-page">
       <div className="onboarding-card card">
         <div className="onboarding-brand">
-          <Link to="/">Программа Ирина</Link>
+          <Link to="/">MySell</Link>
         </div>
         <h1 className="onboarding-title">Настройка аккаунта</h1>
         <p className="onboarding-lead">
@@ -456,6 +456,9 @@ export function Onboarding() {
             </p>
             <ul>
               <li>
+                <Link to="/training">Обучение</Link> — пошаговые инструкции и туры по разделам
+              </li>
+              <li>
                 <Link to="/products">Товары</Link> — каталог и привязка к МП
               </li>
               <li>
@@ -466,11 +469,16 @@ export function Onboarding() {
               </li>
             </ul>
             <p className="text-muted small">
-              Пробный период 7 дней уже идёт. Тарифы: <Link to="/pricing">/pricing</Link>.
+              Пробный период уже идёт. Тарифы: <Link to="/pricing">/pricing</Link>.
             </p>
-            <Button type="button" variant="primary" onClick={goHome}>
-              Перейти в кабинет
-            </Button>
+            <div className="onboarding-actions">
+              <Button type="button" variant="primary" onClick={goHome}>
+                Перейти в кабинет
+              </Button>
+              <Link to="/training" className="btn btn-light">
+                Открыть обучение
+              </Link>
+            </div>
           </div>
         )}
       </div>

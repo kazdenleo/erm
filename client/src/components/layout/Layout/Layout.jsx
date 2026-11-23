@@ -12,6 +12,7 @@ import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 import { SubscriptionBanner } from '../../SubscriptionBanner/SubscriptionBanner.jsx';
+import { TrainingTourProvider } from '../../../context/TrainingTourContext.jsx';
 
 const MOBILE_LAYOUT_MQ = '(max-width: 991.98px)';
 
@@ -72,6 +73,7 @@ export function Layout({ children }) {
 
   return (
     <ProductCardModalProvider>
+      <TrainingTourProvider>
       <div
         className={[
           'app-container',
@@ -99,7 +101,7 @@ export function Layout({ children }) {
           onCloseMobileSidebar={closeMobileSidebar}
         />
         <div className="app-main">
-          <Sidebar onNavigate={closeMobileSidebar} />
+          <Sidebar onNavigate={closeMobileSidebar} isSidebarClosed={isSidebarClosed && !isMobileViewport} />
           <div className="app-main__outer">
             <div className="app-main__inner">
               {!authLoading && user && profileId != null && hasOrganizations === false && (
@@ -122,6 +124,7 @@ export function Layout({ children }) {
           </div>
         </div>
       </div>
+      </TrainingTourProvider>
     </ProductCardModalProvider>
   );
 }

@@ -22,6 +22,7 @@ export function Header({
   const profileRef = useRef(null);
   const onNotifications = location.pathname.startsWith('/notifications');
   const onSupport = location.pathname.startsWith('/support');
+  const onTraining = location.pathname.startsWith('/training');
   const onCabinet = location.pathname.startsWith('/cabinet');
   const onPlatform = location.pathname.startsWith('/platform');
   const fullUserName =
@@ -99,7 +100,7 @@ export function Header({
           <GlobalSearch />
         </div>
 
-        <div className="header-quick-actions" aria-label="Уведомления, профиль и техподдержка">
+        <div className="header-quick-actions" aria-label="Уведомления, обучение, профиль и техподдержка">
           <Link
             to="/notifications"
             className={`header-quick-action${onNotifications ? ' header-quick-action--active' : ''}`}
@@ -113,6 +114,15 @@ export function Header({
                 {notificationsCount > 99 ? '99+' : notificationsCount}
               </span>
             ) : null}
+          </Link>
+          <Link
+            to="/training"
+            className={`header-quick-action${onTraining ? ' header-quick-action--active' : ''}`}
+            title="Обучение"
+            aria-label="Обучение"
+            onClick={onCloseMobileSidebar}
+          >
+            <i className="pe-7s-study" aria-hidden />
           </Link>
           <Link
             to="/support"

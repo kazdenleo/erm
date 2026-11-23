@@ -99,6 +99,7 @@ import { SettingsUsers } from './pages/Settings/Users/Users';
 import { Admin } from './pages/Admin/Admin';
 import { Cabinet } from './pages/Cabinet/Cabinet';
 import { Support } from './pages/Support/Support';
+import { Training } from './pages/Training/Training.jsx';
 import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
@@ -295,6 +296,8 @@ function App() {
           </Route>
           <Route path="/cabinet" element={<ProtectedRoute><Layout><Cabinet /></Layout></ProtectedRoute>} />
           <Route path="/support" element={<ProtectedRoute><Layout><Support /></Layout></ProtectedRoute>} />
+          <Route path="/training/:lessonId" element={<ProtectedRoute><Layout><Training /></Layout></ProtectedRoute>} />
+          <Route path="/training" element={<ProtectedRoute><Layout><Training /></Layout></ProtectedRoute>} />
           <Route path="/products/enrichment" element={<ProtectedRoute><ProductEnrichmentRoute /></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
           <Route path="/products/rich-content" element={<RedirectRichContent />} />

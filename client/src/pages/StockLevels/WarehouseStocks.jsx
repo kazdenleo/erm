@@ -3584,7 +3584,7 @@ export function WarehouseStocks() {
   }
 
   return (
-    <>
+    <div data-tour="page-warehouse">
       {activeTab === 'table' && (
         <div className="erp-filter-row stock-levels-view-tabs" role="tablist">
           {[
@@ -4681,6 +4681,6 @@ export function WarehouseStocks() {
           </Button>
         </div>
       </Modal>
-    </>
+    </div>
   );
 }

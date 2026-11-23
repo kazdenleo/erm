@@ -1789,7 +1789,7 @@ export function Assembly() {
   }
 
   return (
-    <div className="card assembly-page">
+    <div className="card assembly-page" data-tour="page-assembly">
       {ordersAutoSyncPaused && (
         <p
           className="assembly-sync-paused-banner"
