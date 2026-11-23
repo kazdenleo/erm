@@ -185,7 +185,7 @@ const menuItems = [
   }
 ];
 
-export function Sidebar({ onNavigate }) {
+export function Sidebar({ onNavigate, isSidebarClosed = false }) {
   const location = useLocation();
   const { user, isAdmin, isProfileAdmin, isAccountAdmin, isTenantAccountAdmin, profile, features } = useAuth();
   const canManageUsers = isAccountAdmin;
