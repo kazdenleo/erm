@@ -508,13 +508,59 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
     setBusy(true);
     setNotice(null);
     try {
-      const blob = await addressStorageApi.labelsPdf(warehouseId, ids, { pageMode });
       const filename =
         pageMode === 'a4' ? `cells-a4-${warehouseId}.pdf` : `cells-${warehouseId}.pdf`;
       const base = normalizePrintHelperBase(resolvePrintHelperUrl(printHelperUrl));
       const printer = getLabelPrinter('cell');
+      const helperOk = Boolean(base && canReachPrintHelper(base));
+
+      // Режим «Этикетки»: по одной странице на ячейку. Старый Print Helper с настройкой «1,…»
+      // печатал только 1-ю страницу многостраничного PDF — шлём по одной этикетке.
+      if (helperOk && pageMode === 'single' && ids.length > 1) {
+        let okCount = 0;
+        let lastErr = '';
+        for (let i = 0; i < ids.length; i += 1) {
+          const one = await addressStorageApi.labelsPdf(warehouseId, [ids[i]], { pageMode: 'single' });
+          if (!(one instanceof Blob) || one.size <= 0) {
+            lastErr = 'Пустой PDF этикетки';
+            break;
+          }
+          const printed = await printViaPrintHelper({
+            printHelperUrl: base,
+            kind: 'cell',
+            pdfBuffer: one,
+            orderId: `cell-${ids[i]}-${Date.now()}-${i}`,
+            printer,
+            timeoutMs: 60000,
+          });
+          if (!printed.ok) {
+            lastErr = printed.message || 'ошибка печати';
+            break;
+          }
+          okCount += 1;
+        }
+        if (okCount === ids.length) {
+          setNotice({
+            ok: true,
+            text: printer
+              ? `Отправлено на принтер «${printer}»: ${okCount} этикеток`
+              : `Отправлено на принтер по умолчанию: ${okCount} этикеток`,
+          });
+          return;
+        }
+        if (okCount > 0) {
+          setNotice({
+            ok: false,
+            text: `Напечатано ${okCount} из ${ids.length}. Остальное не ушло: ${lastErr || 'ошибка Print Helper'}`,
+          });
+          return;
+        }
+        // Если ни одна не ушла — ниже скачаем общий PDF.
+      }
+
+      const blob = await addressStorageApi.labelsPdf(warehouseId, ids, { pageMode });
       let printed = { ok: false, message: '' };
-      if (base && canReachPrintHelper(base) && blob instanceof Blob && blob.size > 0) {
+      if (helperOk && blob instanceof Blob && blob.size > 0) {
         printed = await printViaPrintHelper({
           printHelperUrl: base,
           kind: 'cell',

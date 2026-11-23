@@ -424,8 +424,10 @@ async function printFile(filePath, printerName) {
   const fullPath = path.resolve(filePath);
   const printer = printerName != null ? String(printerName).trim() : '';
   // Этикетки 58×40 (шир×выс) — landscape обязателен, иначе стикер выходит «книжкой».
+  // Без «1» в начале: в SumatraPDF число = диапазон страниц, «1» печатало только 1-ю страницу
+  // (ломало пачки этикеток ячеек: 10 стр. PDF → 1 стикер).
   // Без landscape оставляем только как fallback при exit code ≠ 0.
-  const settingsList = ['1,noscale,landscape', 'fit,landscape', '1,noscale', 'fit'];
+  const settingsList = ['noscale,landscape', 'fit,landscape', 'noscale', 'fit'];
   const printersToTry = printer ? [printer, ''] : [''];
   let lastErr = null;
   for (const p of printersToTry) {
