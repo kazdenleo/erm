@@ -13,6 +13,7 @@ import {
   isProfileProductionEnabled,
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
+import { BrandLogo } from '../../brand/BrandLogo.jsx';
 import { useChestnyZnakEnabled } from '../../../hooks/useChestnyZnakEnabled.js';
 import { questionsApi } from '../../../services/questions.api';
 import { reviewsApi } from '../../../services/reviews.api';
@@ -20,6 +21,10 @@ import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api'
 import { marketplaceReturnClaimsApi } from '../../../services/marketplaceReturnClaims.api';
 import { employeeTasksApi } from '../../../services/employeeTasks.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
+import {
+  analyticsGroupsToSidebarChildren,
+  filterAnalyticsGroups,
+} from '../../../pages/Analytics/analyticsNav.js';
 
 /** Подпункты «Склад»: операции склада (?op=) + закупка */
 const opsByKey = Object.fromEntries((WAREHOUSE_OPERATION_OPS || []).map((t) => [t.op, t]));
@@ -92,35 +97,15 @@ const stockWarehouseChildren = [
   },
 ];
 
-const analyticsChildren = [
-  {
-    path: '/analytics/sales',
-    label: 'Продажи FBS',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-  },
-  {
-    path: '/analytics/fbo-sales',
-    label: 'Продажи FBO',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-    requiresFbo: true,
-  },
-  {
-    path: '/analytics/unit-economics',
-    label: 'Юнит-экономика',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_unit_economics',
-  },
-];
-
 const menuItems = [
   { path: '/', label: 'Главная', iconClass: 'pe-7s-home', sectionKey: 'analytics' },
   {
-    path: '/analytics/sales',
+    path: '/analytics',
     label: 'Аналитика',
     iconClass: 'pe-7s-graph2',
-    children: analyticsChildren,
+    /** children подставляются в Sidebar из analyticsNav (группы). */
+    children: [],
+    analyticsNav: true,
   },
   { path: '/card-work', label: 'Работа с карточками', iconClass: 'pe-7s-note2', sectionKey: 'card_work' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
@@ -130,6 +115,7 @@ const menuItems = [
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2', sectionKey: 'reviews' },
+  { path: '/marketplace-news', label: 'Новости МП', iconClass: 'pe-7s-news-paper' },
   {
     path: '/stock-levels/warehouse',
     label: 'Склад',
@@ -184,7 +170,7 @@ const menuItems = [
   }
 ];
 
-export function Sidebar({ onNavigate }) {
+export function Sidebar({ onNavigate, isSidebarClosed = false }) {
   const location = useLocation();
   const { user, isAdmin, isProfileAdmin, isAccountAdmin, isTenantAccountAdmin, profile, features } = useAuth();
   const canManageUsers = isAccountAdmin;
@@ -357,7 +343,7 @@ export function Sidebar({ onNavigate }) {
     if (location.pathname === '/tasks') loadTasksStats();
   }, [location.pathname, loadTasksStats]);
 
-  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; ?tab= у /settings; без ложного highlight родителя вроде /prices на /prices/strategies) */
+  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; ?tab= у /settings; matchPaths групп аналитики) */
   const childMatchesLocation = useCallback((sub, loc, siblings = []) => {
     const pathname = loc.pathname;
     const sp = new URLSearchParams(loc.search || '');
@@ -367,6 +353,17 @@ export function Sidebar({ onNavigate }) {
     }
     if (sub.settingsTab) {
       return pathname === '/settings' && sp.get('tab') === String(sub.settingsTab);
+    }
+    if (sub.matchExact) {
+      const exact = String(sub.path || '').split('#')[0].split('?')[0];
+      return Boolean(exact) && pathname === exact;
+    }
+    if (Array.isArray(sub.matchPaths) && sub.matchPaths.length > 0) {
+      return sub.matchPaths.some((p) => {
+        const base = String(p || '').split('#')[0].split('?')[0];
+        if (!base) return false;
+        return pathname === base || pathname.startsWith(`${base}/`);
+      });
     }
     const rawPath = String(sub.path || '');
     const base = rawPath.split('#')[0].split('?')[0];
@@ -385,6 +382,7 @@ export function Sidebar({ onNavigate }) {
       if (other === sub) return false;
       if (other.warehouseOp != null) return false;
       if (other.settingsTab) return false;
+      if (other.matchExact || (Array.isArray(other.matchPaths) && other.matchPaths.length)) return false;
       const otherBase = String(other.path || '').split('#')[0].split('?')[0];
       if (!otherBase || otherBase.length <= base.length) return false;
       return pathname === otherBase || pathname.startsWith(`${otherBase}/`);
@@ -395,6 +393,9 @@ export function Sidebar({ onNavigate }) {
   const findActiveGroup = useCallback((loc) => {
     const path = loc.pathname || '';
     const group = menuItems.find((it) => {
+      if (it.analyticsNav) {
+        return path === '/analytics' || path.startsWith('/analytics/');
+      }
       if (!Array.isArray(it.children) || it.children.length === 0) return false;
       if (path === it.path || (it.path !== '/' && path.startsWith(it.path))) return true;
       return it.children.some((sub) => childMatchesLocation(sub, loc, it.children));
@@ -414,21 +415,46 @@ export function Sidebar({ onNavigate }) {
     });
   }, [location.pathname, location.search, findActiveGroup, location]);
 
+  const analyticsSidebarChildren = useMemo(() => {
+    const groups = filterAnalyticsGroups({
+      features,
+      isAccountAdmin,
+      isAdmin,
+      fboEnabled: fboMenuEnabled,
+      isNavFeatureEnabled,
+    });
+    return [
+      {
+        path: '/analytics',
+        label: 'Все отчёты',
+        iconClass: 'pe-7s-angle-right',
+        sectionKey: 'analytics_sales',
+        matchExact: true,
+      },
+      ...analyticsGroupsToSidebarChildren(groups),
+    ];
+  }, [features, fboMenuEnabled, isAccountAdmin, isAdmin]);
+
   const visibleMenu = useMemo(() => {
+    const childAllowed = (sub) => {
+      if (sub.profileAdminOnly && (!isProfileAdmin || isAdmin)) return false;
+      if (sub.tenantAdminOnly && !isTenantAccountAdmin) return false;
+      if (sub.adminOnly && !canManageUsers) return false;
+      if (sub.requiresProduction && !productionMenuEnabled) return false;
+      if (sub.requiresFbo && !fboMenuEnabled) return false;
+      if (sub.requiresChestnyZnak && !chestnyZnakMenuEnabled) return false;
+      if (sub.requiresPlanFeature && !planFeatureAllowed(sub.requiresPlanFeature)) return false;
+      if (!navAllowed(sub.sectionKey)) return false;
+      return true;
+    };
     const filterChildren = (item) => {
+      if (item.analyticsNav) {
+        // Не показываем «Аналитику», если у роли нет ни одного доступного отчёта.
+        const children = analyticsSidebarChildren.filter(childAllowed);
+        return { ...item, path: '/analytics', children };
+      }
       if (!item.children) return item;
-      const children = item.children.filter((sub) => {
-        if (sub.profileAdminOnly && (!isProfileAdmin || isAdmin)) return false;
-        if (sub.tenantAdminOnly && !isTenantAccountAdmin) return false;
-        if (sub.adminOnly && !canManageUsers) return false;
-        if (sub.requiresProduction && !productionMenuEnabled) return false;
-        if (sub.requiresFbo && !fboMenuEnabled) return false;
-        if (sub.requiresChestnyZnak && !chestnyZnakMenuEnabled) return false;
-        if (sub.requiresPlanFeature && !planFeatureAllowed(sub.requiresPlanFeature)) return false;
-        if (!navAllowed(sub.sectionKey)) return false;
-        return true;
-      });
-      return { ...item, children };
+      return { ...item, children: item.children.filter(childAllowed) };
     };
     return menuItems
       .filter((i) => !i.needsProfile || user?.profileId != null)
@@ -437,24 +463,40 @@ export function Sidebar({ onNavigate }) {
       .filter((i) => !i.requiresProduction || productionMenuEnabled)
       .filter((i) => !i.requiresChestnyZnak || chestnyZnakMenuEnabled)
       .filter((i) => !i.requiresPlanFeature || planFeatureAllowed(i.requiresPlanFeature))
-      .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
+      .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children) || i.analyticsNav)
+      // analyticsNav: пропускаем сюда, доступность решается по children после filterChildren
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, privateOrdersMenuEnabled, chestnyZnakMenuEnabled, navAllowed, planFeatureAllowed]);
+  }, [
+    analyticsSidebarChildren,
+    canManageUsers,
+    isProfileAdmin,
+    isAdmin,
+    isTenantAccountAdmin,
+    user?.profileId,
+    productionMenuEnabled,
+    fboMenuEnabled,
+    privateOrdersMenuEnabled,
+    chestnyZnakMenuEnabled,
+    navAllowed,
+    planFeatureAllowed,
+  ]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 
   return (
     <div className="app-sidebar sidebar-shadow">
       <div className="app-header__logo">
-        <div className="app-brand-text" aria-label="Программа Ирина">Программа Ирина</div>
+        <BrandLogo
+          variant={isSidebarClosed ? 'mark' : 'full'}
+          className={`app-brand-logo${isSidebarClosed ? ' app-brand-logo--collapsed' : ''}`}
+          height={28}
+        />
       </div>
 
       <div className="scrollbar-sidebar">
         <div className="app-sidebar__inner">
           <ul className="vertical-nav-menu">
-            <li className="app-sidebar__heading">ERP</li>
-
             {visibleMenu.map((item) => {
               const hasChildren = Array.isArray(item.children) && item.children.length > 0;
               const active = hasChildren
@@ -515,7 +557,7 @@ export function Sidebar({ onNavigate }) {
                     className={`metismenu-link metismenu-link--toggle ${active ? 'mm-active' : ''}`}
                   >
                     <i className={`metismenu-icon ${item.iconClass}`} />
-                    {item.label}
+                    <span className="sidebar-nav-label">{item.label}</span>
                     <i className="metismenu-state-icon pe-7s-angle-down caret-left" />
                   </button>
                   <ul className={isOpen ? 'mm-show' : ''}>
