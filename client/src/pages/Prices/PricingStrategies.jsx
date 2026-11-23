@@ -85,6 +85,52 @@ function formatAssignment(item) {
   return `${scope}${name}${mp}`;
 }
 
+/** Подпись поля с подсказкой при наведении (подсказка только на тексте, не на select/input внутри). */
+function FieldLabel({ children, hint, className = 'form-label' }) {
+  const text = String(hint || '').trim();
+  const kids = React.Children.toArray(children);
+  const titleNode = kids[0];
+  const rest = kids.slice(1);
+  return (
+    <label className={className}>
+      <span className={text ? 'pricing-field-label-hint' : undefined}>
+        {titleNode}
+        {text ? (
+          <span className="pricing-field-info-hint" role="tooltip">
+            {text}
+          </span>
+        ) : null}
+      </span>
+      {rest}
+    </label>
+  );
+}
+
+const FIELD_HINTS = {
+  name: 'Короткое имя стратегии в списке и в подсказках на странице «Цены».',
+  mode: 'Как считается фактическая цена: от пола, маржи, конкурентов, продаж или гибрид.',
+  description: 'Пояснение для себя — на расчёт не влияет.',
+  target_margin:
+    'Желаемая валовая маржа от себестоимости: цена ≈ себестоимость / (1 − %). Не опускается ниже рассчитанного минимума (пола).',
+  band_percent:
+    'Если новая цена отличается от текущей меньше чем на этот %, цену не меняем — чтобы не дёргать карточку из‑за мелких колебаний.',
+  max_change_percent:
+    'За один пересчёт цена может вырасти или упасть не больше чем на этот % от текущей. Крупные сдвиги растягиваются на несколько шагов.',
+  competitor_agg: 'Какую цену конкурентов берём за ориентир: минимум, медиану или среднее.',
+  competitor_offset_percent:
+    'Сдвиг относительно цены конкурентов в процентах. Отрицательное значение — чуть дешевле конкурентов.',
+  competitor_offset_rub:
+    'Дополнительный сдвиг в рублях после процентного. Можно комбинировать с «Отступ, %».',
+  sales_window: 'За сколько последних дней считаем среднюю скорость продаж (доставлено FBS).',
+  sales_high: 'Если продаж в день больше этого порога — считаем спрос высоким и поднимаем цену.',
+  sales_low: 'Если продаж в день меньше этого порога — считаем спрос слабым и снижаем цену.',
+  sales_high_step: 'На сколько % поднимаем цену при высоких продажах (за один пересчёт, с учётом лимита шага).',
+  sales_low_step: 'На сколько % снижаем цену при низких продажах (не ниже пола).',
+  apply_scope: 'На что вешать эту стратегию: товар, бренд, категория или весь кабинет.',
+  apply_marketplace:
+    'Ограничить назначение одним маркетплейсом или оставить «Все МП». Узкое правило (товар+МП) сильнее широкого.',
+};
+
 export function PricingStrategies() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -566,7 +612,7 @@ export function PricingStrategies() {
       >
         <div className="row g-3">
           <div className="col-md-8">
-            <label className="form-label">Название</label>
+            <FieldLabel hint={FIELD_HINTS.name}>Название</FieldLabel>
             <input
               className="form-control form-control-sm"
               value={form.name}
@@ -574,7 +620,7 @@ export function PricingStrategies() {
             />
           </div>
           <div className="col-md-4">
-            <label className="form-label">Режим</label>
+            <FieldLabel hint={FIELD_HINTS.mode}>Режим</FieldLabel>
             <select
               className="form-select form-select-sm"
               value={form.mode}
@@ -588,7 +634,7 @@ export function PricingStrategies() {
             </select>
           </div>
           <div className="col-12">
-            <label className="form-label">Описание</label>
+            <FieldLabel hint={FIELD_HINTS.description}>Описание</FieldLabel>
             <textarea
               className="form-control form-control-sm"
               rows={2}
@@ -599,7 +645,7 @@ export function PricingStrategies() {
 
           {showMargin && (
             <div className="col-md-4">
-              <label className="form-label">Целевая маржа, %</label>
+              <FieldLabel hint={FIELD_HINTS.target_margin}>Целевая маржа, %</FieldLabel>
               <input
                 type="number"
                 className="form-control form-control-sm"
@@ -610,7 +656,7 @@ export function PricingStrategies() {
           )}
 
           <div className="col-md-4">
-            <label className="form-label">Коридор без изменений, %</label>
+            <FieldLabel hint={FIELD_HINTS.band_percent}>Коридор без изменений, %</FieldLabel>
             <input
               type="number"
               className="form-control form-control-sm"
@@ -619,7 +665,7 @@ export function PricingStrategies() {
             />
           </div>
           <div className="col-md-4">
-            <label className="form-label">Макс. изменение за раз, %</label>
+            <FieldLabel hint={FIELD_HINTS.max_change_percent}>Макс. изменение за раз, %</FieldLabel>
             <input
               type="number"
               className="form-control form-control-sm"
@@ -634,7 +680,7 @@ export function PricingStrategies() {
                 <h6 className="mb-0 mt-2">Конкуренты (WB / YM)</h6>
               </div>
               <div className="col-md-3">
-                <label className="form-label">Агрегация</label>
+                <FieldLabel hint={FIELD_HINTS.competitor_agg}>Агрегация</FieldLabel>
                 <select
                   className="form-select form-select-sm"
                   value={form.config.competitor?.agg || 'min'}
@@ -646,7 +692,7 @@ export function PricingStrategies() {
                 </select>
               </div>
               <div className="col-md-3">
-                <label className="form-label">Отступ, %</label>
+                <FieldLabel hint={FIELD_HINTS.competitor_offset_percent}>Отступ, %</FieldLabel>
                 <input
                   type="number"
                   className="form-control form-control-sm"
@@ -657,7 +703,7 @@ export function PricingStrategies() {
                 />
               </div>
               <div className="col-md-3">
-                <label className="form-label">Отступ, ₽</label>
+                <FieldLabel hint={FIELD_HINTS.competitor_offset_rub}>Отступ, ₽</FieldLabel>
                 <input
                   type="number"
                   className="form-control form-control-sm"
@@ -691,7 +737,7 @@ export function PricingStrategies() {
                 <h6 className="mb-0 mt-2">Продажи (FBS, delivered)</h6>
               </div>
               <div className="col-md-3">
-                <label className="form-label">Окно, дней</label>
+                <FieldLabel hint={FIELD_HINTS.sales_window}>Окно, дней</FieldLabel>
                 <input
                   type="number"
                   className="form-control form-control-sm"
@@ -700,7 +746,7 @@ export function PricingStrategies() {
                 />
               </div>
               <div className="col-md-3">
-                <label className="form-label">Высокие продажи, шт/день</label>
+                <FieldLabel hint={FIELD_HINTS.sales_high}>Высокие продажи, шт/день</FieldLabel>
                 <input
                   type="number"
                   step="0.1"
@@ -710,7 +756,7 @@ export function PricingStrategies() {
                 />
               </div>
               <div className="col-md-3">
-                <label className="form-label">Низкие продажи, шт/день</label>
+                <FieldLabel hint={FIELD_HINTS.sales_low}>Низкие продажи, шт/день</FieldLabel>
                 <input
                   type="number"
                   step="0.1"
@@ -720,7 +766,7 @@ export function PricingStrategies() {
                 />
               </div>
               <div className="col-md-3">
-                <label className="form-label">Шаг вверх при высоких, %</label>
+                <FieldLabel hint={FIELD_HINTS.sales_high_step}>Шаг вверх при высоких, %</FieldLabel>
                 <input
                   type="number"
                   className="form-control form-control-sm"
@@ -731,7 +777,7 @@ export function PricingStrategies() {
                 />
               </div>
               <div className="col-md-3">
-                <label className="form-label">Шаг вниз при низких, %</label>
+                <FieldLabel hint={FIELD_HINTS.sales_low_step}>Шаг вниз при низких, %</FieldLabel>
                 <input
                   type="number"
                   className="form-control form-control-sm"
@@ -811,7 +857,7 @@ export function PricingStrategies() {
                 alignItems: 'end',
               }}
             >
-              <label className="form-label mb-0">
+              <FieldLabel className="form-label mb-0" hint={FIELD_HINTS.apply_scope}>
                 Область
                 <select
                   className="form-select form-select-sm mt-1"
@@ -828,7 +874,7 @@ export function PricingStrategies() {
                   <option value="product">Товар</option>
                   <option value="profile">Весь кабинет</option>
                 </select>
-              </label>
+              </FieldLabel>
 
               {addScopeType === 'brand' ? (
                 <label className="form-label mb-0">
@@ -878,7 +924,7 @@ export function PricingStrategies() {
                 </label>
               ) : null}
 
-              <label className="form-label mb-0">
+              <FieldLabel className="form-label mb-0" hint={FIELD_HINTS.apply_marketplace}>
                 Маркетплейс
                 <select
                   className="form-select form-select-sm mt-1"
@@ -890,7 +936,7 @@ export function PricingStrategies() {
                   <option value="wb">Wildberries</option>
                   <option value="ym">Яндекс Маркет</option>
                 </select>
-              </label>
+              </FieldLabel>
 
               {addScopeType !== 'product' ? (
                 <Button type="button" variant="secondary" size="small" onClick={handleAddAssignment}>
