@@ -127,6 +127,31 @@ export async function fetchPrintHelperPrinters(printHelperUrl = '') {
 }
 
 /**
+ * @returns {Promise<{ ok: boolean, sumatraFound?: boolean, message?: string }>}
+ */
+export async function fetchPrintHelperHealth(printHelperUrl = '') {
+  const base = normalizePrintHelperBase(printHelperUrl);
+  if (!base) return { ok: false, message: 'Print Helper URL не задан' };
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 4000);
+  try {
+    const r = await fetch(`${base}/health`, { method: 'GET', mode: 'cors', signal: ac.signal });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, message: body?.message || `HTTP ${r.status}` };
+    return {
+      ok: true,
+      sumatraFound: body?.sumatraFound === true,
+      message: body?.sumatraFound === false ? 'SumatraPDF.exe не найден рядом с helper' : undefined,
+    };
+  } catch (e) {
+    if (e?.name === 'AbortError') return { ok: false, message: 'Таймаут Print Helper' };
+    return { ok: false, message: e?.message || 'Print Helper недоступен' };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
  * @param {{
  *   printHelperUrl: string,
  *   kind: string,
@@ -167,25 +192,24 @@ export async function printViaPrintHelper(opts = {}) {
 
   try {
     if (opts.pdfBuffer) {
-      const body =
-        opts.pdfBuffer instanceof Blob
-          ? opts.pdfBuffer
-          : opts.pdfBuffer instanceof ArrayBuffer
-            ? opts.pdfBuffer
-            : opts.pdfBuffer?.buffer
-              ? opts.pdfBuffer
-              : null;
-      if (!body) return { ok: false, message: 'Пустой файл этикетки' };
-      const contentType =
-        body instanceof Blob && body.type
-          ? body.type
-          : 'application/pdf';
+      let bytes = null;
+      let contentType = 'application/pdf';
+      if (opts.pdfBuffer instanceof Blob) {
+        const t = String(opts.pdfBuffer.type || '').toLowerCase();
+        if (t.includes('png')) contentType = 'image/png';
+        bytes = await opts.pdfBuffer.arrayBuffer();
+      } else if (opts.pdfBuffer instanceof ArrayBuffer) {
+        bytes = opts.pdfBuffer;
+      } else if (opts.pdfBuffer?.buffer) {
+        bytes = opts.pdfBuffer.buffer;
+      }
+      if (!bytes || !bytes.byteLength) return { ok: false, message: 'Пустой файл этикетки' };
       const r = await fetch(`${base}/print?${qs.toString()}`, {
         method: 'POST',
         mode: 'cors',
         signal: ac.signal,
-        headers: { 'Content-Type': contentType.includes('png') ? 'image/png' : 'application/pdf' },
-        body,
+        headers: { 'Content-Type': contentType },
+        body: bytes,
       });
       if (r.ok) return { ok: true };
       const errBody = await r.json().catch(() => ({}));
