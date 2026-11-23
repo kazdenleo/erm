@@ -10,7 +10,15 @@ const USER_SELECT =
 
 class UsersRepositoryPG {
   async findAll(filters = {}) {
-    const { profileId } = filters;
+    const { profileId, platformAdminsOnly = false } = filters;
+    if (platformAdminsOnly) {
+      const result = await query(
+        `SELECT ${USER_SELECT} FROM users
+         WHERE role = 'admin' AND profile_id IS NULL
+         ORDER BY full_name NULLS LAST, email NULLS LAST, id ASC`
+      );
+      return result.rows;
+    }
     if (profileId != null) {
       const result = await query(
         `SELECT ${USER_SELECT} FROM users
@@ -24,6 +32,13 @@ class UsersRepositoryPG {
       `SELECT ${USER_SELECT} FROM users ORDER BY phone NULLS LAST, email NULLS LAST`
     );
     return result.rows;
+  }
+
+  async countPlatformAdmins() {
+    const result = await query(
+      `SELECT COUNT(*)::int AS c FROM users WHERE role = 'admin' AND profile_id IS NULL`
+    );
+    return Number(result.rows?.[0]?.c) || 0;
   }
 
   async findById(id) {

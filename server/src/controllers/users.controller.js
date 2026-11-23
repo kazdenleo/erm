@@ -164,6 +164,19 @@ export const usersController = {
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Управление пользователями доступно только администратору аккаунта или системы' });
       }
+      const scope = String(req.query?.scope || '').trim().toLowerCase();
+      const wantPlatformAdmins =
+        scope === 'platform_admins' ||
+        scope === 'system_admins' ||
+        String(req.query?.role || '').trim().toLowerCase() === 'admin';
+      if (wantPlatformAdmins) {
+        if (req.user.role !== 'admin') {
+          return res.status(403).json({ ok: false, message: 'Список администраторов продукта доступен только суперадмину' });
+        }
+        const list = await usersRepo.findAll({ platformAdminsOnly: true });
+        const withGrants = await Promise.all((list || []).map((row) => withAccess(row)));
+        return res.json({ ok: true, data: withGrants });
+      }
       const profileId = req.query.profile_id != null ? Number(req.query.profile_id) : undefined;
       if (req.user.role !== 'admin' && profileId != null && profileId !== req.user.profileId) {
         return res.status(403).json({ ok: false, message: 'Нет доступа к этому профилю' });
@@ -466,6 +479,28 @@ export const usersController = {
           updates.profile_id = null;
           updates.is_profile_admin = false;
           updates.account_role = null;
+          const emailVal =
+            updates.email !== undefined ? updates.email : existing.email;
+          if (!emailVal || String(emailVal).trim() === '') {
+            return res.status(400).json({
+              ok: false,
+              message: 'Укажите email администратора системы',
+            });
+          }
+        } else if (existing.role === 'admin' && mergedRole !== 'admin') {
+          const adminsLeft = await usersRepo.countPlatformAdmins();
+          if (adminsLeft <= 1) {
+            return res.status(400).json({
+              ok: false,
+              message: 'Нельзя снять права с последнего администратора продукта',
+            });
+          }
+          if (Number(existing.id) === Number(req.user.id)) {
+            return res.status(400).json({
+              ok: false,
+              message: 'Нельзя снять с себя права администратора продукта',
+            });
+          }
         } else if (mergedProfile != null) {
           updates.role = 'user';
         }
@@ -545,6 +580,18 @@ export const usersController = {
       }
       if (req.user.role !== 'admin' && existing.role === 'admin') {
         return res.status(403).json({ ok: false, message: 'Удаление администратора системы недоступно' });
+      }
+      if (existing.role === 'admin' && existing.profile_id == null) {
+        if (Number(existing.id) === Number(req.user.id)) {
+          return res.status(400).json({ ok: false, message: 'Нельзя удалить свою учётную запись' });
+        }
+        const adminsLeft = await usersRepo.countPlatformAdmins();
+        if (adminsLeft <= 1) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Нельзя удалить последнего администратора продукта',
+          });
+        }
       }
       const deleted = await usersRepo.delete(id);
       if (!deleted) {

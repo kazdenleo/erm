@@ -36,6 +36,12 @@ export const usersApi = {
     return response.data;
   },
 
+  /** Администраторы продукта (role=admin, без профиля клиента). */
+  async getPlatformAdmins() {
+    const response = await api.get('/users', { params: { scope: 'platform_admins' } });
+    return response.data;
+  },
+
   async getInviteCandidates() {
     const response = await api.get('/users/invite-candidates');
     return response.data;

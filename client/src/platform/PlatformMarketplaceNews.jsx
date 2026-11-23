@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { platformMarketplaceNewsApi } from '../services/platformMarketplaceNews.api.js';
 import { Button } from '../components/common/Button/Button';
 import { Modal } from '../components/common/Modal/Modal';
+import { NewsCopyTextButton } from '../components/marketplaceNews/NewsCopyTextButton.jsx';
 import './platform.css';
 
 const SOURCE_LABELS = {
@@ -306,15 +307,21 @@ export function PlatformMarketplaceNews() {
       >
         {openItem ? (
           <div className="platform-mp-news-detail">
-            <p className="platform-muted platform-mp-news-detail__meta">
-              {SOURCE_LABELS[openItem.source] || openItem.source}
-              {(Array.isArray(openItem.tags) ? openItem.tags : [])
-                .map((tag) => TAG_LABELS[tag])
-                .filter(Boolean)
-                .map((label) => ` · ${label}`)
-                .join('')}
-              {openItem.publishedAt ? ` · ${formatDate(openItem.publishedAt)}` : ''}
-            </p>
+            <div className="platform-mp-news-detail__toolbar">
+              <p className="platform-muted platform-mp-news-detail__meta">
+                {SOURCE_LABELS[openItem.source] || openItem.source}
+                {(Array.isArray(openItem.tags) ? openItem.tags : [])
+                  .map((tag) => TAG_LABELS[tag])
+                  .filter(Boolean)
+                  .map((label) => ` · ${label}`)
+                  .join('')}
+                {openItem.publishedAt ? ` · ${formatDate(openItem.publishedAt)}` : ''}
+              </p>
+              <NewsCopyTextButton
+                title={openItem.title}
+                body={openItem.body || openItem.summary || ''}
+              />
+            </div>
             <div className="platform-mp-news-detail__body">
               {openItem.body || openItem.summary || 'Текст недоступен'}
             </div>
