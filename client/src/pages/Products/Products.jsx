@@ -19,8 +19,7 @@ import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
 import { productCardPath, shouldOpenProductCardInNewTab } from '../../utils/productCardPath.js';
 import { sanitizeWbVendorCode } from '../../utils/wbVendorCode.js';
 import {
-  canUsePrintHelper,
-  openProductLabelPrintTab,
+  cachePrintHelperUrl,
   useProductLabelPrint,
 } from '../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../services/api.js';
@@ -191,7 +190,7 @@ function canLinkProductToMpFromList(product, marketplace) {
   const hints = buildProductListMpLinkHints(product, marketplace);
   const hasHint = Object.keys(hints).length > 0;
   if (!skuTrim && !hasHint) {
-    return { ok: false, reason: 'Нет артикула ERP или артикула на маркетплейсе' };
+    return { ok: false, reason: 'Нет артикула MySell или артикула на маркетплейсе' };
   }
   return { ok: true, hints };
 }
@@ -233,7 +232,7 @@ export function Products() {
   const [exportOrgId, setExportOrgId] = useState('');
   const [exportCatId, setExportCatId] = useState('');
   const [exportSearch, setExportSearch] = useState('');
-  /** true — в Excel без колонок маркетплейсов, только ERP; по умолчанию false (выгружаем все атрибуты МП) */
+  /** true — в Excel без колонок маркетплейсов, только MySell; по умолчанию false (выгружаем все атрибуты МП) */
   const [exportExcludeMpAttributes, setExportExcludeMpAttributes] = useState(false);
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
   const [filterBrandId, setFilterBrandId] = useState('');
@@ -285,9 +284,17 @@ export function Products() {
     fetch(`${resolveApiBaseUrl().replace(/\/$/, '')}/config`)
       .then((r) => r.json())
       .then((body) => {
-        if (!cancelled) setPrintHelperUrl((body?.data?.printHelperUrl ?? '').trim());
+        if (cancelled) return;
+        const url = (body?.data?.printHelperUrl ?? '').trim() || 'http://127.0.0.1:9100';
+        setPrintHelperUrl(url);
+        cachePrintHelperUrl(url);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setPrintHelperUrl('http://127.0.0.1:9100');
+          cachePrintHelperUrl('http://127.0.0.1:9100');
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -311,16 +318,9 @@ export function Products() {
     setLabelPrintProduct(null);
     setLabelPrintError(null);
 
-    if (!canUsePrintHelper(printHelperUrl)) {
-      if (!openProductLabelPrintTab(product.id, copies)) {
-        setLabelPrintError('Не удалось открыть вкладку печати. Разрешите всплывающие окна для сайта.');
-        setLabelPrintProduct(product);
-      }
-      return;
-    }
-
     const ok = await printProductLabel(product.id, { copies });
     if (!ok) {
+      // Модалка снова открыта — в ней уже текст ошибки из хука (Print Helper / принтер).
       setLabelPrintProduct(product);
     }
   };
@@ -750,7 +750,7 @@ export function Products() {
       ids,
       confirmText:
         `Удалить выбранные товары (${ids.length})?\n` +
-        'Удалятся только товары без документов и операций в ERP. Остальные будут пропущены с сообщением об ошибке.',
+        'Удалятся только товары без документов и операций в MySell. Остальные будут пропущены с сообщением об ошибке.',
       action: deleteProduct,
       successVerb: 'Удалено',
     });
@@ -1566,7 +1566,7 @@ export function Products() {
                   const participationHint = (product.participationReasons || []).join(', ');
                   const archiveTitle = participationHint
                     ? `В архив: ${participationHint}`
-                    : 'В архив (есть документы или операции в ERP)';
+                    : 'В архив (есть документы или операции в MySell)';
                   return (
                     <tr
                       key={product.id}
@@ -1848,7 +1848,7 @@ export function Products() {
             </label>
           </div>
           <p className="text-muted small mb-0 mt-2">
-            По умолчанию в шаблоне есть все атрибуты. Включите тумблер, чтобы оставить только атрибуты системы (ERP).
+            По умолчанию в шаблоне есть все атрибуты. Включите тумблер, чтобы оставить только атрибуты системы (MySell).
           </p>
         </div>
         <div className="d-flex gap-2 justify-content-end">
@@ -1931,7 +1931,7 @@ export function Products() {
             </label>
           </div>
           <p className="text-muted small mb-0 mt-2">
-            По умолчанию выгружаются все атрибуты. Включите тумблер, чтобы в файле остались только атрибуты системы (ERP),
+            По умолчанию выгружаются все атрибуты. Включите тумблер, чтобы в файле остались только атрибуты системы (MySell),
             без колонок Ozon, Wildberries и Яндекс.Маркета.
           </p>
         </div>

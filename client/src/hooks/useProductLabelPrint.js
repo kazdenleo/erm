@@ -6,9 +6,15 @@
 import { useCallback, useState } from 'react';
 import api, { resolveApiBaseUrl } from '../services/api';
 import { getStoredLabelSize } from '../pages/Settings/Labels.jsx';
-import { canReachPrintHelper, printViaPrintHelper } from '../utils/printHelperClient.js';
+import {
+  appendAccessTokenToUrl,
+  canReachPrintHelper,
+  fetchPrintHelperHealth,
+  printViaPrintHelper,
+} from '../utils/printHelperClient.js';
 
-const PRINT_HELPER_FETCH_MS = 25000;
+const PRINT_HELPER_FETCH_MS = 60000;
+const PRINT_HELPER_URL_DEFAULT = 'http://127.0.0.1:9100';
 export const PRODUCT_LABELS_BATCH_STORAGE_KEY = 'erm:product-labels-batch';
 /** Кэш URL Print Helper — чтобы первые сканы после открытия страницы не уходили во вкладку браузера. */
 export const PRINT_HELPER_URL_CACHE_KEY = 'erm:printHelperUrl';
@@ -32,11 +38,19 @@ export function readCachedPrintHelperUrl() {
   }
 }
 
-/** Актуальный URL: проп страницы или кэш с прошлого захода. */
+/** Актуальный URL: проп страницы, кэш с прошлого захода или localhost. */
 export function resolvePrintHelperUrl(printHelperUrl = '') {
   const fromProp = String(printHelperUrl || '').trim();
   if (fromProp) return fromProp;
-  return readCachedPrintHelperUrl();
+  return readCachedPrintHelperUrl() || PRINT_HELPER_URL_DEFAULT;
+}
+
+function readAccessToken() {
+  try {
+    return localStorage.getItem('token') || '';
+  } catch {
+    return '';
+  }
 }
 
 function normalizeBatchItem(raw) {
@@ -221,20 +235,26 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
   const params = { format: 'png', barcode: code, ...(units > 0 ? { units: String(units) } : {}) };
 
   if (!canUsePrintHelper(printHelperUrl)) {
-    const ok = openPackagingLabelPrintTab(id, code, units);
-    return ok
-      ? { ok: true }
-      : { ok: false, message: 'Разрешите всплывающие окна для печати' };
+    return {
+      ok: false,
+      message:
+        'Нужен Print Helper на этом ПК (Настройки → Этикетки). Без него откроется окно печати Windows.',
+    };
   }
 
-  // Прогрев с Bearer (как у стикеров товара), затем Print Helper качает публичный PNG по URL.
+  const base = resolvePrintHelperUrl(printHelperUrl).replace(/\/$/, '');
+  const labelSize = getStoredLabelSize() || '58x40';
+  let warmedBlob = null;
+
+  // Прогрев с Bearer → POST blob в Print Helper (без публичного URL без токена).
   try {
-    await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
+    const warm = await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
       params,
       responseType: 'blob',
       timeout: PRINT_HELPER_FETCH_MS,
       headers: { Accept: 'image/png' },
     });
+    warmedBlob = warm?.data instanceof Blob ? warm.data : null;
   } catch (e) {
     return { ok: false, message: await errorMessageFromLabelRequest(e) };
   }
@@ -250,25 +270,36 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
       return labelPngUrl;
     }
   })();
+  const labelUrlWithToken = appendAccessTokenToUrl(labelPngUrlAbs, readAccessToken());
 
-  const base = String(printHelperUrl || '').trim().replace(/\/$/, '');
-  const labelSize = getStoredLabelSize() || '58x40';
-
-  let printed = await printViaPrintHelper({
-    printHelperUrl: base,
-    kind: 'packaging',
-    labelUrl: labelPngUrlAbs,
-    orderId: `packaging-${id}-${Date.now()}`,
-    labelSize,
-    timeoutMs: PRINT_HELPER_FETCH_MS,
-  });
-
-  // Если принтер «ШК упаковок» падает — тот же URL на принтер стикеров товара.
+  let printed = { ok: false, message: '' };
+  if (warmedBlob && warmedBlob.size > 0) {
+    printed = await printViaPrintHelper({
+      printHelperUrl: base,
+      kind: 'packaging',
+      pdfBuffer: warmedBlob,
+      orderId: `packaging-${id}-${Date.now()}`,
+      labelSize,
+      timeoutMs: PRINT_HELPER_FETCH_MS,
+    });
+  }
+  if (!printed.ok) {
+    printed = await printViaPrintHelper({
+      printHelperUrl: base,
+      kind: 'packaging',
+      labelUrl: labelUrlWithToken,
+      orderId: `packaging-${id}-${Date.now()}`,
+      labelSize,
+      timeoutMs: PRINT_HELPER_FETCH_MS,
+    });
+  }
   if (!printed.ok) {
     printed = await printViaPrintHelper({
       printHelperUrl: base,
       kind: 'product',
-      labelUrl: labelPngUrlAbs,
+      ...(warmedBlob && warmedBlob.size > 0
+        ? { pdfBuffer: warmedBlob }
+        : { labelUrl: labelUrlWithToken }),
       orderId: `packaging-${id}-${Date.now()}`,
       labelSize,
       timeoutMs: PRINT_HELPER_FETCH_MS,
@@ -276,10 +307,14 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
   }
 
   if (printed.ok) return { ok: true };
-  const ok = openPackagingLabelPrintTab(id, code, units);
-  return ok
-    ? { ok: true }
-    : { ok: false, message: printed.message || 'Print Helper не ответил' };
+
+  const health = await fetchPrintHelperHealth(base);
+  return {
+    ok: false,
+    message: health.ok
+      ? `Тихая печать не удалась: ${printed.message || 'ошибка Print Helper'}. Проверьте принтер «ШК упаковок».`
+      : 'Print Helper не отвечает (http://127.0.0.1:9100). Установите и запустите его на ПК с принтером.',
+  };
 }
 
 export function useProductLabelPrint(printHelperUrl = '') {
@@ -296,26 +331,16 @@ export function useProductLabelPrint(printHelperUrl = '') {
         Number.isFinite(copiesRaw) && copiesRaw >= 1
           ? Math.min(99, Math.floor(copiesRaw))
           : 1;
-      // На скане склада не открываем вкладку после await — браузер то пускает popup, то блокирует.
-      const allowBrowserFallback = options.allowBrowserFallback !== false;
+      // По умолчанию не открываем окно печати Windows — только Print Helper.
+      // Явный allowBrowserFallback: true — запасной путь (старые сценарии / HTTP).
+      const allowBrowserFallback = options.allowBrowserFallback === true;
       const helperUrl = resolvePrintHelperUrl(printHelperUrl);
-
-      // Несколько копий — вкладка /print/product-label (дублирует листы); Print Helper печатает 1 PNG.
-      if (copies > 1) {
-        if (!allowBrowserFallback) {
-          setError('Несколько копий этикетки печатаются через вкладку браузера. Нажмите 🖨️ у строки.');
-          return false;
-        }
-        const ok = openProductLabelPrintTab(id, copies, options.marketplace);
-        if (!ok) {
-          setError('Не удалось открыть вкладку печати. Разрешите всплывающие окна для этого сайта.');
-        }
-        return ok;
-      }
 
       if (!canUsePrintHelper(helperUrl)) {
         if (!allowBrowserFallback) {
-          setError('Print Helper не настроен или недоступен. Проверьте настройки печати.');
+          setError(
+            'Нужен Print Helper на этом ПК (Настройки → Этикетки → скачать и запустить). Иначе откроется окно печати Windows.'
+          );
           return false;
         }
         return openProductLabelPrintTab(id, copies, options.marketplace);
@@ -329,18 +354,24 @@ export function useProductLabelPrint(printHelperUrl = '') {
         options.marketplace != null && String(options.marketplace).trim() !== ''
           ? String(options.marketplace).trim()
           : '';
-      const labelQuery = new URLSearchParams({ format: 'pdf' });
-      if (copies > 1) labelQuery.set('copies', String(copies));
-      if (mp) labelQuery.set('marketplace', mp);
-      const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?${labelQuery.toString()}`;
-      // PNG для Print Helper тоже с marketplace — иначе берётся ШК без привязки к МП.
-      const pngQuery = new URLSearchParams({ format: 'png' });
-      if (mp) pngQuery.set('marketplace', mp);
-      const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?${pngQuery.toString()}`;
-      const base = String(helperUrl || '').trim().replace(/\/$/, '');
+      const base = String(helperUrl || PRINT_HELPER_URL_DEFAULT).trim().replace(/\/$/, '');
+      cachePrintHelperUrl(base);
 
+      const healthBefore = await fetchPrintHelperHealth(base);
+      if (!healthBefore.ok) {
+        setPrinting(false);
+        if (allowBrowserFallback) {
+          return openProductLabelPrintTab(id, copies, options.marketplace);
+        }
+        setError(
+          'Print Helper не отвечает (http://127.0.0.1:9100). Установите/запустите его на ПК с принтером — Настройки → Этикетки.'
+        );
+        return false;
+      }
+
+      let warmedBlob = null;
       try {
-        await api.get(labelFilePath, {
+        const warm = await api.get(labelFilePath, {
           params: {
             format: 'png',
             ...(mp ? { marketplace: mp } : {}),
@@ -349,6 +380,7 @@ export function useProductLabelPrint(printHelperUrl = '') {
           timeout: PRINT_HELPER_FETCH_MS,
           headers: { Accept: 'image/png' },
         });
+        warmedBlob = warm?.data instanceof Blob ? warm.data : null;
       } catch (e) {
         setError(await errorMessageFromLabelRequest(e));
         setPrinting(false);
@@ -356,6 +388,9 @@ export function useProductLabelPrint(printHelperUrl = '') {
       }
 
       const labelSize = getStoredLabelSize();
+      const pngQuery = new URLSearchParams({ format: 'png' });
+      if (mp) pngQuery.set('marketplace', mp);
+      const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?${pngQuery.toString()}`;
       const labelPngUrlAbs = (() => {
         try {
           return new URL(labelPngUrl, window.location.origin).toString();
@@ -363,30 +398,33 @@ export function useProductLabelPrint(printHelperUrl = '') {
           return labelPngUrl;
         }
       })();
-      const labelFileUrlAbs = (() => {
-        try {
-          return new URL(labelFileUrl, window.location.origin).toString();
-        } catch {
-          return labelFileUrl;
+      const labelUrlWithToken = appendAccessTokenToUrl(labelPngUrlAbs, readAccessToken());
+
+      let printed = { ok: false, message: '' };
+      for (let copyIndex = 0; copyIndex < copies; copyIndex += 1) {
+        const orderId = `product-${id}-${Date.now()}-c${copyIndex + 1}`;
+        printed = { ok: false, message: '' };
+        if (warmedBlob && warmedBlob.size > 0) {
+          printed = await printViaPrintHelper({
+            printHelperUrl: base,
+            kind: 'product',
+            pdfBuffer: warmedBlob,
+            orderId,
+            labelSize,
+            timeoutMs: PRINT_HELPER_FETCH_MS,
+          });
         }
-      })();
-      const helperLabelUrl = copies > 1 ? labelFileUrlAbs : labelPngUrlAbs;
-      const helperOpts = {
-        printHelperUrl: base,
-        kind: 'product',
-        labelUrl: helperLabelUrl,
-        orderId: `product-${id}-${Date.now()}`,
-        labelSize,
-        timeoutMs: PRINT_HELPER_FETCH_MS,
-      };
-      let printed = await printViaPrintHelper(helperOpts);
-      // Короткий повтор при сетевом сбое / занятости помощника.
-      if (!printed.ok) {
-        printed = await printViaPrintHelper({
-          ...helperOpts,
-          orderId: `product-${id}-${Date.now()}-retry`,
-          timeoutMs: Math.min(12000, PRINT_HELPER_FETCH_MS),
-        });
+        if (!printed.ok) {
+          printed = await printViaPrintHelper({
+            printHelperUrl: base,
+            kind: 'product',
+            labelUrl: labelUrlWithToken,
+            orderId: `${orderId}-url`,
+            labelSize,
+            timeoutMs: PRINT_HELPER_FETCH_MS,
+          });
+        }
+        if (!printed.ok) break;
       }
 
       setPrinting(false);
@@ -395,19 +433,15 @@ export function useProductLabelPrint(printHelperUrl = '') {
         return true;
       }
 
-      if (!allowBrowserFallback) {
-        setError(
-          printed.message ||
-            'Print Helper не ответил. Проверьте, что помощник печати запущен, и нажмите 🖨️ у строки.'
-        );
-        return false;
+      setError(
+        printed.message
+          ? `Тихая печать не удалась: ${printed.message}. Проверьте принтер «Стикеры товаров» в Настройки → Этикетки и что Print Helper запущен.`
+          : 'Print Helper не напечатал этикетку. Проверьте принтер и что помощник печати запущен.'
+      );
+      if (allowBrowserFallback) {
+        return openProductLabelPrintTab(id, copies, options.marketplace);
       }
-
-      if (!openProductLabelPrintTab(id, copies, options.marketplace)) {
-        setError('Print Helper не ответил. Разрешите всплывающие окна для печати в браузере.');
-        return false;
-      }
-      return true;
+      return false;
     },
     [printHelperUrl]
   );

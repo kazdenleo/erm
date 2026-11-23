@@ -3,18 +3,21 @@
 ; Сборка: сначала `npm run build:exe`, затем запустить iscc по этому .iss
 
 #define MyAppName "ERM Print Helper"
-#define MyAppPublisher "ERM"
-#define MyAppURL "https://example.local/"
+#define MyAppPublisher "MySell"
+#define MyAppURL "https://mysell.su/"
 #define MyAppExeName "erm-print-helper.exe"
 
 ; Версию можно подставлять из package.json вручную или скриптом (см. build-installer.ps1)
-#define MyAppVersion "1.0.6"
+#define MyAppVersion "1.0.7"
 
 [Setup]
 AppId={{8B5B7F35-8A66-4A4E-A8C3-0D5C2B9F1E4A}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
 ; Per-user установка (без админ-прав)
 DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -26,6 +29,7 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+InfoBeforeFile=info-before.txt
 ; Не используем CloseApplications: у Print Helper нет окна (только трей),
 ; Inno не может закрыть его через WM_CLOSE и показывает ошибку.
 ; Процессы гасим в [Code] через taskkill.
@@ -34,7 +38,8 @@ WizardStyle=modern
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
-Name: "startup"; Description: "Запускать Print Helper при входе в Windows"; GroupDescription: "Дополнительно:"; Flags: checkedonce
+; Без checkedonce — галочка автозапуска всегда включена по умолчанию при каждой установке
+Name: "startup"; Description: "Запускать Print Helper при входе в Windows"; GroupDescription: "Дополнительно:"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Ярлыки:"; Flags: unchecked
 
 [Files]
@@ -50,7 +55,11 @@ Source: "..\dist\traybin\*"; DestDir: "{app}\traybin"; Flags: ignoreversion recu
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; IconFilename: "{app}\tray.ico"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; IconFilename: "{app}\tray.ico"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\run-tray.vbs"; Tasks: startup
+Name: "{userstartup}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\run-tray.vbs"""; IconFilename: "{app}\tray.ico"; Tasks: startup
+
+[Registry]
+; Дублируем автозапуск в Run — надёжнее ярлыка в Startup на части ПК
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ERMPrintHelper"; ValueData: """{sys}\wscript.exe"" ""{app}\run-tray.vbs"""; Flags: uninsdeletevalue; Tasks: startup
 
 [Code]
 procedure KillPrintHelperProcesses;

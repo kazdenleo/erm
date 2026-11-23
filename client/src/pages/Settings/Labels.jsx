@@ -77,7 +77,7 @@ export function Labels() {
       try {
         const res = await api.get('/config');
         const url = (res?.data?.data?.printHelperUrl ?? res?.data?.printHelperUrl ?? '').trim();
-        if (!cancelled) setPrintHelperUrl(url);
+        if (!cancelled) setPrintHelperUrl(url || 'http://127.0.0.1:9100');
       } catch {
         if (!cancelled) setPrintHelperUrl('http://127.0.0.1:9100');
       }
@@ -106,7 +106,14 @@ export function Labels() {
         if (hr.ok) {
           const h = await hr.json().catch(() => ({}));
           featuresOk = Boolean(h?.features?.printers);
-          setHelperStatus(featuresOk ? 'Print Helper подключён' : 'Print Helper старой версии — обновите установщик');
+          const sumatraOk = h?.sumatraFound !== false;
+          setHelperStatus(
+            featuresOk
+              ? sumatraOk
+                ? 'Print Helper подключён'
+                : 'Print Helper без SumatraPDF — переустановите установщик'
+              : 'Print Helper старой версии — обновите установщик'
+          );
         } else {
           setHelperStatus('Print Helper не отвечает');
         }
@@ -320,11 +327,12 @@ export function Labels() {
 
           <h2 className="subtitle" style={{ marginTop: 0 }}>Print Helper (тихая печать)</h2>
           <p className="subtitle" style={{ marginTop: 0 }}>
-            Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера и на нужный принтер.
+            Установите локальную программу на ПК с принтером, чтобы печать шла без окна Windows и на нужный принтер.
           </p>
           <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
             Перед обновлением закройте Print Helper в трее (правый клик → Выход), иначе установщик не сможет
-            заменить файл.
+            заменить файл. Если SmartScreen/Защитник Windows ругается — «Подробнее» → «Выполнить в любом случае»
+            (приложение своё, без цифровой подписи Microsoft).
           </p>
           <div className="form-group">
             <button className="btn btn-primary" type="button" onClick={downloadPrintHelper} disabled={downloadLoading}>
