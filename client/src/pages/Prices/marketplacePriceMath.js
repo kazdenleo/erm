@@ -57,7 +57,8 @@ export function productCostBase(product) {
 }
 
 /**
- * Маржинальность, % от цены: (цена − себестоимость) / цена × 100.
+ * Валовая маржа, % от цены: (цена − себестоимость − доп.) / цена × 100.
+ * Без комиссий/логистики МП и налогов — только для частной цены.
  * @returns {number|null}
  */
 export function marginPercentFromPrice(price, costBase) {
@@ -65,6 +66,17 @@ export function marginPercentFromPrice(price, costBase) {
   const c = Number(costBase);
   if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(c) || c < 0) return null;
   return roundMoney(((p - c) / p) * 100);
+}
+
+/**
+ * Чистая маржа, % от цены: чистая прибыль / цена × 100.
+ * @returns {number|null}
+ */
+export function netMarginPercentFromProfit(price, netProfitRub) {
+  const p = Number(price);
+  const n = Number(netProfitRub);
+  if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(n)) return null;
+  return roundMoney((n / p) * 100);
 }
 
 export function formatMarginPercent(marginPct) {

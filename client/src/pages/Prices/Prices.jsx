@@ -41,6 +41,7 @@ import { getApiSessionContext } from '../../services/apiSession.js';
 import { privateClientMinPrice } from '../../utils/marketplaceMinProfit.js';
 import {
   liveMinPriceForProduct,
+  liveNetProfitForProduct,
   pickStoredCalculator,
 } from '../../utils/calculateMinPrice.js';
 
@@ -1365,6 +1366,27 @@ export function Prices() {
                     ymFbs: raw.ymFbs ?? product.storedMinPriceYmFbs ?? storedYm ?? null,
                     ymFbo: raw.ymFbo ?? product.storedMinPriceYmFbo ?? null,
                   };
+                  const rowTaxProfile = taxProfileForProduct(
+                    organizations,
+                    productMerged,
+                    filterOrganizationId || getApiSessionContext().organizationId || null
+                  );
+                  const sppForMp = (mp) =>
+                    mp === 'ozon' ? ozonSppPercent : mp === 'wb' ? wbSppPercent : ymSppPercent;
+                  const resolveNetProfitForMp = (mp) => (price, schemeKey) => {
+                    let scheme = schemeKey;
+                    if (schemeKey === 'selling' || schemeKey === 'default') {
+                      if (showFbsPrices && !showFboPrices) scheme = 'FBS';
+                      else if (showFboPrices && !showFbsPrices) scheme = 'FBO';
+                      else if (mp === 'wb') scheme = 'FBO';
+                      else scheme = 'FBS';
+                    }
+                    return liveNetProfitForProduct(productMerged, mp, scheme, price, {
+                      ...liveMinOpts,
+                      taxProfile: rowTaxProfile,
+                      sppPercent: sppForMp(mp),
+                    });
+                  };
                   const openMinModal = (marketplace, scheme, price, detailsFallback) => {
                     const schemeKey = scheme === 'FBO' ? 'Fbo' : scheme === 'FBS' ? 'Fbs' : '';
                     const mpCap = marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'Wb' : 'Ym';
@@ -1508,11 +1530,6 @@ export function Prices() {
                         title="Нажмите, чтобы открыть расчёт мин. цены для частного клиента"
                       >
                         {(() => {
-                          const rowTaxProfile = taxProfileForProduct(
-                            organizations,
-                            productMerged,
-                            filterOrganizationId || getApiSessionContext().organizationId || null
-                          );
                           const privatePrice = privateClientMinPrice(productMerged, rowTaxProfile);
                           if (privatePrice == null) {
                             return <span className="mp-price-muted">—</span>;
@@ -1546,9 +1563,9 @@ export function Prices() {
                                   className={`mp-margin-hint ${
                                     marginPct >= 0 ? 'mp-margin-hint--positive' : 'mp-margin-hint--negative'
                                   }`}
-                                  title="Маржинальность: (цена − себестоимость − доп.) / цена × 100"
+                                  title="Валовая маржа частной цены: (цена − себестоимость − доп.) / цена. Без удержаний МП."
                                 >
-                                  маржа {marginLabel}
+                                  вал. {marginLabel}
                                 </span>
                               ) : null}
                             </div>
@@ -1571,6 +1588,7 @@ export function Prices() {
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
+                        resolveNetProfit={resolveNetProfitForMp('ozon')}
                         onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
                         onOpenMinDetailsFbs={() => openMinModal('ozon', 'FBS', prices.ozonFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ozon', 'FBO', prices.ozonFbo)}
@@ -1591,6 +1609,7 @@ export function Prices() {
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
+                        resolveNetProfit={resolveNetProfitForMp('wb')}
                         onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
                         onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs ?? prices.wb)}
                         onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo ?? prices.wb)}
@@ -1611,6 +1630,7 @@ export function Prices() {
                         onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
+                        resolveNetProfit={resolveNetProfitForMp('ym')}
                         onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}

@@ -7,20 +7,42 @@ import {
   getMarketplacePricePack,
   productCostBase,
   marginPercentFromPrice,
+  netMarginPercentFromProfit,
   formatMarginPercent,
 } from './marketplacePriceMath.js';
 
-function MarginHint({ price, costBase, titlePrefix = 'Маржинальность' }) {
-  const pct = marginPercentFromPrice(price, costBase);
+/**
+ * @param {object} props
+ * @param {number|null|undefined} props.price
+ * @param {number|null|undefined} [props.costBase] — только fallback (валовая)
+ * @param {(price: number) => number|null|undefined} [props.netProfitForPrice] — ₽ чистой прибыли
+ * @param {string} [props.schemeLabel]
+ */
+function MarginHint({ price, costBase, netProfitForPrice = null, schemeLabel = '' }) {
+  const p = Number(price);
+  if (!Number.isFinite(p) || p <= 0) return null;
+
+  let pct = null;
+  let mode = 'net';
+  if (typeof netProfitForPrice === 'function') {
+    const profit = netProfitForPrice(p);
+    pct = netMarginPercentFromProfit(p, profit);
+  }
+  if (pct == null) {
+    pct = marginPercentFromPrice(p, costBase);
+    mode = 'gross';
+  }
   const label = formatMarginPercent(pct);
   if (!label) return null;
   const tone = pct >= 0 ? 'positive' : 'negative';
+  const schemeBit = schemeLabel ? ` (${schemeLabel})` : '';
+  const title =
+    mode === 'net'
+      ? `Чистая маржа${schemeBit}: прибыль / цена. Учтены себестоимость, доп. расходы, комиссия, логистика, эквайринг, возвраты, продвижение и налоги (как в мин. цене).`
+      : `Валовая маржа: (цена − себестоимость − доп.) / цена. Нет данных калькулятора МП — комиссия и логистика не учтены.`;
   return (
-    <span
-      className={`mp-margin-hint mp-margin-hint--${tone}`}
-      title={`${titlePrefix}: (цена − себестоимость − доп.) / цена × 100`}
-    >
-      маржа {label}
+    <span className={`mp-margin-hint mp-margin-hint--${tone}`} title={title}>
+      {mode === 'net' ? 'чист.' : 'вал.'} {label}
     </span>
   );
 }
@@ -60,9 +82,15 @@ export function MarketplacePriceCells({
   onSave,
   disabled = false,
   showMax = false,
+  /** (price, scheme|'selling') => net profit ₽ | null */
+  resolveNetProfit = null,
 }) {
   const pack = getMarketplacePricePack(product, marketplace);
   const costBase = productCostBase(product);
+  const netFor = (schemeKey) =>
+    typeof resolveNetProfit === 'function'
+      ? (price) => resolveNetProfit(price, schemeKey)
+      : null;
   const [strategyUnlocked, setStrategyUnlocked] = useState(false);
   const primaryMin = minPrice != null && !isNaN(Number(minPrice)) ? Number(minPrice) : null;
   const fbsMin =
@@ -250,7 +278,12 @@ export function MarketplacePriceCells({
         ) : (
           <span className={value != null ? '' : 'mp-price-muted'}>{inner}</span>
         )}
-        <MarginHint price={value} costBase={costBase} titlePrefix={`Маржа мин.${label ? ` ${label}` : ''}`} />
+        <MarginHint
+          price={value}
+          costBase={costBase}
+          netProfitForPrice={netFor(label === 'FBO' ? 'FBO' : label === 'FBS' ? 'FBS' : 'default')}
+          schemeLabel={label || undefined}
+        />
       </div>
     );
   };
@@ -300,7 +333,11 @@ export function MarketplacePriceCells({
                 title="Максимальная цена продажи"
                 onChange={(e) => onMaxChange(e.target.value)}
               />
-              <MarginHint price={parseMoneyInput(maxStr)} costBase={costBase} titlePrefix="Маржа макс." />
+              <MarginHint
+                price={parseMoneyInput(maxStr)}
+                costBase={costBase}
+                netProfitForPrice={netFor('selling')}
+              />
             </div>
           )}
         </td>
@@ -335,7 +372,7 @@ export function MarketplacePriceCells({
               <MarginHint
                 price={parseMoneyInput(actualStr)}
                 costBase={costBase}
-                titlePrefix="Маржа после скидки"
+                netProfitForPrice={netFor('selling')}
               />
             </div>
           )}
@@ -383,7 +420,7 @@ export function MarketplacePriceCells({
               <MarginHint
                 price={parseMoneyInput(beforeStr)}
                 costBase={costBase}
-                titlePrefix="Маржа до скидки"
+                netProfitForPrice={netFor('selling')}
               />
             </div>
           )}

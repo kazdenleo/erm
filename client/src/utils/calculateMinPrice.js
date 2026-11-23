@@ -117,9 +117,12 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  sppPercent = null
+  sppPercent = null,
+  options = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
+  const salePriceOpt =
+    options && typeof options === 'object' ? Number(options.salePrice) : NaN;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
   if (minProfitNum == null || minProfitNum < 0) return null;
   if (!calculator || !calculator.commissions) return null;
@@ -261,44 +264,61 @@ export function calculateMinPrice(
     safeExpenseNum(deliveryToCustomer) +
     (marketplace === 'ym' ? safeExpenseNum(ymAgencyFixed) + safeExpenseNum(ymPaymentTransferFixed) : 0);
 
-  const solveForReturnCosts = (returnCost, returnProcessingCost) => {
-    const fixedExpenses = baseFixedExpenses + safeExpenseNum(returnCost) + safeExpenseNum(returnProcessingCost);
+  const computeReturnCosts = () => {
+    if (!(returnRate > 0)) return { returnCost: 0, returnProcessingCost: 0 };
+    let returnAmount = safeExpenseNum(commission.return_amount);
+    if (marketplace === 'ozon') {
+      returnAmount = resolveOzonReturnUnitAmount(returnAmount, calculator, commission, priceScheme);
+    }
+    const returnCost = returnAmount * returnRate;
+    const returnProcessingCost = safeExpenseNum(commission.return_processing_amount) * returnRate;
+    return { returnCost, returnProcessingCost };
+  };
 
-    const calculateNetProfit = (price) => {
-      const priceNum = Number(price) || 0;
-      const commissionPct = resolveCommissionPercentAtPrice(priceNum);
-      if (commissionPct == null || commissionPct < MIN_USABLE_COMMISSION_PERCENT) {
-        return Number.NEGATIVE_INFINITY;
-      }
-      const commissionAmount = priceNum * (commissionPct / 100);
-      let acquiringAmount = priceNum * acquiringPercent;
-      if (marketplace === 'ym') {
-        acquiringAmount =
-          ymAgencyFixed +
-          ymPaymentTransferFixed +
-          priceNum * ymPaymentTransferPercent +
-          priceNum * ymAgencyPercent;
-      } else if (marketplace === 'ozon') acquiringAmount = Math.round(acquiringAmount * 100) / 100;
-      const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-      const mpExpensesWithoutBase =
-        fixedExpenses +
-        commissionAmount +
-        acquiringAmount +
-        deliveryAmountAtPrice +
-        priceNum * brandPromotionPercent +
-        priceNum * adsPromotionPercent +
-        priceNum * gemServicesPercent;
-      // Комиссии от мин. цены; НДС/УСН — от цены после СПП; чистая = мин − расходы − налоги
-      const sellingPrice = priceNum * sellFactor;
-      const totalExpenses = basePriceNum + mpExpensesWithoutBase;
-      const { vat, incomeTax } = computeTaxesAndNetProfit({
-        price: sellingPrice,
-        totalExpenses,
-        taxProfile: { ...profile, incomeTaxOnRevenue: false },
-      });
-      return priceNum - totalExpenses - vat - incomeTax;
-    };
+  const { returnCost, returnProcessingCost } = computeReturnCosts();
+  const fixedExpenses = baseFixedExpenses + safeExpenseNum(returnCost) + safeExpenseNum(returnProcessingCost);
 
+  const calculateNetProfit = (price) => {
+    const priceNum = Number(price) || 0;
+    const commissionPct = resolveCommissionPercentAtPrice(priceNum);
+    if (commissionPct == null || commissionPct < MIN_USABLE_COMMISSION_PERCENT) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    const commissionAmount = priceNum * (commissionPct / 100);
+    let acquiringAmount = priceNum * acquiringPercent;
+    if (marketplace === 'ym') {
+      acquiringAmount =
+        ymAgencyFixed +
+        ymPaymentTransferFixed +
+        priceNum * ymPaymentTransferPercent +
+        priceNum * ymAgencyPercent;
+    } else if (marketplace === 'ozon') acquiringAmount = Math.round(acquiringAmount * 100) / 100;
+    const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
+    const mpExpensesWithoutBase =
+      fixedExpenses +
+      commissionAmount +
+      acquiringAmount +
+      deliveryAmountAtPrice +
+      priceNum * brandPromotionPercent +
+      priceNum * adsPromotionPercent +
+      priceNum * gemServicesPercent;
+    // Комиссии от цены; НДС/УСН — от цены после СПП; чистая = цена − расходы − налоги
+    const sellingPrice = priceNum * sellFactor;
+    const totalExpenses = basePriceNum + mpExpensesWithoutBase;
+    const { vat, incomeTax } = computeTaxesAndNetProfit({
+      price: sellingPrice,
+      totalExpenses,
+      taxProfile: { ...profile, incomeTaxOnRevenue: false },
+    });
+    return priceNum - totalExpenses - vat - incomeTax;
+  };
+
+  if (Number.isFinite(salePriceOpt) && salePriceOpt > 0) {
+    const profit = calculateNetProfit(salePriceOpt);
+    return Number.isFinite(profit) ? Math.round(profit) : null;
+  }
+
+  const solveForReturnCosts = () => {
     const fixedTotal = basePriceNum + fixedExpenses;
     // При мин. УСН 1%: net ≈ P×(1 − variableRate − sellFactor×(vatR+0.01)) − fixedTotal
     const taxDrag = sellFactor * (vatR + 0.01);
@@ -338,19 +358,37 @@ export function calculateMinPrice(
     return finalPrice > 0 ? Math.round(finalPrice) : null;
   };
 
-  const computeReturnCosts = () => {
-    if (!(returnRate > 0)) return { returnCost: 0, returnProcessingCost: 0 };
-    let returnAmount = safeExpenseNum(commission.return_amount);
-    if (marketplace === 'ozon') {
-      returnAmount = resolveOzonReturnUnitAmount(returnAmount, calculator, commission, priceScheme);
-    }
-    const returnCost = returnAmount * returnRate;
-    const returnProcessingCost = safeExpenseNum(commission.return_processing_amount) * returnRate;
-    return { returnCost, returnProcessingCost };
-  };
+  return solveForReturnCosts();
+}
 
-  const { returnCost, returnProcessingCost } = computeReturnCosts();
-  return solveForReturnCosts(returnCost, returnProcessingCost);
+/** Чистая прибыль (₽) при продаже по цене — та же модель, что у мин. цены. */
+export function netProfitAtSalePrice(
+  salePrice,
+  basePrice,
+  calculator,
+  marketplace,
+  product = null,
+  wbAcquiringPercent = null,
+  wbGemServicesPercent = null,
+  taxProfile = null,
+  scheme = null,
+  sppPercent = null
+) {
+  const price = Number(salePrice);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return calculateMinPrice(
+    basePrice,
+    calculator,
+    marketplace,
+    0,
+    product,
+    wbAcquiringPercent,
+    wbGemServicesPercent,
+    taxProfile,
+    scheme,
+    sppPercent,
+    { salePrice: price }
+  );
 }
 
 export function resolveMinPriceTaxProfile(product, taxProfile = null) {
@@ -435,6 +473,55 @@ export function liveMinPriceForProduct(product, marketplace, scheme, opts = {}) 
     calculator,
     mp,
     minProfit,
+    product,
+    wbAcq,
+    wbGem,
+    opts.taxProfile,
+    scheme,
+    opts.sppPercent ?? opts.wbSppPercent
+  );
+}
+
+/**
+ * Чистая прибыль (₽) при цене продажи: себестоимость + доп. + удержания МП + налоги.
+ * Нужны сохранённые детали калькулятора (как для мин. цены).
+ */
+export function liveNetProfitForProduct(product, marketplace, scheme, salePrice, opts = {}) {
+  const mp = String(marketplace || '').toLowerCase();
+  let calculator = pickStoredCalculator(product, mp, scheme);
+  if (!calculator || typeof calculator !== 'object') return null;
+
+  calculator = enrichCalculatorVolumeFromProduct(calculator, product, mp);
+  if (mp === 'ozon') {
+    calculator = enrichOzonCalculatorFromProduct(calculator, product);
+    if (opts.ozonAcquiringPercent != null && opts.ozonAcquiringPercent !== '') {
+      calculator = { ...calculator, acquiring: Number(opts.ozonAcquiringPercent) || 0 };
+    }
+  }
+  if (mp === 'wb' && opts.wbLocalizationIndex != null && opts.wbLocalizationIndex !== '') {
+    calculator = {
+      ...calculator,
+      logistics_localization_index: resolveWbLocalizationIndex(opts.wbLocalizationIndex),
+    };
+  }
+
+  const cost = Number(product?.cost ?? product?.price ?? product?.base_price ?? 0) || 0;
+  const add = Number(product?.additionalExpenses ?? product?.additional_expenses ?? 0) || 0;
+  const base = cost + add;
+  if (base <= 0) return null;
+
+  const wbAcq = opts.wbAcquiringPercent != null
+    ? opts.wbAcquiringPercent
+    : (calculator.acquiring != null ? Number(calculator.acquiring) : null);
+  const wbGem = opts.wbGemServicesPercent != null
+    ? opts.wbGemServicesPercent
+    : (calculator.gem_services_percent != null ? Number(calculator.gem_services_percent) : null);
+
+  return netProfitAtSalePrice(
+    salePrice,
+    base,
+    calculator,
+    mp,
     product,
     wbAcq,
     wbGem,
