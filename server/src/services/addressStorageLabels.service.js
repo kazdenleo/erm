@@ -45,30 +45,40 @@ export async function renderLabelPng(loc, settings) {
   // X=0.375 мм (3 px @ 203 dpi), quiet zone 10; ширину не растягиваем — только высоту.
   const maxBarW = Math.max(40, W - pad * 2);
   const barHeightMm = Math.max(15, barH / PX_PER_MM);
-  const bwipOpts = {
-    bcid: 'code128',
-    text: barcodeText,
+  const payload = String(barcodeText || '')
+    .toUpperCase()
+    .replace(/[^0-9A-Z\-.$\/+%\s]/g, '');
+  const baseOpts = {
     height: barHeightMm,
     includetext: false,
     paddingwidth: 10,
     paddingheight: 0,
     inkspread: 0,
   };
-  let scale = Math.max(BARCODE_MIN_SCALE, Math.round(BARCODE_MODULE_MM * PX_PER_MM));
   let raw = null;
   let drawW = 0;
-  for (; scale >= BARCODE_MIN_SCALE; scale -= 1) {
-    const buf = await bwipjs.toBuffer({ ...bwipOpts, scale });
-    const meta = await sharp(buf).metadata();
-    if (meta.width && meta.width <= maxBarW) {
-      raw = buf;
-      drawW = meta.width;
-      break;
+  outer: for (
+    let scale = Math.max(BARCODE_MIN_SCALE, Math.round(BARCODE_MODULE_MM * PX_PER_MM));
+    scale >= BARCODE_MIN_SCALE;
+    scale -= 1
+  ) {
+    for (const bcid of ['code128', 'code39']) {
+      const buf = await bwipjs.toBuffer({ ...baseOpts, bcid, text: payload || String(barcodeText), scale });
+      const meta = await sharp(buf).metadata();
+      if (meta.width && meta.width <= maxBarW) {
+        raw = buf;
+        drawW = meta.width;
+        break outer;
+      }
     }
   }
   if (!raw) {
-    // Длинный payload не влез — кодируем как есть на min scale (лучше тишина, чем битые доли).
-    raw = await bwipjs.toBuffer({ ...bwipOpts, scale: BARCODE_MIN_SCALE });
+    raw = await bwipjs.toBuffer({
+      ...baseOpts,
+      bcid: 'code128',
+      text: payload || String(barcodeText),
+      scale: BARCODE_MIN_SCALE,
+    });
     drawW = Math.min((await sharp(raw).metadata()).width || maxBarW, maxBarW);
   }
   const bc = await sharp(raw)

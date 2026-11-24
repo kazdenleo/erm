@@ -1,6 +1,6 @@
 {
   "name": "erm-label-print-helper",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Локальный сервис для тихой печати этикеток после сборки заказа (без диалога браузера)",
   "main": "index.cjs",
   "bin": "index.cjs",

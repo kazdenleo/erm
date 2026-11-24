@@ -39,8 +39,8 @@ const MM_TO_PX = 8;
  * Модуль Code128 = 3 px → 0.375 мм (целые точки головы) — иначе сканер не берёт.
  */
 const CELL_MM_TO_PX = 8;
-/** Минимальная высота полосок ячейки, мм (GS1: ≥6.35 мм; для ручного сканера лучше ≥15). */
-const CELL_BARCODE_MIN_HEIGHT_MM = 18;
+/** Минимальная высота полосок ячейки, мм (для лазерного сканера лучше ≥20). */
+const CELL_BARCODE_MIN_HEIGHT_MM = 20;
 /** Целевая ширина модуля Code128, мм (4 точки @ 203 dpi = 0.5 мм — надёжнее для ручных сканеров). */
 const CELL_BARCODE_MODULE_MM = 0.5;
 /** Ниже 3 точек @ 203 dpi (~0.375 мм) обычный сканер часто молчит. */
@@ -753,8 +753,8 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
 }
 
 /**
- * Code128 ячейки: X-dimension ≥0.375 мм (лучше 0.5), без растягивания по ширине.
- * Если длинный текст не влезает — пробуем короткий L… payload из text, не опускаем scale ниже 3.
+ * ШК ячейки: Code39 (лазерные сканеры берут стабильнее, чем Code128 с термопечати),
+ * модуль ≥0.375 мм, без растягивания по ширине.
  */
 async function generateCellBarcodePng(text, { maxWidthPx, heightPx, mmToPx = CELL_MM_TO_PX }) {
   const maxW = Math.max(40, Math.floor(Number(maxWidthPx) || 0));
@@ -763,17 +763,21 @@ async function generateCellBarcodePng(text, { maxWidthPx, heightPx, mmToPx = CEL
   const quiet = 10;
   const preferredScale = Math.max(CELL_BARCODE_MIN_SCALE, Math.round(CELL_BARCODE_MODULE_MM * mmToPx));
 
-  const primary = String(text || '').trim();
+  const primary = String(text || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^0-9A-Z\-.$\/+%\s]/g, '');
   if (!primary) return null;
 
-  async function tryEncode(payload) {
-    const spec = resolveBarcodeSpec(payload) || { bcid: 'code128', text: payload };
-    const bcid = spec.bcid === 'ean13' ? 'code128' : spec.bcid;
-    for (let scale = preferredScale; scale >= CELL_BARCODE_MIN_SCALE; scale -= 1) {
+  // Сначала более толстый модуль (scale↓); Code128 плотнее → чаще влезает при 0.5 мм.
+  // Code39 — запасной: часть ручных сканеров его берёт охотнее после термопечати.
+  const symbologies = ['code128', 'code39'];
+  for (let scale = preferredScale; scale >= CELL_BARCODE_MIN_SCALE; scale -= 1) {
+    for (const bcid of symbologies) {
       try {
         const raw = await bwipToBufferWithTimeout({
           bcid,
-          text: spec.text,
+          text: primary,
           scale,
           height: barMm,
           paddingwidth: quiet,
@@ -793,13 +797,11 @@ async function generateCellBarcodePng(text, { maxWidthPx, heightPx, mmToPx = CEL
           .png()
           .toBuffer();
       } catch {
-        /* next scale */
+        /* next */
       }
     }
-    return null;
   }
-
-  return tryEncode(primary);
+  return null;
 }
 
 /**
@@ -1047,7 +1049,10 @@ async function buildLabelSvg({
       const configuredMm = Number(el.heightMm) || 12;
       const hMm = cell ? Math.max(CELL_BARCODE_MIN_HEIGHT_MM, configuredMm) : configuredMm;
       let hPx = Math.round(hMm * mmToPx);
-      const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
+      // Ячейки: вся ширина под ШК — толще модули, сканеру проще.
+      const { widthPx: barWidthPx, offsetX: barOffsetX } = cell
+        ? { widthPx: innerW, offsetX: 0 }
+        : resolveBarcodeSlot(el, innerW, mmToPx);
       const barX = padL + barOffsetX;
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
       const barcodeCaption = barcodeDisplayText(barcodeValue);
