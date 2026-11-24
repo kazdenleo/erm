@@ -812,11 +812,12 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
 
   // buyout_rate* обязательны: без них calculateMinPrice берёт дефолт 95% выкупа
   // и завышает чист.% — стратегия ошибочно оставляет цену на полу (как KN1037K).
+  // Габариты ERP сюда НЕ берём: без mp-упаковки L×W×H занижают литры WB и логистику
+  // относительно calculation_details (volume_weight), снова «залипая» на минимуме.
   const prodRes = await query(
     `SELECT id, cost, additional_expenses, organization_id, profile_id, pricing_strategy_id,
             min_profit_ozon, min_profit_wb, min_profit_ym, min_price AS product_min_price,
-            buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym,
-            length, width, height, volume, weight
+            buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym
      FROM products WHERE id = $1`,
     [pid]
   );
