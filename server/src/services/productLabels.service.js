@@ -107,7 +107,6 @@ function normalizeCellTemplateForPrint(template) {
       return {
         ...el,
         heightMm: Math.max(15, Number.isFinite(h) && h > 0 ? h : 15),
-        showText: true,
         widthMm: Math.max(40, Number(el.widthMm) || 54),
       };
     }
@@ -290,7 +289,7 @@ function estimateElementMinHeight(el, ctx) {
     const hMm = isCell ? Math.max(15, configured) : configured;
     const hPx = Math.round(hMm * mmToPx);
     const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, isPackaging ? 36 : 14);
-    const textUnderH = el.showText !== false || isCell ? digitFs + 4 : 0;
+    const textUnderH = el.showText !== false ? digitFs + 4 : 0;
     return hPx + (textUnderH ? 2 + textUnderH : 0) + gap;
   }
 
@@ -499,7 +498,7 @@ export function defaultCellLabelElements() {
       enabled: true,
       widthMm: 54,
       heightMm: 15,
-      showText: true,
+      showText: false,
       textFontSize: 8,
       align: 'center',
     },
@@ -1009,9 +1008,7 @@ async function buildLabelSvg({
       const barX = padL + barOffsetX;
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
       const barcodeCaption = barcodeDisplayText(barcodeValue);
-      // Для ячеек с L{id} всегда показываем закодированное значение под ШК.
-      const showBarcodeText =
-        el.showText !== false || (cell && barcodeCaption && barcodeCaption !== String(cell.code || '').trim());
+      const showBarcodeText = el.showText !== false;
       const textUnderH = showBarcodeText ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
       const minBarcodePx = Math.round((cell ? 12 : 8) * mmToPx);
