@@ -97,7 +97,7 @@ function resolveCellMmToPx(previewScale) {
   return CELL_MM_TO_PX * Math.min(6, Math.max(2, s));
 }
 
-/** Подготовка шаблона ячейки к печати: ШК ≥15 мм, без гигантского SKU. */
+/** Подготовка шаблона ячейки к печати: ШК не ниже читаемой высоты (кегль SKU/адреса не трогаем). */
 function normalizeCellTemplateForPrint(template) {
   const src = template && typeof template === 'object' ? template : {};
   const elements = (Array.isArray(src.elements) ? src.elements : []).map((el) => {
@@ -110,28 +110,9 @@ function normalizeCellTemplateForPrint(template) {
         widthMm: Math.max(40, Number(el.widthMm) || 54),
       };
     }
-    if (el.type === 'sku' || el.type === 'name') {
-      const fs = Number(el.fontSize);
-      return {
-        ...el,
-        fontSize: Math.min(28, Number.isFinite(fs) && fs > 0 ? fs : 18),
-      };
-    }
-    if (el.type === 'code') {
-      const fs = Number(el.fontSize);
-      return {
-        ...el,
-        fontSize: Math.min(28, Number.isFinite(fs) && fs > 0 ? fs : 22),
-      };
-    }
     return el;
   });
-  const marginTop = Number(src.margin_top_mm ?? src.marginTopMm ?? 2);
-  return {
-    ...src,
-    margin_top_mm: Math.min(4, Number.isFinite(marginTop) ? marginTop : 2),
-    elements,
-  };
+  return { ...src, elements };
 }
 
 /** fontSize в шаблоне — для этикетки 58×40 при 8px/мм; масштабируется с previewScale. */
@@ -296,7 +277,7 @@ function estimateElementMinHeight(el, ctx) {
   if (el.type === 'name') {
     const name = String(product?.name || product?.mp_ozon_name || '').trim();
     if (!name) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 28 : isPackaging ? 48 : 24);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 96 : isPackaging ? 48 : 24);
     const lines = wrapTextLines(name, innerW, fs, Boolean(el.bold));
     return textBlockHeight(Math.max(1, lines.length), fs, lineGapPx) + gap;
   }
@@ -306,7 +287,7 @@ function estimateElementMinHeight(el, ctx) {
       String(product?.sku || '').trim() ||
       (isPackaging ? String(product?.name || '').trim() : '');
     if (!sku) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 28 : isPackaging ? 48 : 20);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 96 : isPackaging ? 48 : 20);
     return textBlockHeight(1, fs, lineGapPx) + gap;
   }
 
@@ -939,7 +920,7 @@ async function buildLabelSvg({
         y += blockGap;
       }
     } else if (el.type === 'name') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, cell ? 28 : largeText ? 96 : 24);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 24);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -956,7 +937,7 @@ async function buildLabelSvg({
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, cell ? 28 : largeText ? 96 : 20);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 20);
       const sku =
         String(product.sku || '').trim() ||
         (packaging ? String(product.name || '').trim() : '');
