@@ -56,16 +56,17 @@ function isPrintableAscii(s) {
 
 /**
  * Штрихкод ячейки для печати/скана.
- * Свой barcode — если задан; иначе всегда L{id}: короткий Code128 → толстые модули (0.375–0.5 мм),
- * обычный сканер читает. Длинный адрес вроде A-01-3-2 в Code128 на 58 мм даёт модуль ~0.25 мм — тишина.
- * Адрес ячейки печатается текстом на этикетке; resolveScan принимает и L{id}, и code.
+ * Всегда L{id}, кроме явно своего barcode (отличающегося от адреса).
+ * Миграция 253 проставила barcode=code — это не «свой ШК», иначе на 58 мм модули слишком тонкие
+ * и обычный сканер молчит (телефон ещё читает). Адрес остаётся крупным текстом на этикетке.
  */
 export function effectiveBarcode(loc) {
   const custom = loc?.barcode != null ? String(loc.barcode).trim() : '';
-  if (custom) return custom;
+  const code = loc?.code != null ? String(loc.code).trim() : '';
+  if (custom && custom !== code) return custom;
   if (loc?.id != null && String(loc.id).trim() !== '') return `L${loc.id}`;
-  if (isPrintableAscii(loc?.code)) return String(loc.code);
-  return '';
+  if (isPrintableAscii(code)) return code;
+  return custom || '';
 }
 
 /** Нормализация скана этикетки ячейки: AIM-префиксы сканеров, юникод-тире, невидимые символы. */
@@ -651,6 +652,9 @@ class AddressStorageService {
     if (!code) return null;
     const m = code.match(/^L(\d+)$/i);
     const idFromL = m ? Number(m[1]) : null;
+    // Телефон/сканер иногда отдают голый id без префикса L (напр. «111» вместо «L111»).
+    const bareId = !m && /^\d{1,18}$/.test(code) ? Number(code) : null;
+    const idHint = idFromL ?? bareId;
     const r = await query(
       `SELECT * FROM storage_locations
        WHERE warehouse_id = $1
@@ -667,10 +671,11 @@ class AddressStorageService {
            WHEN barcode = $2 THEN 0
            WHEN UPPER(COALESCE(barcode, '')) = UPPER($2) THEN 1
            WHEN UPPER('L' || id::text) = UPPER($2) THEN 2
-           ELSE 3
+           WHEN $3::bigint IS NOT NULL AND id = $3::bigint THEN 3
+           ELSE 4
          END
        LIMIT 1`,
-      [warehouseId, code, idFromL]
+      [warehouseId, code, idHint]
     );
     return mapLocation(r.rows[0]);
   }
@@ -681,7 +686,9 @@ class AddressStorageService {
     if (!code) return null;
     const m = code.match(/^L(\d+)$/i);
     const idFromL = m ? Number(m[1]) : null;
-    const params = [code, idFromL, Number(warehouseId)];
+    const bareId = !m && /^\d{1,18}$/.test(code) ? Number(code) : null;
+    const idHint = idFromL ?? bareId;
+    const params = [code, idHint, Number(warehouseId)];
     let profileSql = '';
     if (profileId != null) {
       params.push(profileId);
