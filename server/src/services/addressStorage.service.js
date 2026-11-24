@@ -54,17 +54,63 @@ function isPrintableAscii(s) {
   return /^[\x20-\x7E]+$/.test(String(s || ''));
 }
 
+/** Внутренний EAN-13 ячеек (префикс 28): обычные сканеры читают как товарные EAN, в отличие от короткого Code128 L{id}. */
+const CELL_EAN_PREFIX = '28';
+
+function ean13CheckDigit(d12) {
+  const s = String(d12 || '').replace(/\D/g, '');
+  if (s.length !== 12) return null;
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) {
+    sum += Number(s[i]) * (i % 2 === 0 ? 1 : 3);
+  }
+  return String((10 - (sum % 10)) % 10);
+}
+
+/** EAN-13 для ячейки по id (28 + 10 цифр id + контрольная). */
+export function locationBarcodeEan13(locationId) {
+  const id = Number(locationId);
+  if (!Number.isInteger(id) || id <= 0 || id > 9_999_999_999) return null;
+  const body = `${CELL_EAN_PREFIX}${String(id).padStart(10, '0')}`;
+  const check = ean13CheckDigit(body);
+  return check != null ? `${body}${check}` : null;
+}
+
+/** Обратно: наш EAN-13 ячейки → id, иначе null. */
+export function parseLocationEan13(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length !== 13 || !digits.startsWith(CELL_EAN_PREFIX)) return null;
+  const body = digits.slice(0, 12);
+  if (ean13CheckDigit(body) !== digits[12]) return null;
+  const id = Number(body.slice(CELL_EAN_PREFIX.length));
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function isSystemLocationBarcode(value, locationId) {
+  const s = String(value || '').trim();
+  if (!s) return true;
+  if (/^L\d+$/i.test(s)) return true;
+  if (parseLocationEan13(s) != null) return true;
+  if (locationId != null && s === locationBarcodeEan13(locationId)) return true;
+  return false;
+}
+
 /**
  * Штрихкод ячейки для печати/скана.
- * Всегда L{id}, кроме явно своего barcode (отличающегося от адреса).
- * Миграция 253 проставила barcode=code — это не «свой ШК», иначе на 58 мм модули слишком тонкие
- * и обычный сканер молчит (телефон ещё читает). Адрес остаётся крупным текстом на этикетке.
+ * По умолчанию — EAN-13 (как у товаров), чтобы обычный сканер не молчал на коротком Code128 L{id}.
+ * Явно заданный пользователем barcode (не L{id}/не наш EAN и не адрес) оставляем как есть.
  */
 export function effectiveBarcode(loc) {
   const custom = loc?.barcode != null ? String(loc.barcode).trim() : '';
   const code = loc?.code != null ? String(loc.code).trim() : '';
-  if (custom && custom !== code) return custom;
-  if (loc?.id != null && String(loc.id).trim() !== '') return `L${loc.id}`;
+  const id = loc?.id != null && String(loc.id).trim() !== '' ? Number(loc.id) : null;
+
+  if (custom && custom !== code && !isSystemLocationBarcode(custom, id)) {
+    return custom;
+  }
+  if (id != null && Number.isFinite(id)) {
+    return locationBarcodeEan13(id) || `L${id}`;
+  }
   if (isPrintableAscii(code)) return code;
   return custom || '';
 }
@@ -652,9 +698,12 @@ class AddressStorageService {
     if (!code) return null;
     const m = code.match(/^L(\d+)$/i);
     const idFromL = m ? Number(m[1]) : null;
+    const idFromEan = parseLocationEan13(code);
     // Телефон/сканер иногда отдают голый id без префикса L (напр. «111» вместо «L111»).
-    const bareId = !m && /^\d{1,18}$/.test(code) ? Number(code) : null;
-    const idHint = idFromL ?? bareId;
+    // Длинные EAN товара не считаем id ячейки.
+    const bareId =
+      idFromL == null && idFromEan == null && /^\d{1,8}$/.test(code) ? Number(code) : null;
+    const idHint = idFromL ?? idFromEan ?? bareId;
     const r = await query(
       `SELECT * FROM storage_locations
        WHERE warehouse_id = $1
@@ -686,8 +735,10 @@ class AddressStorageService {
     if (!code) return null;
     const m = code.match(/^L(\d+)$/i);
     const idFromL = m ? Number(m[1]) : null;
-    const bareId = !m && /^\d{1,18}$/.test(code) ? Number(code) : null;
-    const idHint = idFromL ?? bareId;
+    const idFromEan = parseLocationEan13(code);
+    const bareId =
+      idFromL == null && idFromEan == null && /^\d{1,8}$/.test(code) ? Number(code) : null;
+    const idHint = idFromL ?? idFromEan ?? bareId;
     const params = [code, idHint, Number(warehouseId)];
     let profileSql = '';
     if (profileId != null) {
