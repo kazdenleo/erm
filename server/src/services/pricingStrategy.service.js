@@ -1126,21 +1126,44 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       });
     }
 
-    const computed = computeSellingPriceFromInputs({
-      mode,
-      config,
-      floor,
-      cost: product.cost,
-      competitorPrices: comp.prices || [],
-      velocity,
-      previousSelling,
-      marketplace: mp,
-      ceiling: row.max_price,
-      targetMarginPrice,
-    });
+    // Несколько проходов: «макс. изменение за раз» иначе оставляет WB/др. МП
+    // на полпути к целевой марже после одного сохранения стратегии.
+    let computed = null;
+    let walkFrom = previousSelling;
+    const walkSteps = [];
+    const maxWalk = 12;
+    for (let walk = 0; walk < maxWalk; walk++) {
+      computed = computeSellingPriceFromInputs({
+        mode,
+        config,
+        floor,
+        cost: product.cost,
+        competitorPrices: comp.prices || [],
+        velocity,
+        previousSelling: walkFrom,
+        marketplace: mp,
+        ceiling: row.max_price,
+        targetMarginPrice,
+      });
+      if (Array.isArray(computed?.details?.steps)) {
+        walkSteps.push(...computed.details.steps);
+      }
+      const nextPrice = computed?.sellingPrice;
+      if (
+        nextPrice == null ||
+        sameMoneyLocal(walkFrom, nextPrice) ||
+        computed.heldByBand === true ||
+        computed.cappedByCeiling === true
+      ) {
+        break;
+      }
+      walkFrom = nextPrice;
+    }
 
     const details = {
-      ...computed.details,
+      ...(computed?.details || {}),
+      steps: walkSteps.length ? walkSteps : computed?.details?.steps,
+      walkPasses: Math.min(maxWalk, walkSteps.filter((s) => s?.step === 'target_margin' || s?.step === 'max_change').length || 1),
       strategyId: Number(strategy.id),
       strategyName: strategy.name,
       strategySource: strategy._source || null,
