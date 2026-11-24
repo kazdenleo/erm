@@ -76,14 +76,29 @@ export function locationBarcodeEan13(locationId) {
   return check != null ? `${body}${check}` : null;
 }
 
-/** Обратно: наш EAN-13 ячейки → id, иначе null. */
+/** Обратно: наш EAN-13 ячейки → id, иначе null. Сканер может отдать 12 цифр без контрольной. */
 export function parseLocationEan13(raw) {
   const digits = String(raw || '').replace(/\D/g, '');
-  if (digits.length !== 13 || !digits.startsWith(CELL_EAN_PREFIX)) return null;
-  const body = digits.slice(0, 12);
-  if (ean13CheckDigit(body) !== digits[12]) return null;
+  if (!digits.startsWith(CELL_EAN_PREFIX)) return null;
+  let body = null;
+  if (digits.length === 13) {
+    body = digits.slice(0, 12);
+    if (ean13CheckDigit(body) !== digits[12]) return null;
+  } else if (digits.length === 12) {
+    body = digits;
+  } else {
+    return null;
+  }
   const id = Number(body.slice(CELL_EAN_PREFIX.length));
   return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/** true, если скан похож на служебный ШК ячейки (EAN 28… или L{id}) — нельзя предлагать «привязать к товару». */
+export function isCellLocationScanCode(raw) {
+  const code = normalizeLocationScanCode(raw);
+  if (!code) return false;
+  if (/^L\d+$/i.test(code)) return true;
+  return parseLocationEan13(code) != null;
 }
 
 function isSystemLocationBarcode(value, locationId) {
@@ -122,8 +137,9 @@ export function normalizeLocationScanCode(raw) {
     .replace(/[\r\n\t]+/g, '')
     .trim();
   if (!s) return '';
-  // AIM / symbology identifier: ]C1, ]e0, ]A0 …
-  s = s.replace(/^\][A-Za-z0-9]{1,3}/, '');
+  // AIM / symbology identifier: ровно «]» + буква + цифра (]C1, ]E0, ]A0…).
+  // Не {1,3}: иначе ]E028… съедает «E02» и ломает EAN ячейки → «привязать ШК к товару».
+  s = s.replace(/^\][A-Za-z][0-9]/, '');
   s = s.replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-');
   return s.trim();
 }

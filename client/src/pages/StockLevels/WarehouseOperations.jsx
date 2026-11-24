@@ -223,6 +223,21 @@ function warehouseScanErrorMessage(e, fallback = 'Товар не найден')
   return s || fallback;
 }
 
+/** Служебный ШК ячейки (EAN 28… или L{id}) — не предлагать «привязать к товару». */
+function isCellLocationScanCode(raw) {
+  let s = String(raw ?? '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\r\n\t]+/g, '')
+    .trim();
+  if (!s) return false;
+  s = s.replace(/^\][A-Za-z][0-9]/, '').trim();
+  if (/^L\d+$/i.test(s)) return true;
+  const digits = s.replace(/\D/g, '');
+  if (!digits.startsWith('28') || (digits.length !== 12 && digits.length !== 13)) return false;
+  const id = Number(digits.slice(2, 12));
+  return Number.isInteger(id) && id > 0;
+}
+
 function readInventoryLiveDraft() {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(INVENTORY_LIVE_DRAFT_LS) : null;
@@ -1461,13 +1476,29 @@ export function WarehouseOperations({
             window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
             return;
           }
-        } catch {
-          /* не ячейка / адресное хранение недоступно — обычный поиск товара */
+        } catch (scanErr) {
+          const apiMsg = warehouseScanErrorMessage(scanErr, '');
+          const details = scanErr?.response?.data?.details;
+          // ШК ячейки / ячейка на другом складе — не предлагать «привязать ШК к товару».
+          if (
+            details?.code === 'LOCATION_OTHER_WAREHOUSE' ||
+            isCellLocationScanCode(raw) ||
+            /ячейк/i.test(apiMsg)
+          ) {
+            clearScanField(transferScanInputRef.current);
+            setOpMessage(
+              apiMsg ||
+                `Ячейка по коду «${raw}» не найдена на складе-источнике. Проверьте склад отправления.`
+            );
+            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            return;
+          }
+          /* 404 товара/ячейки — обычный поиск товара ниже */
         }
 
         const p = await lookupProductByAny(raw, {
           title: 'Выберите товар для перемещения',
-          allowLinkBarcode: true,
+          allowLinkBarcode: !isCellLocationScanCode(raw),
           organizationId: transferOrganizationId,
           useServerSearch: true,
         });
@@ -2082,6 +2113,13 @@ export function WarehouseOperations({
     if (shouldIgnoreDuplicateWarehouseScan(receiptScanDedupRef, `${remove ? 'rm:' : ''}${v}`)) return;
     setLookupError(null);
     try {
+      if (isCellLocationScanCode(v)) {
+        setLookupError(
+          `Код «${v}» — штрихкод ячейки, не товара. Сканируйте ШК товара или откройте адресное хранение.`
+        );
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
       const product = await lookupProductByAny(v, {
         title: remove ? 'Выберите товар для удаления' : 'Выберите товар для поступления',
         allowLinkBarcode: !remove,

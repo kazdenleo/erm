@@ -93,31 +93,37 @@ export function MovesTab({ warehouseId, settings, locations, reloadLocations, on
     setMessage(null);
     try {
       const r = await addressStorageApi.resolveScan(warehouseId, code);
-      if (r.type === 'product') {
+      // Сначала ячейка: EAN ячейки не должен уходить в ветку «товар».
+      if (r?.type === 'location' || r?.location) {
+        const loc = r.location;
+        playEventSound(SOUND_EVENTS.scan_ok);
+        if (!product) {
+          setScannedCell(r);
+          if ((r.items || []).length === 1) {
+            await chooseProduct(
+              { id: r.items[0].productId, sku: r.items[0].sku, name: r.items[0].name },
+              { fromLocationId: loc.id }
+            );
+          }
+          return;
+        }
+        if (cellTarget === 'from') {
+          setFrom(String(loc.id));
+          const have = whInfo?.stocks.find((s) => s.location.id === loc.id)?.quantity ?? 0;
+          setQty(have > 0 ? String(have) : '');
+          setCellTarget('to');
+        } else {
+          setTo(String(loc.id));
+        }
+        return;
+      }
+      if (r?.type === 'product' || r?.product) {
         playEventSound(SOUND_EVENTS.scan_ok);
         await chooseProduct({ id: r.product.id, sku: r.product.sku, name: r.product.name });
         return;
       }
-      const loc = r.location;
-      playEventSound(SOUND_EVENTS.scan_ok);
-      if (!product) {
-        setScannedCell(r);
-        if (r.items.length === 1) {
-          await chooseProduct(
-            { id: r.items[0].productId, sku: r.items[0].sku, name: r.items[0].name },
-            { fromLocationId: loc.id }
-          );
-        }
-        return;
-      }
-      if (cellTarget === 'from') {
-        setFrom(String(loc.id));
-        const have = whInfo?.stocks.find((s) => s.location.id === loc.id)?.quantity ?? 0;
-        setQty(have > 0 ? String(have) : '');
-        setCellTarget('to');
-      } else {
-        setTo(String(loc.id));
-      }
+      playEventSound(SOUND_EVENTS.scan_error);
+      setMessage({ ok: false, text: `Не распознано: «${code}»` });
     } catch (e) {
       playEventSound(SOUND_EVENTS.scan_error);
       setMessage({ ok: false, text: addressStorageError(e).message });
