@@ -444,6 +444,9 @@ export function WarehouseOperations({
   const [transferOrganizationId, setTransferOrganizationId] = useState('');
   const [transferFromWarehouseId, setTransferFromWarehouseId] = useState('');
   const [transferToWarehouseId, setTransferToWarehouseId] = useState('');
+  /** Ячейка назначения на складе-получателе (скан ШК ячейки FBS при FBO→FBS). */
+  const [transferToLocationId, setTransferToLocationId] = useState(null);
+  const [transferToLocationCode, setTransferToLocationCode] = useState('');
   const transferScanInputRef = useRef(null);
   const transferScanDebounceRef = useRef(null);
   const [transferList, setTransferList] = useState([]);
@@ -1171,6 +1174,24 @@ export function WarehouseOperations({
     }
   };
 
+  const applyTransferDestinationCell = useCallback((loc, { warehouseName = '' } = {}) => {
+    if (!loc?.id) return;
+    const id = Number(loc.id);
+    const code = String(loc.code || '').trim();
+    setTransferToLocationId(id);
+    setTransferToLocationCode(code);
+    setTransferList((prev) =>
+      (Array.isArray(prev) ? prev : []).map((row) => ({
+        ...row,
+        toLocationId: id,
+        toLocationCode: code,
+      }))
+    );
+    setOpMessage(
+      `Ячейка назначения: ${code}${warehouseName ? ` (${warehouseName})` : ''}. Сканируйте товар со склада-источника.`
+    );
+  }, []);
+
   const addTransferItemFromProduct = useCallback(
     async (product, opts = {}) => {
       if (!product?.id) return 0;
@@ -1189,6 +1210,16 @@ export function WarehouseOperations({
         opts.cellMaxQty != null && Number.isFinite(Number(opts.cellMaxQty))
           ? Math.max(0, Number(opts.cellMaxQty))
           : null;
+      const toLocationId =
+        opts.toLocationId != null && String(opts.toLocationId).trim() !== ''
+          ? Number(opts.toLocationId)
+          : transferToLocationId != null
+            ? Number(transferToLocationId)
+            : null;
+      const toLocationCode =
+        opts.toLocationCode != null
+          ? String(opts.toLocationCode).trim()
+          : transferToLocationCode || '';
 
       if (fromLocationId == null || !fromLocationCode || cellMax == null) {
         try {
@@ -1244,7 +1275,9 @@ export function WarehouseOperations({
           if (String(x.productId) !== pid) return false;
           const a = x.fromLocationId != null ? String(x.fromLocationId) : '';
           const b = fromLocationId != null ? String(fromLocationId) : '';
-          return a === b;
+          const ta = x.toLocationId != null ? String(x.toLocationId) : '';
+          const tb = toLocationId != null ? String(toLocationId) : '';
+          return a === b && ta === tb;
         });
         if (idx >= 0) {
           const nextQty = Math.min(Number(out[idx].quantity || 0) + addQty, maxQty);
@@ -1256,6 +1289,8 @@ export function WarehouseOperations({
             warehouseMaxQty: maxQty,
             fromLocationId: fromLocationId || out[idx].fromLocationId || null,
             fromLocationCode: fromLocationCode || out[idx].fromLocationCode || '',
+            toLocationId: toLocationId || out[idx].toLocationId || null,
+            toLocationCode: toLocationCode || out[idx].toLocationCode || '',
           };
         } else {
           added = addQty;
@@ -1267,13 +1302,15 @@ export function WarehouseOperations({
             warehouseMaxQty: maxQty,
             fromLocationId: fromLocationId || null,
             fromLocationCode: fromLocationCode || '',
+            toLocationId: toLocationId || null,
+            toLocationCode: toLocationCode || '',
           });
         }
         return out;
       });
       return added;
     },
-    [transferFromWarehouseId]
+    [transferFromWarehouseId, transferToLocationId, transferToLocationCode]
   );
 
   const updateTransferQuantity = (index, value) => {
@@ -1336,23 +1373,36 @@ export function WarehouseOperations({
           ...(it.fromLocationId
             ? { fromLocationId: Number(it.fromLocationId) }
             : {}),
+          ...(it.toLocationId || transferToLocationId
+            ? { toLocationId: Number(it.toLocationId || transferToLocationId) }
+            : {}),
         })),
       });
       const receiptNo =
         res?.data?.receipt?.receipt_number ||
         res?.receipt?.receipt_number ||
         null;
+      const placements = res?.data?.placements || res?.placements || [];
+      const destCodeSnap = String(transferToLocationCode || '').trim();
       setTransferList([]);
+      setTransferToLocationId(null);
+      setTransferToLocationCode('');
       const fromLbl = transferWarehouseLabel(transferFromWarehouse);
       const toLbl = transferWarehouseLabel(transferToWarehouse);
       const route =
         fromLbl && toLbl ? `${fromLbl} → ${toLbl}` : '';
+      const cellNote =
+        placements.length > 0
+          ? ` → ячейка ${placements.map((p) => p.code || p.toLocationId).filter(Boolean).join(', ')}`
+          : destCodeSnap
+            ? ` → ячейка ${destCodeSnap}`
+            : '';
       setOpMessage(
         receiptNo
-          ? `Перемещение ${receiptNo} оформлено (${items.length} поз.)${route ? `: ${route}` : ''}`
+          ? `Перемещение ${receiptNo} оформлено (${items.length} поз.)${route ? `: ${route}` : ''}${cellNote}`
           : route
-          ? `Перемещение выполнено (${items.length} поз.): ${route}`
-          : `Перемещение выполнено (${items.length} поз.)`
+          ? `Перемещение выполнено (${items.length} поз.): ${route}${cellNote}`
+          : `Перемещение выполнено (${items.length} поз.)${cellNote}`
       );
       loadReceiptsList(MODE_TRANSFER);
       onRefresh?.();
@@ -1479,7 +1529,41 @@ export function WarehouseOperations({
         } catch (scanErr) {
           const apiMsg = warehouseScanErrorMessage(scanErr, '');
           const details = scanErr?.response?.data?.details;
-          // ШК ячейки / ячейка на другом складе — не предлагать «привязать ШК к товару».
+          const toId = String(transferToWarehouseId || '').trim();
+
+          // Ячейка на складе-получателе → кладём туда после перемещения (FBO→FBS в ячейку FBS).
+          if (
+            details?.code === 'LOCATION_OTHER_WAREHOUSE' &&
+            toId &&
+            String(details.warehouseId) === toId &&
+            details.locationId
+          ) {
+            clearScanField(transferScanInputRef.current);
+            applyTransferDestinationCell(
+              { id: details.locationId, code: details.locationCode || raw },
+              { warehouseName: details.warehouseName || '' }
+            );
+            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+            return;
+          }
+
+          if (isCellLocationScanCode(raw) && toId) {
+            try {
+              const dest = await addressStorageApi.resolveScan(toId, raw);
+              if (dest?.type === 'location' || dest?.location) {
+                clearScanField(transferScanInputRef.current);
+                applyTransferDestinationCell(dest.location, {
+                  warehouseName: transferWarehouseLabel(transferToWarehouse),
+                });
+                window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+                return;
+              }
+            } catch {
+              /* ниже — сообщение об ошибке */
+            }
+          }
+
+          // ШК ячейки / чужой склад — не предлагать «привязать ШК к товару».
           if (
             details?.code === 'LOCATION_OTHER_WAREHOUSE' ||
             isCellLocationScanCode(raw) ||
@@ -1488,7 +1572,7 @@ export function WarehouseOperations({
             clearScanField(transferScanInputRef.current);
             setOpMessage(
               apiMsg ||
-                `Ячейка по коду «${raw}» не найдена на складе-источнике. Проверьте склад отправления.`
+                `Ячейка по коду «${raw}» не найдена. Для ячейки назначения укажите её склад в «На склад».`
             );
             window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
             return;
@@ -1505,7 +1589,11 @@ export function WarehouseOperations({
         const added = await addTransferItemFromProduct(p);
         clearScanField(transferScanInputRef.current);
         if (added > 0) {
-          setOpMessage(`В список перемещения: ${p.name || p.sku} — +${added} шт`);
+          setOpMessage(
+            transferToLocationCode
+              ? `В список: ${p.name || p.sku} — +${added} шт → ${transferToLocationCode}`
+              : `В список перемещения: ${p.name || p.sku} — +${added} шт`
+          );
         }
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
       } catch (err) {
@@ -1519,8 +1607,11 @@ export function WarehouseOperations({
       transferOrganizationId,
       transferFromWarehouseId,
       transferToWarehouseId,
+      transferToLocationCode,
+      transferToWarehouse,
       lookupProductByAny,
       addTransferItemFromProduct,
+      applyTransferDestinationCell,
       openSuggest,
     ]
   );
@@ -5405,9 +5496,10 @@ export function WarehouseOperations({
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
           <p className="warehouse-ops-hint">
-            Перенос между складами одной организации. Скан <strong>ячейки</strong> на складе-источнике —
-            если в ней один товар, он добавится сразу; если несколько — выберите нужный. Скан{' '}
-            <strong>товара</strong> — +1 шт. После оформления — документ ПМ-… в списке ниже.
+            Перенос между складами одной организации. Скан <strong>ячейки на складе-источнике</strong> —
+            взять товар из ячейки. Скан <strong>ячейки на складе-получателе</strong> — положить туда после
+            перемещения (например FBO → FBS в ячейку). Скан <strong>товара</strong> — +1 шт. После
+            оформления — документ ПМ-… в списке ниже.
           </p>
 
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -5422,6 +5514,8 @@ export function WarehouseOperations({
                   setTransferOrganizationId(e.target.value);
                   setTransferFromWarehouseId('');
                   setTransferToWarehouseId('');
+                  setTransferToLocationId(null);
+                  setTransferToLocationCode('');
                 }}
               >
                 <option value="">— выберите организацию —</option>
@@ -5466,7 +5560,11 @@ export function WarehouseOperations({
               <select
                 className="form-select"
                 value={transferToWarehouseId}
-                onChange={(e) => setTransferToWarehouseId(e.target.value)}
+                onChange={(e) => {
+                  setTransferToWarehouseId(e.target.value);
+                  setTransferToLocationId(null);
+                  setTransferToLocationCode('');
+                }}
                 disabled={!transferOrganizationId}
               >
                 <option value="">— выберите —</option>
@@ -5501,9 +5599,33 @@ export function WarehouseOperations({
           )}
 
           <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
-            Скан ячейки — один товар (при нескольких появится список выбора); скан товара — +1 шт. Ячейка
-            подставится из остатка на складе-источнике. Количество можно поправить в таблице.
+            Сначала можно отсканировать ячейку назначения (склад «На склад»), затем товар. Ячейка
+            источника подставится из остатка на складе «Со склада», если учёт по ячейкам включён.
           </p>
+
+          {transferToLocationCode ? (
+            <p className="warehouse-ops-hint" style={{ marginTop: 8 }} role="status">
+              Ячейка назначения:{' '}
+              <code className="address-code">{transferToLocationCode}</code>{' '}
+              <button
+                type="button"
+                className="btn btn-link btn-sm p-0"
+                onClick={() => {
+                  setTransferToLocationId(null);
+                  setTransferToLocationCode('');
+                  setTransferList((prev) =>
+                    (Array.isArray(prev) ? prev : []).map((row) => ({
+                      ...row,
+                      toLocationId: null,
+                      toLocationCode: '',
+                    }))
+                  );
+                }}
+              >
+                сбросить
+              </button>
+            </p>
+          ) : null}
 
           <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
@@ -5513,7 +5635,7 @@ export function WarehouseOperations({
                 onManualQuery={handleTransferManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Ячейка, штрихкод, артикул или название"
+                placeholder="Ячейка (откуда/куда), штрихкод, артикул или название"
                 disabled={
                   !transferOrganizationId || !transferFromWarehouseId || !transferToWarehouseId
                 }
@@ -5567,7 +5689,8 @@ export function WarehouseOperations({
                   <tr>
                     <th>Артикул</th>
                     <th>Название</th>
-                    <th>Ячейка</th>
+                    <th>Откуда</th>
+                    <th>Куда</th>
                     <th className="text-end">Кол-во</th>
                     <th />
                   </tr>
@@ -5575,7 +5698,7 @@ export function WarehouseOperations({
                 <tbody>
                   {transferList.map((row, index) => {
                     const maxQty = Math.max(1, Number(row.warehouseMaxQty) || 1);
-                    const rowKey = `${row.productId}:${row.fromLocationId || ''}`;
+                    const rowKey = `${row.productId}:${row.fromLocationId || ''}:${row.toLocationId || ''}`;
                     return (
                     <tr key={rowKey}>
                       <td>{row.sku || '—'}</td>
@@ -5583,6 +5706,13 @@ export function WarehouseOperations({
                       <td>
                         {row.fromLocationCode ? (
                           <code className="address-code">{row.fromLocationCode}</code>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {row.toLocationCode ? (
+                          <code className="address-code">{row.toLocationCode}</code>
                         ) : (
                           <span className="text-muted">—</span>
                         )}
