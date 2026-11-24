@@ -447,6 +447,8 @@ export function WarehouseOperations({
   /** Ячейка назначения на складе-получателе (скан ШК ячейки FBS при FBO→FBS). */
   const [transferToLocationId, setTransferToLocationId] = useState(null);
   const [transferToLocationCode, setTransferToLocationCode] = useState('');
+  /** Текущая ячейка-источник: скан ячейки → товар(+1)/выбор → следующая ячейка. */
+  const [transferActiveCell, setTransferActiveCell] = useState(null); // { location, items }
   const transferScanInputRef = useRef(null);
   const transferScanDebounceRef = useRef(null);
   const [transferList, setTransferList] = useState([]);
@@ -1259,7 +1261,7 @@ export function WarehouseOperations({
       const pid = String(product.id);
       const sku = String(product.sku || product.article || product.vendorCode || '').trim();
       const name = String(product.name || product.title || '—').trim();
-      const addQty = Math.max(
+      const wantQty = Math.max(
         1,
         Math.min(
           maxQty,
@@ -1268,6 +1270,7 @@ export function WarehouseOperations({
             : 1
         )
       );
+      const replaceQuantity = opts.replaceQuantity === true;
       let added = 0;
       setTransferList((prev) => {
         const out = Array.isArray(prev) ? [...prev] : [];
@@ -1280,9 +1283,12 @@ export function WarehouseOperations({
           return a === b && ta === tb;
         });
         if (idx >= 0) {
-          const nextQty = Math.min(Number(out[idx].quantity || 0) + addQty, maxQty);
-          if (nextQty <= Number(out[idx].quantity || 0)) return prev;
-          added = nextQty - Number(out[idx].quantity || 0);
+          const prevQty = Number(out[idx].quantity || 0);
+          const nextQty = replaceQuantity
+            ? wantQty
+            : Math.min(prevQty + wantQty, maxQty);
+          if (nextQty === prevQty) return prev;
+          added = nextQty - prevQty;
           out[idx] = {
             ...out[idx],
             quantity: nextQty,
@@ -1293,12 +1299,12 @@ export function WarehouseOperations({
             toLocationCode: toLocationCode || out[idx].toLocationCode || '',
           };
         } else {
-          added = addQty;
+          added = wantQty;
           out.push({
             productId: pid,
             sku,
             name,
-            quantity: addQty,
+            quantity: wantQty,
             warehouseMaxQty: maxQty,
             fromLocationId: fromLocationId || null,
             fromLocationCode: fromLocationCode || '',
@@ -1387,6 +1393,7 @@ export function WarehouseOperations({
       setTransferList([]);
       setTransferToLocationId(null);
       setTransferToLocationCode('');
+      setTransferActiveCell(null);
       const fromLbl = transferWarehouseLabel(transferFromWarehouse);
       const toLbl = transferWarehouseLabel(transferToWarehouse);
       const route =
@@ -1414,6 +1421,24 @@ export function WarehouseOperations({
     }
   };
 
+  const putTransferFromActiveCell = useCallback(
+    async (it, quantity, { replaceQuantity = true } = {}) => {
+      const loc = transferActiveCell?.location;
+      if (!loc?.id || !it?.productId) return 0;
+      return addTransferItemFromProduct(
+        { id: it.productId, sku: it.sku, name: it.name },
+        {
+          fromLocationId: loc.id,
+          fromLocationCode: loc.code,
+          cellMaxQty: it.quantity,
+          quantity,
+          replaceQuantity,
+        }
+      );
+    },
+    [transferActiveCell, addTransferItemFromProduct]
+  );
+
   const submitTransferScan = useCallback(
     async (e, codeOverride = null) => {
       e?.preventDefault?.();
@@ -1430,7 +1455,7 @@ export function WarehouseOperations({
           return;
         }
 
-        // Сначала пробуем ячейку/товар на складе-источнике (адресное хранение).
+        // 1) Ячейка/товар на складе-источнике.
         try {
           const scanned = await addressStorageApi.resolveScan(transferFromWarehouseId, raw);
           if (scanned?.type === 'location' || scanned?.location) {
@@ -1439,58 +1464,68 @@ export function WarehouseOperations({
               (it) => it?.productId && Number(it.quantity) > 0
             );
             clearScanField(transferScanInputRef.current);
+            setTransferActiveCell({ location: loc, items });
             if (!items.length) {
               setOpMessage(`Ячейка ${loc?.code || raw} пуста — нечего перемещать`);
               window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
               return;
             }
-
-            const addFromCell = async (it) => {
+            if (items.length === 1) {
               const n = await addTransferItemFromProduct(
-                { id: it.productId, sku: it.sku, name: it.name },
+                { id: items[0].productId, sku: items[0].sku, name: items[0].name },
                 {
                   fromLocationId: loc.id,
                   fromLocationCode: loc.code,
-                  cellMaxQty: it.quantity,
-                  quantity: it.quantity,
+                  cellMaxQty: items[0].quantity,
+                  quantity: items[0].quantity,
+                  replaceQuantity: true,
                 }
               );
-              if (n > 0) {
-                setOpMessage(
-                  `Из ячейки ${loc.code}: ${it.sku || it.name} — ${n} шт`
-                );
-              }
+              setOpMessage(
+                n > 0
+                  ? `Ячейка ${loc.code}: ${items[0].sku} — ${items[0].quantity} шт. Скан товара (+1) или следующая ячейка.`
+                  : `Ячейка ${loc.code}: ${items[0].sku} уже в списке`
+              );
               window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
-            };
-
-            if (items.length === 1) {
-              await addFromCell(items[0]);
               return;
             }
-
-            const matches = items.map((it) => ({
-              id: it.productId,
-              sku: it.sku,
-              name: it.name,
-              _cellQty: it.quantity,
-            }));
-            openSuggest(
-              'transfer_scan',
-              `Ячейка ${loc.code}: выберите товар`,
-              matches,
-              async (p) => {
-                if (!p) return;
-                const it = items.find((x) => String(x.productId) === String(p.id));
-                if (!it) return;
-                await addFromCell(it);
-              }
-            );
-            setOpMessage(
-              `В ячейке ${loc.code} несколько товаров — выберите один`
-            );
+            setOpMessage(`Ячейка ${loc.code}: несколько товаров — выберите нужный`);
+            window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
             return;
           }
           if ((scanned?.type === 'product' || scanned?.product) && scanned.product?.id) {
+            clearScanField(transferScanInputRef.current);
+            // Есть текущая ячейка — +1 только если товар в ней.
+            if (transferActiveCell?.location?.id) {
+              const item = (transferActiveCell.items || []).find(
+                (it) => Number(it.productId) === Number(scanned.product.id)
+              );
+              if (!item) {
+                setOpMessage('Этого товара нет в текущей ячейке');
+                window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+                return;
+              }
+              const added = await addTransferItemFromProduct(
+                {
+                  id: scanned.product.id,
+                  sku: scanned.product.sku,
+                  name: scanned.product.name,
+                },
+                {
+                  fromLocationId: transferActiveCell.location.id,
+                  fromLocationCode: transferActiveCell.location.code,
+                  cellMaxQty: item.quantity,
+                  quantity: 1,
+                }
+              );
+              setOpMessage(
+                added > 0
+                  ? `${scanned.product.sku || scanned.product.name}: +${added} шт из ${transferActiveCell.location.code}`
+                  : `Достигнут остаток в ячейке ${transferActiveCell.location.code}`
+              );
+              window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+              return;
+            }
             const wh = scanned.warehouse || null;
             const assigned = wh?.assigned || null;
             const stockLoc =
@@ -1515,7 +1550,6 @@ export function WarehouseOperations({
                   }
                 : { quantity: 1 }
             );
-            clearScanField(transferScanInputRef.current);
             if (added > 0) {
               setOpMessage(
                 loc?.code
@@ -1531,7 +1565,7 @@ export function WarehouseOperations({
           const details = scanErr?.response?.data?.details;
           const toId = String(transferToWarehouseId || '').trim();
 
-          // Ячейка на складе-получателе → кладём туда после перемещения (FBO→FBS в ячейку FBS).
+          // Ячейка на складе-получателе → куда класть после ПМ.
           if (
             details?.code === 'LOCATION_OTHER_WAREHOUSE' &&
             toId &&
@@ -1559,11 +1593,10 @@ export function WarehouseOperations({
                 return;
               }
             } catch {
-              /* ниже — сообщение об ошибке */
+              /* ниже */
             }
           }
 
-          // ШК ячейки / чужой склад — не предлагать «привязать ШК к товару».
           if (
             details?.code === 'LOCATION_OTHER_WAREHOUSE' ||
             isCellLocationScanCode(raw) ||
@@ -1572,12 +1605,11 @@ export function WarehouseOperations({
             clearScanField(transferScanInputRef.current);
             setOpMessage(
               apiMsg ||
-                `Ячейка по коду «${raw}» не найдена. Для ячейки назначения укажите её склад в «На склад».`
+                `Ячейка «${raw}» не на складе-источнике. Сканируйте ячейку склада «Со склада» или ячейку назначения на «На склад».`
             );
             window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
             return;
           }
-          /* 404 товара/ячейки — обычный поиск товара ниже */
         }
 
         const p = await lookupProductByAny(raw, {
@@ -1586,14 +1618,33 @@ export function WarehouseOperations({
           organizationId: transferOrganizationId,
           useServerSearch: true,
         });
+        if (transferActiveCell?.location?.id) {
+          const item = (transferActiveCell.items || []).find(
+            (it) => Number(it.productId) === Number(p.id)
+          );
+          if (!item) {
+            setOpMessage('Этого товара нет в текущей ячейке');
+            return;
+          }
+          const added = await addTransferItemFromProduct(p, {
+            fromLocationId: transferActiveCell.location.id,
+            fromLocationCode: transferActiveCell.location.code,
+            cellMaxQty: item.quantity,
+            quantity: 1,
+          });
+          clearScanField(transferScanInputRef.current);
+          if (added > 0) {
+            setOpMessage(
+              `${p.sku || p.name}: +${added} шт из ${transferActiveCell.location.code}`
+            );
+          }
+          window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+          return;
+        }
         const added = await addTransferItemFromProduct(p);
         clearScanField(transferScanInputRef.current);
         if (added > 0) {
-          setOpMessage(
-            transferToLocationCode
-              ? `В список: ${p.name || p.sku} — +${added} шт → ${transferToLocationCode}`
-              : `В список перемещения: ${p.name || p.sku} — +${added} шт`
-          );
+          setOpMessage(`В список перемещения: ${p.name || p.sku} — +${added} шт`);
         }
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
       } catch (err) {
@@ -1607,12 +1658,11 @@ export function WarehouseOperations({
       transferOrganizationId,
       transferFromWarehouseId,
       transferToWarehouseId,
-      transferToLocationCode,
       transferToWarehouse,
+      transferActiveCell,
       lookupProductByAny,
       addTransferItemFromProduct,
       applyTransferDestinationCell,
-      openSuggest,
     ]
   );
 
@@ -5496,10 +5546,10 @@ export function WarehouseOperations({
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
           <p className="warehouse-ops-hint">
-            Перенос между складами одной организации. Скан <strong>ячейки на складе-источнике</strong> —
-            взять товар из ячейки. Скан <strong>ячейки на складе-получателе</strong> — положить туда после
-            перемещения (например FBO → FBS в ячейку). Скан <strong>товара</strong> — +1 шт. После
-            оформления — документ ПМ-… в списке ниже.
+            Скан <strong>ячейки</strong> (склад «Со склада») → товар в ней (если несколько — выбрать) →
+            количество сканом ШК товара (+1) или вручную в таблице → следующая ячейка. В конце —
+            «Выполнить перемещение» (документ ПМ). Опционально: скан ячейки на складе «На склад» —
+            положить туда после перемещения.
           </p>
 
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -5516,6 +5566,7 @@ export function WarehouseOperations({
                   setTransferToWarehouseId('');
                   setTransferToLocationId(null);
                   setTransferToLocationCode('');
+                  setTransferActiveCell(null);
                 }}
               >
                 <option value="">— выберите организацию —</option>
@@ -5542,7 +5593,10 @@ export function WarehouseOperations({
               <select
                 className="form-select"
                 value={transferFromWarehouseId}
-                onChange={(e) => setTransferFromWarehouseId(e.target.value)}
+                onChange={(e) => {
+                  setTransferFromWarehouseId(e.target.value);
+                  setTransferActiveCell(null);
+                }}
                 disabled={!transferOrganizationId}
               >
                 <option value="">— выберите —</option>
@@ -5598,10 +5652,55 @@ export function WarehouseOperations({
             </div>
           )}
 
-          <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
-            Сначала можно отсканировать ячейку назначения (склад «На склад»), затем товар. Ячейка
-            источника подставится из остатка на складе «Со склада», если учёт по ячейкам включён.
-          </p>
+          {transferActiveCell?.location ? (
+            <div className="warehouse-ops-hint" style={{ marginTop: 10 }} role="status">
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                <span>
+                  Текущая ячейка:{' '}
+                  <code className="address-code">{transferActiveCell.location.code}</code>
+                  {(transferActiveCell.items || []).length > 1
+                    ? ' — выберите товар'
+                    : null}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-link btn-sm p-0"
+                  onClick={() => setTransferActiveCell(null)}
+                >
+                  сбросить ячейку
+                </button>
+              </div>
+              {(transferActiveCell.items || []).length > 1 ? (
+                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {(transferActiveCell.items || []).map((it) => (
+                    <button
+                      key={it.productId}
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={opLoading}
+                      onClick={async () => {
+                        const n = await putTransferFromActiveCell(it, it.quantity, {
+                          replaceQuantity: true,
+                        });
+                        if (n !== 0) {
+                          setOpMessage(
+                            `Из ${transferActiveCell.location.code}: ${it.sku} — ${it.quantity} шт`
+                          );
+                        }
+                        window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+                      }}
+                    >
+                      {it.sku} · {it.quantity} шт
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
+              Начните со скана ячейки на складе-источнике (или товара, если без ячеек).
+            </p>
+          )}
 
           {transferToLocationCode ? (
             <p className="warehouse-ops-hint" style={{ marginTop: 8 }} role="status">
@@ -5635,7 +5734,11 @@ export function WarehouseOperations({
                 onManualQuery={handleTransferManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Ячейка (откуда/куда), штрихкод, артикул или название"
+                placeholder={
+                  transferActiveCell
+                    ? 'Товар из ячейки (+1) или следующая ячейка'
+                    : 'Сканируйте ячейку откуда (или товар)'
+                }
                 disabled={
                   !transferOrganizationId || !transferFromWarehouseId || !transferToWarehouseId
                 }
@@ -5746,7 +5849,7 @@ export function WarehouseOperations({
             </div>
           ) : (
             <p className="warehouse-ops-receipt-list-empty" style={{ marginTop: 12 }}>
-              Добавьте товары в список перемещения.
+              Сканируйте ячейку — товары появятся в списке перемещения.
             </p>
           )}
 
@@ -5777,7 +5880,12 @@ export function WarehouseOperations({
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setTransferList([])}
+              onClick={() => {
+                setTransferList([]);
+                setTransferActiveCell(null);
+                setTransferToLocationId(null);
+                setTransferToLocationCode('');
+              }}
               disabled={opLoading}
             >
               Очистить список
