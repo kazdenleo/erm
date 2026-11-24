@@ -161,11 +161,25 @@ class AddressStorageController {
     return send(res, await addressStorageService.importAssignments(warehouseId, req.body?.text, { profileId }));
   }
 
-  async resolveScan(req, res) {
-    const { warehouseId, profileId } = await requireWarehouse(req);
-    const data = await addressStorageService.resolveScan(warehouseId, req.query.code, { profileId });
-    if (!data) return res.status(404).json({ ok: false, message: 'Не найдено ни ячейки, ни товара' });
-    return send(res, data);
+  async resolveScan(req, res, next) {
+    try {
+      const { warehouseId, profileId } = await requireWarehouse(req);
+      const raw = req.query.code ?? req.query.q ?? '';
+      const data = await addressStorageService.resolveScan(warehouseId, raw, { profileId });
+      if (!data) {
+        const shown = String(raw ?? '').trim();
+        return res.status(404).json({
+          ok: false,
+          message: shown
+            ? `Не найдено ни ячейки, ни товара по коду «${shown}» на этом складе`
+            : 'Не найдено ни ячейки, ни товара',
+          details: { scanned: shown || null },
+        });
+      }
+      return send(res, data);
+    } catch (error) {
+      next(error);
+    }
   }
 
   async moveStock(req, res) {

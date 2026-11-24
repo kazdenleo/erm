@@ -4,7 +4,11 @@
  */
 
 import React, { memo, useEffect, useRef } from 'react';
-import { isLikelyBarcodeScan, normalizeProductSearchQuery } from '../../../utils/productSearch';
+import {
+  isLikelyBarcodeScan,
+  isLikelyLocationScan,
+  normalizeProductSearchQuery,
+} from '../../../utils/productSearch';
 import { looksLikeCis } from '../../../utils/chestnyZnakCis';
 import { clearScanField, readScanFieldValue } from '../../../utils/scanInput';
 
@@ -14,13 +18,14 @@ function assignRef(ref, el) {
 }
 
 /**
- * Похоже на штрихкод / вендорный код (DT-353, H600400-11), а не на поиск по названию.
+ * Похоже на штрихкод / вендорный код (DT-353, H600400-11) / адрес ячейки, а не на поиск по названию.
  * При ручном вводе: длинный числовой ШК или код с буквами+цифрами.
  */
 function isBarcodeLikeForScan(raw, { manualTypingMode = false } = {}) {
   const v = normalizeProductSearchQuery(raw);
   if (!v) return false;
   if (looksLikeCis(v)) return true;
+  if (isLikelyLocationScan(v)) return true;
   // Комплекты / вендорные ШК с буквами — сразу в onScan, не в выпадающий поиск по имени
   if (/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9._-]{1,48}$/.test(v)) return true;
   if (/[a-zа-я]/i.test(v)) return false;

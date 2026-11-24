@@ -61,6 +61,19 @@ export function effectiveBarcode(loc) {
   return `L${loc?.id}`;
 }
 
+/** Нормализация скана этикетки ячейки: AIM-префиксы сканеров, юникод-тире, невидимые символы. */
+export function normalizeLocationScanCode(raw) {
+  let s = String(raw ?? '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\r\n\t]+/g, '')
+    .trim();
+  if (!s) return '';
+  // AIM / symbology identifier: ]C1, ]e0, ]A0 …
+  s = s.replace(/^\][A-Za-z0-9]{1,3}/, '');
+  s = s.replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-');
+  return s.trim();
+}
+
 function mapLocation(row) {
   if (!row) return null;
   return {
@@ -423,6 +436,8 @@ class AddressStorageService {
       }
     }
     try {
+      const explicitBc = body.barcode ? String(body.barcode).trim().slice(0, 64) : '';
+      const initialBc = explicitBc || (isPrintableAscii(code) ? code : null);
       const r = await query(
         `INSERT INTO storage_locations
            (warehouse_id, code, parts, location_type, barcode, route_order, capacity, note)
@@ -433,13 +448,23 @@ class AddressStorageService {
           code,
           parts,
           type,
-          body.barcode ? String(body.barcode).trim().slice(0, 64) : null,
+          initialBc,
           routeOrder,
           toIntOrNull(body.capacity),
           body.note ? String(body.note).slice(0, 500) : null,
         ]
       );
-      return mapLocation(r.rows[0]);
+      let row = r.rows[0];
+      // Кириллический адрес: на этикетке Code128 = L{id} — сразу пишем в barcode.
+      if (row && !row.barcode) {
+        const upd = await query(
+          `UPDATE storage_locations SET barcode = 'L' || id::text, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 RETURNING *`,
+          [row.id]
+        );
+        row = upd.rows[0] || row;
+      }
+      return mapLocation(row);
     } catch (e) {
       if (e?.code === '23505') throw httpError(`Ячейка ${code} уже есть`, 409);
       throw e;
@@ -475,8 +500,8 @@ class AddressStorageService {
     );
     const base = maxR.rows[0].m;
     const r = await query(
-      `INSERT INTO storage_locations (warehouse_id, code, parts, location_type, route_order, capacity)
-       SELECT $1::bigint, t.code, string_to_array(t.parts_joined, E'\\x1f'), $4::varchar, $5::int + t.ord * 10, $6::int
+      `INSERT INTO storage_locations (warehouse_id, code, parts, location_type, barcode, route_order, capacity)
+       SELECT $1::bigint, t.code, string_to_array(t.parts_joined, E'\\x1f'), $4::varchar, t.code, $5::int + t.ord * 10, $6::int
        FROM unnest($2::text[], $3::text[]) WITH ORDINALITY AS t(code, parts_joined, ord)
        ON CONFLICT (warehouse_id, code) DO NOTHING
        RETURNING id`,
@@ -615,18 +640,71 @@ class AddressStorageService {
   }
 
   async resolveLocationByScan(warehouseId, raw) {
-    const code = String(raw ?? '').trim();
+    const code = normalizeLocationScanCode(raw);
     if (!code) return null;
     const m = code.match(/^L(\d+)$/i);
+    const idFromL = m ? Number(m[1]) : null;
     const r = await query(
       `SELECT * FROM storage_locations
        WHERE warehouse_id = $1
-         AND (barcode = $2 OR UPPER(code) = UPPER($2) OR ($3::bigint IS NOT NULL AND id = $3::bigint))
-       ORDER BY COALESCE(barcode = $2, false) DESC
+         AND (
+           barcode = $2
+           OR UPPER(COALESCE(barcode, '')) = UPPER($2)
+           OR UPPER(code) = UPPER($2)
+           OR UPPER(REPLACE(REPLACE(REPLACE(code, '–', '-'), '—', '-'), '−', '-')) = UPPER($2)
+           OR ($3::bigint IS NOT NULL AND id = $3::bigint)
+           OR UPPER('L' || id::text) = UPPER($2)
+         )
+       ORDER BY
+         CASE
+           WHEN barcode = $2 THEN 0
+           WHEN UPPER(COALESCE(barcode, '')) = UPPER($2) THEN 1
+           WHEN UPPER('L' || id::text) = UPPER($2) THEN 2
+           ELSE 3
+         END
        LIMIT 1`,
-      [warehouseId, code, m ? Number(m[1]) : null]
+      [warehouseId, code, idFromL]
     );
     return mapLocation(r.rows[0]);
+  }
+
+  /** Ячейка есть, но на другом складе того же профиля — для понятной ошибки в UI. */
+  async findLocationScanElsewhere(warehouseId, raw, { profileId = null } = {}) {
+    const code = normalizeLocationScanCode(raw);
+    if (!code) return null;
+    const m = code.match(/^L(\d+)$/i);
+    const idFromL = m ? Number(m[1]) : null;
+    const params = [code, idFromL, Number(warehouseId)];
+    let profileSql = '';
+    if (profileId != null) {
+      params.push(profileId);
+      profileSql = `AND w.profile_id = $${params.length}`;
+    }
+    const r = await query(
+      `SELECT l.*, w.name AS warehouse_name
+       FROM storage_locations l
+       JOIN warehouses w ON w.id = l.warehouse_id AND w.supplier_id IS NULL
+       WHERE l.warehouse_id IS DISTINCT FROM $3
+         AND (
+           l.barcode = $1
+           OR UPPER(COALESCE(l.barcode, '')) = UPPER($1)
+           OR UPPER(l.code) = UPPER($1)
+           OR UPPER(REPLACE(REPLACE(REPLACE(l.code, '–', '-'), '—', '-'), '−', '-')) = UPPER($1)
+           OR ($2::bigint IS NOT NULL AND l.id = $2::bigint)
+           OR UPPER('L' || l.id::text) = UPPER($1)
+         )
+         ${profileSql}
+       ORDER BY l.id
+       LIMIT 1`,
+      params
+    );
+    if (!r.rows[0]) return null;
+    return {
+      location: mapLocation(r.rows[0]),
+      warehouseId: Number(r.rows[0].warehouse_id),
+      warehouseName: r.rows[0].warehouse_name || `Склад #${r.rows[0].warehouse_id}`,
+      scanned: code,
+    };
   }
 
   // ---------- Товары ----------
@@ -1267,7 +1345,8 @@ class AddressStorageService {
 
   /** Скан на экране перемещений: ячейка или товар. */
   async resolveScan(warehouseId, raw, { profileId = null } = {}) {
-    const loc = await this.resolveLocationByScan(warehouseId, raw);
+    const scanned = normalizeLocationScanCode(raw);
+    const loc = await this.resolveLocationByScan(warehouseId, scanned || raw);
     if (loc) {
       const items = await query(
         `SELECT s.product_id, s.quantity, p.name, p.sku FROM product_location_stock s
@@ -1286,18 +1365,40 @@ class AddressStorageService {
       };
     }
     const { default: productsService } = await import('./products.service.js');
-    const product = await productsService.getByBarcode(String(raw ?? '').trim()).catch(() => null);
-    if (!product?.id) return null;
-    if (profileId != null && product.profile_id != null && String(product.profile_id) !== String(profileId)) {
-      return null;
+    const product = await productsService
+      .getByBarcode(scanned || String(raw ?? '').trim())
+      .catch(() => null);
+    if (product?.id) {
+      if (profileId != null && product.profile_id != null && String(product.profile_id) !== String(profileId)) {
+        /* чужой профиль — как «не найдено» */
+      } else {
+        const where = await this.getProductLocations(product.id, { profileId });
+        const wh = where.warehouses.find((w) => w.warehouseId === Number(warehouseId)) || null;
+        return {
+          type: 'product',
+          product: { id: Number(product.id), name: product.name, sku: product.sku },
+          warehouse: wh,
+        };
+      }
     }
-    const where = await this.getProductLocations(product.id, { profileId });
-    const wh = where.warehouses.find((w) => w.warehouseId === Number(warehouseId)) || null;
-    return {
-      type: 'product',
-      product: { id: Number(product.id), name: product.name, sku: product.sku },
-      warehouse: wh,
-    };
+
+    const elsewhere = await this.findLocationScanElsewhere(warehouseId, scanned || raw, { profileId });
+    if (elsewhere) {
+      const e = httpError(
+        `Ячейка «${elsewhere.location.code}» относится к складу «${elsewhere.warehouseName}», а выбран «другой». Смените склад.`,
+        404
+      );
+      e.details = {
+        code: 'LOCATION_OTHER_WAREHOUSE',
+        scanned: elsewhere.scanned,
+        locationId: elsewhere.location.id,
+        locationCode: elsewhere.location.code,
+        warehouseId: elsewhere.warehouseId,
+        warehouseName: elsewhere.warehouseName,
+      };
+      throw e;
+    }
+    return null;
   }
 
   // ---------- Тепловая карта и план ----------

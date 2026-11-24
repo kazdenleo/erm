@@ -70,10 +70,21 @@ export async function fetchProductByScanCode(code) {
 }
 
 /** Скорее всего ввод со сканера (цифры, без букв) или Data Matrix КИ. */
+/** Адрес ячейки / L{id} с этикетки — тоже считаем сканом, не поиском по названию. */
+export function isLikelyLocationScan(raw) {
+  const v = normalizeProductSearchQuery(raw);
+  if (!v) return false;
+  if (/^L\d+$/i.test(v)) return true;
+  // 7-3-5, 1.2.3, A-01-02 (латиница/цифры и разделители)
+  if (/^[A-Za-z0-9]+([.\-/][A-Za-z0-9]+){1,8}$/.test(v)) return true;
+  return false;
+}
+
 export function isLikelyBarcodeScan(raw) {
   const v = normalizeProductSearchQuery(raw);
   if (!v) return false;
   if (looksLikeCis(v)) return true;
+  if (isLikelyLocationScan(v)) return true;
   if (/[a-zа-я]/i.test(v)) return false;
   return /^\d{4,}$/.test(v);
 }

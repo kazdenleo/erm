@@ -111,7 +111,7 @@ export default function AddressMovesScreen() {
         const r = await addressStorageApi.resolveScan(warehouseId, code);
         if (!r) {
           scanError();
-          setMessage({ kind: 'error', text: 'Не распознано' });
+          setMessage({ kind: 'error', text: `Не распознано: «${code}»` });
           return;
         }
         if (r.type === 'product') {
@@ -138,7 +138,10 @@ export default function AddressMovesScreen() {
         setExpect('to');
       } catch (e) {
         scanError();
-        setMessage({ kind: 'error', text: errorMessage(e, 'Ошибка скана') });
+        const hint = e?.data?.details?.warehouseName
+          ? ` (это склад «${e.data.details.warehouseName}»)`
+          : '';
+        setMessage({ kind: 'error', text: `${errorMessage(e, 'Ошибка скана')}${hint}` });
       } finally {
         busyRef.current = false;
         setBusy(false);

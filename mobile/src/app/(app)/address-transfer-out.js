@@ -126,7 +126,7 @@ export default function AddressTransferOutScreen() {
         const r = await addressStorageApi.resolveScan(fromWarehouseId, code);
         if (!r) {
           scanError();
-          setMessage({ kind: 'error', text: 'Не распознано' });
+          setMessage({ kind: 'error', text: `Не распознано: «${code}»` });
           return;
         }
         if (r.type === 'location' || r.location) {

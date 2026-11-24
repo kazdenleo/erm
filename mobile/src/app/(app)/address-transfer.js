@@ -115,7 +115,7 @@ export default function AddressTransferScreen() {
         const r = await addressStorageApi.resolveScan(toWarehouseId, code);
         if (!r) {
           scanError();
-          setMessage({ kind: 'error', text: 'Не распознано: ячейка или товар' });
+          setMessage({ kind: 'error', text: `Не распознано: «${code}»` });
           return;
         }
         if (r.type === 'location' || r.location) {
