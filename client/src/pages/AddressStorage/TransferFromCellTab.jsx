@@ -1,7 +1,7 @@
 /**
- * Документ перемещения (ПМ) со скана ячейки-источника:
- * ячейка → выбор товаров и количеств → склад «куда» → один ПМ на несколько позиций.
- * Товар снимается с отсканированной ячейки (fromLocationId).
+ * Документ перемещения (ПМ) со скана ячеек-источников:
+ * ячейка → (если несколько товаров — выбор) → кол-во сканом товара или вручную →
+ * следующая ячейка/товар → … → один ПМ. Каждая строка снимается со своей ячейки.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -12,11 +12,15 @@ import { receiptsApi } from '../../services/receipts.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 
+function lineKey(productId, fromLocationId) {
+  return `${productId}:${fromLocationId || ''}`;
+}
+
 export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settings }) {
-  const [cell, setCell] = useState(null); // { location, items }
+  const [cell, setCell] = useState(null); // { location, items } — текущая ячейка для скана
   const [toWarehouseId, setToWarehouseId] = useState('');
-  const [lines, setLines] = useState([]); // { productId, sku, name, quantity, maxQty }
-  const [draftQty, setDraftQty] = useState({}); // productId -> string
+  const [lines, setLines] = useState([]); // { productId, sku, name, quantity, maxQty, fromLocationId, fromLocationCode }
+  const [draftQty, setDraftQty] = useState({}); // `${productId}` -> string (для текущей ячейки)
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -44,7 +48,7 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
     }
   }, [toWarehouseId, destWarehouses]);
 
-  const reset = () => {
+  const resetAll = () => {
     setCell(null);
     setLines([]);
     setDraftQty({});
@@ -52,46 +56,76 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
   };
 
   const qtyInCart = useCallback(
-    (productId) => lines.find((l) => Number(l.productId) === Number(productId))?.quantity || 0,
-    [lines]
-  );
-
-  const availableInCell = useCallback(
-    (productId) => {
-      const item = (cell?.items || []).find((it) => Number(it.productId) === Number(productId));
-      return Math.max(0, (item?.quantity || 0) - qtyInCart(productId));
+    (productId, fromLocationId) => {
+      const locId = fromLocationId ?? cell?.location?.id;
+      return (
+        lines.find(
+          (l) =>
+            Number(l.productId) === Number(productId) &&
+            Number(l.fromLocationId) === Number(locId)
+        )?.quantity || 0
+      );
     },
-    [cell, qtyInCart]
+    [lines, cell]
   );
 
-  const addOrUpdateLine = (item, quantity) => {
-    const qty = Math.floor(Number(quantity) || 0);
-    if (qty < 1) {
-      setMessage({ ok: false, text: 'Укажите количество больше 0' });
-      return;
-    }
-    const maxInCell =
-      (cell?.items || []).find((it) => Number(it.productId) === Number(item.productId))?.quantity || 0;
-    if (qty > maxInCell) {
-      setMessage({ ok: false, text: `В ячейке только ${maxInCell} шт «${item.sku}»` });
-      return;
-    }
-    setMessage(null);
-    // Из ячейки с несколькими товарами — в документ только выбранная позиция.
-    setLines([
-      {
-        productId: item.productId,
-        sku: item.sku,
-        name: item.name,
-        quantity: qty,
-        maxQty: maxInCell || qty,
-      },
-    ]);
-    setDraftQty({ [item.productId]: String(qty) });
-  };
+  const putLine = useCallback(
+    (item, quantity, loc) => {
+      const location = loc || cell?.location;
+      if (!location?.id) {
+        setMessage({ ok: false, text: 'Сначала отсканируйте ячейку' });
+        return false;
+      }
+      const qty = Math.floor(Number(quantity) || 0);
+      if (qty < 1) {
+        setMessage({ ok: false, text: 'Укажите количество больше 0' });
+        return false;
+      }
+      const maxInCell = Math.max(0, Number(item.quantity) || 0);
+      if (qty > maxInCell) {
+        setMessage({ ok: false, text: `В ячейке только ${maxInCell} шт «${item.sku}»` });
+        return false;
+      }
+      const fromLocationId = Number(location.id);
+      const fromLocationCode = String(location.code || '').trim();
+      setMessage(null);
+      setLines((prev) => {
+        const rest = prev.filter(
+          (l) =>
+            !(
+              Number(l.productId) === Number(item.productId) &&
+              Number(l.fromLocationId) === fromLocationId
+            )
+        );
+        return [
+          ...rest,
+          {
+            productId: item.productId,
+            sku: item.sku,
+            name: item.name,
+            quantity: qty,
+            maxQty: maxInCell || qty,
+            fromLocationId,
+            fromLocationCode,
+          },
+        ];
+      });
+      setDraftQty((d) => ({ ...d, [item.productId]: String(qty) }));
+      return true;
+    },
+    [cell]
+  );
 
-  const removeLine = (productId) => {
-    setLines((prev) => prev.filter((l) => Number(l.productId) !== Number(productId)));
+  const removeLine = (productId, fromLocationId) => {
+    setLines((prev) =>
+      prev.filter(
+        (l) =>
+          !(
+            Number(l.productId) === Number(productId) &&
+            Number(l.fromLocationId) === Number(fromLocationId)
+          )
+      )
+    );
   };
 
   const handleScan = async (code) => {
@@ -100,24 +134,27 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
       const r = await addressStorageApi.resolveScan(warehouseId, code);
       if (r?.type === 'location' || r?.location) {
         playEventSound(SOUND_EVENTS.scan_ok);
-        const items = r.items || [];
-        setCell({ location: r.location, items });
+        const items = (r.items || []).filter((it) => it?.productId && Number(it.quantity) > 0);
+        const loc = r.location;
+        setCell({ location: loc, items });
         const drafts = {};
         for (const it of items) drafts[it.productId] = String(it.quantity);
         setDraftQty(drafts);
+        if (items.length === 0) {
+          setMessage({ ok: false, text: `Ячейка ${loc?.code || code} пуста — нечего перемещать` });
+          return;
+        }
         if (items.length === 1) {
-          const it = items[0];
-          setLines([
-            {
-              productId: it.productId,
-              sku: it.sku,
-              name: it.name,
-              quantity: it.quantity,
-              maxQty: it.quantity,
-            },
-          ]);
+          putLine(items[0], items[0].quantity, loc);
+          setMessage({
+            ok: true,
+            text: `Ячейка ${loc.code}: ${items[0].sku} — ${items[0].quantity} шт. Сканируйте товар (+1) или правьте количество, затем следующую ячейку.`,
+          });
         } else {
-          setLines([]);
+          setMessage({
+            ok: true,
+            text: `Ячейка ${loc.code}: несколько товаров — выберите нужный`,
+          });
         }
         return;
       }
@@ -125,16 +162,22 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
         const item = (cell.items || []).find((it) => Number(it.productId) === Number(r.product.id));
         if (!item) {
           playEventSound(SOUND_EVENTS.scan_error);
-          setMessage({ ok: false, text: 'Этого товара нет в отсканированной ячейке' });
+          setMessage({ ok: false, text: 'Этого товара нет в текущей ячейке' });
+          return;
+        }
+        const maxInCell = Number(item.quantity) || 0;
+        const next = qtyInCart(item.productId, cell.location.id) + 1;
+        if (next > maxInCell) {
+          playEventSound(SOUND_EVENTS.scan_error);
+          setMessage({ ok: false, text: `В ячейке только ${maxInCell} шт` });
           return;
         }
         playEventSound(SOUND_EVENTS.scan_ok);
-        const left = availableInCell(item.productId);
-        if (left < 1) {
-          setMessage({ ok: false, text: 'Весь остаток этого товара уже в документе' });
-          return;
-        }
-        addOrUpdateLine(item, qtyInCart(item.productId) + 1);
+        putLine(item, next, cell.location);
+        setMessage({
+          ok: true,
+          text: `${item.sku}: ${next} шт из ${cell.location.code}`,
+        });
         return;
       }
       playEventSound(SOUND_EVENTS.scan_error);
@@ -146,16 +189,12 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
   };
 
   const submit = async () => {
-    if (!cell?.location?.id) {
-      setMessage({ ok: false, text: 'Отсканируйте ячейку-источник' });
-      return;
-    }
     if (!toWarehouseId) {
       setMessage({ ok: false, text: 'Выберите склад назначения' });
       return;
     }
     if (!lines.length) {
-      setMessage({ ok: false, text: 'Добавьте хотя бы один товар' });
+      setMessage({ ok: false, text: 'Добавьте хотя бы один товар (скан ячейки)' });
       return;
     }
     const orgId = warehouse?.organizationId;
@@ -175,7 +214,7 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
         lines: lines.map((l) => ({
           productId: l.productId,
           quantity: l.quantity,
-          fromLocationId: Number(cell.location.id),
+          fromLocationId: Number(l.fromLocationId),
         })),
       });
       const receipt = res?.data?.receipt || res?.receipt;
@@ -185,7 +224,7 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
       playEventSound(SOUND_EVENTS.scan_ok);
       setMessage({
         ok: true,
-        text: `Создано перемещение ${num}: ${count} поз. / ${totalQty} шт из ячейки ${cell.location.code}`,
+        text: `Создано перемещение ${num}: ${count} поз. / ${totalQty} шт`,
       });
       setLines([]);
       setCell(null);
@@ -220,8 +259,9 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
     <div className="address-moves address-transfer-out">
       <h4 className="address-settings__title">Документ перемещения (ПМ)</h4>
       <p className="muted-hint" style={{ marginBottom: 12 }}>
-        Склад-источник: <strong>{warehouse?.name}</strong>. Отсканируйте ячейку → если товаров несколько,
-        выберите один → укажите склад «куда». Товар снимается с этой ячейки.
+        Склад-источник: <strong>{warehouse?.name}</strong>. Скан ячейки → товар (если в ячейке несколько —
+        выберите) → количество сканом ШК товара (+1) или вручную → следующая ячейка. В конце — один
+        документ перемещения.
       </p>
 
       <BarcodeScanField
@@ -229,10 +269,10 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
         onScan={handleScan}
         enableGlobalCapture
         disabled={busy}
-        placeholder={cell ? 'Сканируйте товар из ячейки или снова ячейку' : 'Сканируйте ячейку откуда'}
+        placeholder={cell ? 'Товар из ячейки (+1) или следующая ячейка' : 'Сканируйте ячейку откуда'}
         hint={
           cell
-            ? `Ячейка ${cell.location.code}: добавьте товары в документ`
+            ? `Текущая ячейка ${cell.location.code}: товар (+1) или другая ячейка`
             : 'Сначала штрихкод ячейки'
         }
       />
@@ -260,20 +300,28 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
         <div className="address-moves__cell-items" style={{ marginTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <span>
-              Ячейка <code className="address-code">{cell.location.code}</code>
+              Текущая ячейка <code className="address-code">{cell.location.code}</code>
               {(cell.items || []).length === 0 ? <span className="muted-hint"> — пусто</span> : null}
             </span>
-            <button type="button" className="btn btn-link btn-sm" disabled={busy} onClick={reset}>
-              сменить ячейку
+            <button
+              type="button"
+              className="btn btn-link btn-sm"
+              disabled={busy}
+              onClick={() => {
+                setCell(null);
+                setDraftQty({});
+              }}
+            >
+              сбросить ячейку
             </button>
           </div>
           {(cell.items || []).length > 1 ? (
             <p className="muted-hint" style={{ marginTop: 8 }}>
-              В ячейке несколько товаров — выберите один
+              В ячейке несколько товаров — выберите нужный
             </p>
           ) : null}
           {(cell.items || []).map((it) => {
-            const inDoc = qtyInCart(it.productId);
+            const inDoc = qtyInCart(it.productId, cell.location.id);
             return (
               <div key={it.productId} className="address-generate__row" style={{ marginTop: 8 }}>
                 <span>
@@ -281,7 +329,7 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
                   <span className="muted-hint">
                     {' '}
                     · в ячейке {it.quantity}
-                    {inDoc ? ` · выбран` : ''}
+                    {inDoc ? ` · в документе ${inDoc}` : ''}
                   </span>
                 </span>
                 <span className="address-moves__field">
@@ -292,15 +340,18 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
                     max={it.quantity}
                     style={{ width: 80 }}
                     disabled={busy}
-                    value={draftQty[it.productId] ?? String(it.quantity)}
+                    value={draftQty[it.productId] ?? String(inDoc || it.quantity)}
                     onChange={(e) => setDraftQty((d) => ({ ...d, [it.productId]: e.target.value }))}
                   />
                   <Button
                     size="small"
                     disabled={busy}
-                    onClick={() => addOrUpdateLine(it, draftQty[it.productId] ?? it.quantity)}
+                    onClick={() => {
+                      playEventSound(SOUND_EVENTS.scan_ok);
+                      putLine(it, draftQty[it.productId] ?? (inDoc || it.quantity), cell.location);
+                    }}
                   >
-                    {inDoc ? 'Выбран' : 'Выбрать'}
+                    {inDoc ? 'Обновить' : 'В документ'}
                   </Button>
                 </span>
               </div>
@@ -314,16 +365,23 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
           <h5 className="address-settings__title">В документе ({lines.length})</h5>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
             {lines.map((l) => (
-              <li key={l.productId} style={{ marginBottom: 6 }}>
+              <li key={lineKey(l.productId, l.fromLocationId)} style={{ marginBottom: 6 }}>
+                <code className="address-code">{l.fromLocationCode || '—'}</code>
+                {' → '}
                 <code>{l.sku}</code> {l.name} — <strong>{l.quantity}</strong> шт{' '}
-                <button type="button" className="btn btn-link btn-sm" disabled={busy} onClick={() => removeLine(l.productId)}>
+                <button
+                  type="button"
+                  className="btn btn-link btn-sm"
+                  disabled={busy}
+                  onClick={() => removeLine(l.productId, l.fromLocationId)}
+                >
                   убрать
                 </button>
               </li>
             ))}
           </ul>
           <p className="muted-hint">
-            {warehouse?.name} / {cell?.location?.code} → {destName || '…'}
+            {warehouse?.name} → {destName || '…'}
           </p>
         </section>
       ) : null}
@@ -335,11 +393,11 @@ export function TransferFromCellTab({ warehouseId, warehouse, warehouses, settin
       ) : null}
 
       <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <Button disabled={busy || !lines.length || !toWarehouseId || !cell} onClick={submit}>
+        <Button disabled={busy || !lines.length || !toWarehouseId} onClick={submit}>
           {busy ? 'Оформляю…' : 'Создать документ перемещения'}
         </Button>
         {lines.length || cell ? (
-          <Button variant="secondary" disabled={busy} onClick={reset}>
+          <Button variant="secondary" disabled={busy} onClick={resetAll}>
             Сбросить
           </Button>
         ) : null}

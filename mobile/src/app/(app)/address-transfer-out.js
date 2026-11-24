@@ -1,5 +1,6 @@
 /**
- * Документ ПМ: скан ячейки-источника → товары с количеством → склад куда → один документ.
+ * Документ ПМ: скан ячейки → товар (выбор при нескольких) → кол-во сканом/+вручную →
+ * следующая ячейка → … → один документ. Строки с разных ячеек накапливаются.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -11,6 +12,10 @@ import { scanError, scanOk } from '../../lib/feedback';
 import { ScanBar } from '../../components/ScanBar';
 import { Banner, Button, Card, Field, Loading } from '../../ui/components';
 import { colors } from '../../ui/theme';
+
+function lineKey(productId, fromLocationId) {
+  return `${productId}:${fromLocationId || ''}`;
+}
 
 export default function AddressTransferOutScreen() {
   const { organizationId } = useAuth();
@@ -74,46 +79,64 @@ export default function AddressTransferOutScreen() {
   }, [toWarehouseId, destWarehouses]);
 
   const qtyInCart = useCallback(
-    (productId) => lines.find((l) => Number(l.productId) === Number(productId))?.quantity || 0,
-    [lines]
-  );
-
-  const availableInCell = useCallback(
-    (productId) => {
-      const item = (cell?.items || []).find((it) => Number(it.productId) === Number(productId));
-      return Math.max(0, (item?.quantity || 0) - qtyInCart(productId));
+    (productId, fromLocationId) => {
+      const locId = fromLocationId ?? cell?.location?.id;
+      return (
+        lines.find(
+          (l) =>
+            Number(l.productId) === Number(productId) &&
+            Number(l.fromLocationId) === Number(locId)
+        )?.quantity || 0
+      );
     },
-    [cell, qtyInCart]
+    [lines, cell]
   );
 
-  const putLine = (item, quantity) => {
-    const qty = Math.floor(Number(quantity) || 0);
-    if (qty < 1) {
-      setMessage({ kind: 'error', text: 'Укажите количество' });
-      return false;
-    }
-    const already = qtyInCart(item.productId);
-    const maxTotal = availableInCell(item.productId) + already;
-    if (qty > maxTotal) {
-      setMessage({ kind: 'error', text: `В ячейке только ${maxTotal} шт` });
-      return false;
-    }
-    setLines((prev) => {
-      const rest = prev.filter((l) => Number(l.productId) !== Number(item.productId));
-      return [
-        ...rest,
-        {
-          productId: item.productId,
-          sku: item.sku,
-          name: item.name,
-          quantity: qty,
-        },
-      ];
-    });
-    setDraftQty((d) => ({ ...d, [item.productId]: String(qty) }));
-    setMessage(null);
-    return true;
-  };
+  const putLine = useCallback(
+    (item, quantity, loc) => {
+      const location = loc || cell?.location;
+      if (!location?.id) {
+        setMessage({ kind: 'error', text: 'Сначала отсканируйте ячейку' });
+        return false;
+      }
+      const qty = Math.floor(Number(quantity) || 0);
+      if (qty < 1) {
+        setMessage({ kind: 'error', text: 'Укажите количество' });
+        return false;
+      }
+      const maxInCell = Math.max(0, Number(item.quantity) || 0);
+      if (qty > maxInCell) {
+        setMessage({ kind: 'error', text: `В ячейке только ${maxInCell} шт` });
+        return false;
+      }
+      const fromLocationId = Number(location.id);
+      const fromLocationCode = String(location.code || '').trim();
+      setLines((prev) => {
+        const rest = prev.filter(
+          (l) =>
+            !(
+              Number(l.productId) === Number(item.productId) &&
+              Number(l.fromLocationId) === fromLocationId
+            )
+        );
+        return [
+          ...rest,
+          {
+            productId: item.productId,
+            sku: item.sku,
+            name: item.name,
+            quantity: qty,
+            fromLocationId,
+            fromLocationCode,
+          },
+        ];
+      });
+      setDraftQty((d) => ({ ...d, [item.productId]: String(qty) }));
+      setMessage(null);
+      return true;
+    },
+    [cell]
+  );
 
   const handleScan = useCallback(
     async (raw) => {
@@ -131,18 +154,24 @@ export default function AddressTransferOutScreen() {
         }
         if (r.type === 'location' || r.location) {
           scanOk();
-          const items = r.items || [];
-          setCell({ location: r.location, items });
+          const items = (r.items || []).filter((it) => it?.productId && Number(it.quantity) > 0);
+          const loc = r.location;
+          setCell({ location: loc, items });
           const drafts = {};
           for (const it of items) drafts[it.productId] = String(it.quantity);
           setDraftQty(drafts);
+          if (items.length === 0) {
+            setMessage({ kind: 'error', text: `Ячейка ${loc?.code || code} пуста` });
+            return;
+          }
           if (items.length === 1) {
-            const it = items[0];
-            setLines([
-              { productId: it.productId, sku: it.sku, name: it.name, quantity: it.quantity },
-            ]);
+            putLine(items[0], items[0].quantity, loc);
+            setMessage({
+              kind: 'success',
+              text: `${loc.code}: ${items[0].sku} · ${items[0].quantity} шт. Скан товара (+1) или следующая ячейка.`,
+            });
           } else {
-            setLines([]);
+            setMessage({ kind: 'success', text: `Ячейка ${loc.code}: выберите товар` });
           }
           return;
         }
@@ -153,13 +182,15 @@ export default function AddressTransferOutScreen() {
             setMessage({ kind: 'error', text: 'Товара нет в этой ячейке' });
             return;
           }
-          scanOk();
-          const next = qtyInCart(item.productId) + 1;
-          if (next > item.quantity) {
+          const next = qtyInCart(item.productId, cell.location.id) + 1;
+          if (next > (Number(item.quantity) || 0)) {
+            scanError();
             setMessage({ kind: 'error', text: 'Больше остатка в ячейке' });
             return;
           }
-          putLine(item, next);
+          scanOk();
+          putLine(item, next, cell.location);
+          setMessage({ kind: 'success', text: `${item.sku}: ${next} шт из ${cell.location.code}` });
           return;
         }
         scanError();
@@ -172,20 +203,16 @@ export default function AddressTransferOutScreen() {
         setBusy(false);
       }
     },
-    [fromWarehouseId, cell, qtyInCart]
+    [fromWarehouseId, cell, qtyInCart, putLine]
   );
 
   const submit = async () => {
-    if (!cell?.location?.id) {
-      setMessage({ kind: 'error', text: 'Отсканируйте ячейку' });
+    if (!lines.length) {
+      setMessage({ kind: 'error', text: 'Добавьте товары (скан ячейки)' });
       return;
     }
     if (!toWarehouseId) {
       setMessage({ kind: 'error', text: 'Выберите склад куда' });
-      return;
-    }
-    if (!lines.length) {
-      setMessage({ kind: 'error', text: 'Добавьте товары' });
       return;
     }
     const src = (warehouses || []).find((w) => Number(w.id) === Number(fromWarehouseId));
@@ -207,7 +234,7 @@ export default function AddressTransferOutScreen() {
         lines: lines.map((l) => ({
           productId: l.productId,
           quantity: l.quantity,
-          fromLocationId: Number(cell.location.id),
+          fromLocationId: Number(l.fromLocationId),
         })),
       });
       const receipt = res?.receipt || res;
@@ -216,7 +243,7 @@ export default function AddressTransferOutScreen() {
       scanOk();
       setMessage({
         kind: 'success',
-        text: `ПМ ${num} · ${lines.length} поз. / ${totalQty} шт из ${cell.location.code}`,
+        text: `ПМ ${num} · ${lines.length} поз. / ${totalQty} шт`,
       });
       resetDoc();
     } catch (e) {
@@ -235,7 +262,8 @@ export default function AddressTransferOutScreen() {
   return (
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.hint}>
-        Скан ячейки → если товаров несколько, выберите один → склад назначения. Товар снимается с ячейки.
+        Ячейка → товар (выбор при нескольких) → количество сканом ШК (+1) или вручную → следующая ячейка.
+        В конце — один документ перемещения.
       </Text>
 
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
@@ -287,65 +315,70 @@ export default function AddressTransferOutScreen() {
           <ScanBar
             onScan={handleScan}
             busy={busy}
-            placeholder={cell ? 'Товар из ячейки или снова ячейка' : 'Сканируйте ячейку откуда'}
+            placeholder={cell ? 'Товар (+1) или следующая ячейка' : 'Сканируйте ячейку откуда'}
           />
 
           {cell ? (
             <Card style={styles.gap}>
               <View style={styles.rowBetween}>
                 <Text style={styles.section}>Ячейка {cell.location.code}</Text>
-                <Button title="Сменить" variant="secondary" small onPress={resetDoc} disabled={busy} />
+                <Button
+                  title="Сбросить"
+                  variant="secondary"
+                  small
+                  onPress={() => {
+                    setCell(null);
+                    setDraftQty({});
+                  }}
+                  disabled={busy}
+                />
               </View>
               {(cell.items || []).length === 0 ? <Text style={styles.muted}>Пусто</Text> : null}
               {(cell.items || []).length > 1 ? (
-                <Text style={styles.muted}>Выберите один товар</Text>
+                <Text style={styles.muted}>Выберите товар</Text>
               ) : null}
               {(cell.items || []).map((it) => {
-                const inDoc = qtyInCart(it.productId);
+                const inDoc = qtyInCart(it.productId, cell.location.id);
                 const selected = inDoc > 0;
                 return (
                   <Pressable
                     key={it.productId}
                     disabled={busy}
                     onPress={() => {
-                      // Один товар из ячейки: выбор заменяет предыдущие позиции из этого скана.
-                      setLines([
-                        {
-                          productId: it.productId,
-                          sku: it.sku,
-                          name: it.name,
-                          quantity: Math.max(1, Number(it.quantity) || 1),
-                        },
-                      ]);
-                      setDraftQty({ [it.productId]: String(it.quantity) });
-                      setMessage(null);
+                      putLine(it, Math.max(1, Number(draftQty[it.productId]) || Number(it.quantity) || 1), cell.location);
                       scanOk();
                     }}
                     style={[styles.itemRow, selected && styles.itemRowActive]}
                   >
                     <Text style={[styles.itemTitle, selected && styles.itemTitleActive]}>
-                      {it.sku} · {it.quantity} шт
-                      {selected ? ' · выбран' : ''}
+                      {it.sku} · в ячейке {it.quantity} шт
+                      {selected ? ` · в документе ${inDoc}` : ''}
                     </Text>
                     <Text style={styles.muted}>{it.name}</Text>
                   </Pressable>
                 );
               })}
-              {lines.length === 1 && cell.items?.length ? (
+              {lines.some((l) => Number(l.fromLocationId) === Number(cell.location.id)) ? (
                 <Field
-                  label="Количество"
-                  value={draftQty[lines[0].productId] ?? String(lines[0].quantity)}
+                  label="Количество (выбранный / правьте и нажмите товар выше)"
+                  value={
+                    draftQty[
+                      lines.find((l) => Number(l.fromLocationId) === Number(cell.location.id))
+                        ?.productId
+                    ] ?? ''
+                  }
                   onChangeText={(v) => {
-                    setDraftQty((d) => ({ ...d, [lines[0].productId]: v }));
+                    const activeLine = lines.find(
+                      (l) => Number(l.fromLocationId) === Number(cell.location.id)
+                    );
+                    if (!activeLine) return;
+                    setDraftQty((d) => ({ ...d, [activeLine.productId]: v }));
                     const qty = Math.floor(Number(v) || 0);
                     if (qty >= 1) {
-                      setLines((prev) =>
-                        prev.map((l) =>
-                          Number(l.productId) === Number(lines[0].productId)
-                            ? { ...l, quantity: qty }
-                            : l
-                        )
+                      const item = (cell.items || []).find(
+                        (it) => Number(it.productId) === Number(activeLine.productId)
                       );
+                      if (item) putLine(item, qty, cell.location);
                     }
                   }}
                   keyboardType="number-pad"
@@ -358,22 +391,30 @@ export default function AddressTransferOutScreen() {
             <Card style={styles.gap}>
               <Text style={styles.section}>В документе ({lines.length})</Text>
               {lines.map((l) => (
-                <View key={l.productId} style={styles.lineRow}>
+                <View key={lineKey(l.productId, l.fromLocationId)} style={styles.lineRow}>
                   <Text style={styles.itemTitle}>
-                    {l.sku} · {l.quantity} шт
+                    {l.fromLocationCode || '—'} → {l.sku} · {l.quantity} шт
                   </Text>
                   <Button
                     title="Убрать"
                     variant="secondary"
                     small
                     disabled={busy}
-                    onPress={() => setLines((prev) => prev.filter((x) => x.productId !== l.productId))}
+                    onPress={() =>
+                      setLines((prev) =>
+                        prev.filter(
+                          (x) =>
+                            !(
+                              Number(x.productId) === Number(l.productId) &&
+                              Number(x.fromLocationId) === Number(l.fromLocationId)
+                            )
+                        )
+                      )
+                    }
                   />
                 </View>
               ))}
-              <Text style={styles.muted}>
-                → {destName || '…'}
-              </Text>
+              <Text style={styles.muted}>→ {destName || '…'}</Text>
               <Button
                 title={busy ? 'Оформляю…' : 'Создать документ перемещения'}
                 onPress={submit}
@@ -405,7 +446,6 @@ const styles = StyleSheet.create({
   optionText: { fontSize: 16, color: colors.text },
   optionTextActive: { fontWeight: '700', color: colors.primary },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
-  itemBlock: { gap: 6, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   itemRow: {
     gap: 4,
     paddingVertical: 12,
