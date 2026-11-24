@@ -1271,7 +1271,172 @@ export async function replaceStrategyAssignments(
     );
   }
 
-  return getStrategyAssignments(sid, { profileId: pid });
+  const assignmentsOut = await getStrategyAssignments(sid, { profileId: pid });
+  const recalc = await recalculateSellingPricesForAssignmentScope({
+    profileId: pid,
+    strategyId: sid,
+    items: normalized,
+    isDefault: wantDefault,
+  });
+  return { ...assignmentsOut, recalculated: recalc };
+}
+
+/**
+ * Товары, попадающие под назначения стратегии, + снять ручной флаг и пересчитать факт
+ * (мин. цены не трогаем).
+ */
+async function listProductIdsForAssignmentScope(profileId, items, { isDefault = false } = {}) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return [];
+
+  const productIds = new Set();
+  const brandIds = new Set();
+  const categoryIds = new Set();
+  let wholeProfile = isDefault === true;
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const scopeType = String(item.scopeType || item.scope_type || '')
+      .trim()
+      .toLowerCase();
+    const scopeId = item.scopeId != null ? Number(item.scopeId) : Number(item.scope_id);
+    if (scopeType === 'profile') {
+      wholeProfile = true;
+      continue;
+    }
+    if (!Number.isFinite(scopeId) || scopeId < 1) continue;
+    if (scopeType === 'product') productIds.add(scopeId);
+    else if (scopeType === 'brand') brandIds.add(scopeId);
+    else if (scopeType === 'category') categoryIds.add(scopeId);
+  }
+
+  if (wholeProfile) {
+    const r = await query(
+      `SELECT id FROM products
+       WHERE profile_id = $1
+         AND COALESCE(is_archived, false) = false
+       LIMIT 5000`,
+      [pid]
+    );
+    for (const row of r.rows || []) productIds.add(Number(row.id));
+    return [...productIds].filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  if (brandIds.size) {
+    const r = await query(
+      `SELECT id FROM products
+       WHERE profile_id = $1
+         AND brand_id = ANY($2::bigint[])
+         AND COALESCE(is_archived, false) = false
+       LIMIT 5000`,
+      [pid, [...brandIds]]
+    );
+    for (const row of r.rows || []) productIds.add(Number(row.id));
+  }
+  if (categoryIds.size) {
+    const r = await query(
+      `SELECT id FROM products
+       WHERE profile_id = $1
+         AND user_category_id = ANY($2::bigint[])
+         AND COALESCE(is_archived, false) = false
+       LIMIT 5000`,
+      [pid, [...categoryIds]]
+    );
+    for (const row of r.rows || []) productIds.add(Number(row.id));
+  }
+
+  return [...productIds].filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** Снять «ручной факт» и пересчитать продажные цены по области назначения. */
+export async function recalculateSellingPricesForAssignmentScope({
+  profileId,
+  strategyId = null,
+  items = [],
+  isDefault = false,
+  clearManual = true,
+} = {}) {
+  const productIds = await listProductIdsForAssignmentScope(profileId, items, { isDefault });
+  if (!productIds.length) {
+    return { ok: true, products: 0, changed: 0, errors: 0 };
+  }
+
+  // МП из правил: если все назначения «все МП» — пересчёт по всем; иначе только указанные.
+  const mps = new Set();
+  let anyAllMp = isDefault === true;
+  for (const item of items || []) {
+    const mp = normalizeStrategyMarketplace(item.marketplace);
+    if (mp) mps.add(mp);
+    else anyAllMp = true;
+    if (String(item.scopeType || item.scope_type || '').toLowerCase() === 'profile' && !mp) {
+      anyAllMp = true;
+    }
+  }
+  const marketplaces = anyAllMp || mps.size === 0 ? [null] : [...mps];
+
+  if (clearManual) {
+    try {
+      if (anyAllMp || mps.size === 0) {
+        await query(
+          `UPDATE product_marketplace_prices
+           SET selling_price_manual = false, updated_at = CURRENT_TIMESTAMP
+           WHERE product_id = ANY($1::bigint[])
+             AND COALESCE(selling_price_manual, false) = true`,
+          [productIds]
+        );
+      } else {
+        await query(
+          `UPDATE product_marketplace_prices
+           SET selling_price_manual = false, updated_at = CURRENT_TIMESTAMP
+           WHERE product_id = ANY($1::bigint[])
+             AND marketplace = ANY($2::text[])
+             AND COALESCE(selling_price_manual, false) = true`,
+          [productIds, [...mps]]
+        );
+      }
+    } catch (err) {
+      if (!String(err?.message || '').includes('selling_price_manual')) throw err;
+    }
+  }
+
+  let changed = 0;
+  let errors = 0;
+  const concurrency = 4;
+  for (let i = 0; i < productIds.length; i += concurrency) {
+    const chunk = productIds.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map(async (productId) => {
+        try {
+          let anyChanged = false;
+          for (const mp of marketplaces) {
+            const r = await recalculateSellingPricesForProduct(productId, {
+              marketplace: mp,
+            });
+            if (r?.ok && (r.results || []).some((x) => x.changed)) anyChanged = true;
+          }
+          return { ok: true, changed: anyChanged };
+        } catch (e) {
+          console.warn('[pricingStrategy] recalc after assign failed', {
+            productId,
+            strategyId,
+            message: e?.message || e,
+          });
+          return { ok: false };
+        }
+      })
+    );
+    for (const r of results) {
+      if (!r.ok) errors += 1;
+      else if (r.changed) changed += 1;
+    }
+  }
+
+  return {
+    ok: true,
+    products: productIds.length,
+    changed,
+    errors,
+    strategyId: strategyId != null ? Number(strategyId) : null,
+  };
 }
 
 export async function createStrategy(data, { profileId = null } = {}) {
@@ -1539,4 +1704,5 @@ export default {
   deleteStrategyRule,
   assignProductPricingStrategy,
   clearProductPricingStrategy,
+  recalculateSellingPricesForAssignmentScope,
 };

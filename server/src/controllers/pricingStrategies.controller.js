@@ -152,9 +152,11 @@ export const pricingStrategiesController = {
       const profileId = profileIdFromReq(req);
       const body = req.body || {};
       const item = await pricingStrategyService.createStrategy(body, { profileId });
+      let assignmentsOut = null;
+      let recalculated = null;
       if (body.assignments != null) {
         const assignments = body.assignments || {};
-        await pricingStrategyService.replaceStrategyAssignments(
+        const replaced = await pricingStrategyService.replaceStrategyAssignments(
           item.id,
           {
             isDefault: assignments.isDefault ?? assignments.is_default ?? false,
@@ -162,12 +164,22 @@ export const pricingStrategiesController = {
           },
           { profileId }
         );
+        recalculated = replaced?.recalculated || null;
+        assignmentsOut = {
+          strategyId: replaced?.strategyId,
+          isDefault: replaced?.isDefault,
+          items: replaced?.items || [],
+        };
+      } else {
+        assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
+          profileId,
+        });
       }
       const full = await pricingStrategyService.getStrategy(item.id);
-      const assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
-        profileId,
+      res.status(201).json({
+        ok: true,
+        data: { ...full, assignments: assignmentsOut, recalculated },
       });
-      res.status(201).json({ ok: true, data: { ...full, assignments: assignmentsOut } });
     } catch (e) {
       res.status(400).json({ ok: false, message: e.message || String(e) });
     }
@@ -186,9 +198,11 @@ export const pricingStrategiesController = {
       ) {
         return res.status(404).json({ ok: false, message: 'Стратегия не найдена' });
       }
+      let assignmentsOut = null;
+      let recalculated = null;
       if (body.assignments != null) {
         const assignments = body.assignments || {};
-        await pricingStrategyService.replaceStrategyAssignments(
+        const replaced = await pricingStrategyService.replaceStrategyAssignments(
           item.id,
           {
             isDefault: assignments.isDefault ?? assignments.is_default ?? false,
@@ -196,12 +210,29 @@ export const pricingStrategiesController = {
           },
           { profileId }
         );
+        recalculated = replaced?.recalculated || null;
+        assignmentsOut = {
+          strategyId: replaced?.strategyId,
+          isDefault: replaced?.isDefault,
+          items: replaced?.items || [],
+        };
+      } else {
+        // Смена формулы без смены назначений — всё равно пересчитать факты по текущей области
+        assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
+          profileId,
+        });
+        recalculated = await pricingStrategyService.recalculateSellingPricesForAssignmentScope({
+          profileId: profileId ?? item.profile_id,
+          strategyId: item.id,
+          items: assignmentsOut?.items || [],
+          isDefault: assignmentsOut?.isDefault === true,
+        });
       }
       const full = await pricingStrategyService.getStrategy(item.id);
-      const assignmentsOut = await pricingStrategyService.getStrategyAssignments(item.id, {
-        profileId,
+      res.json({
+        ok: true,
+        data: { ...full, assignments: assignmentsOut, recalculated },
       });
-      res.json({ ok: true, data: { ...full, assignments: assignmentsOut } });
     } catch (e) {
       res.status(400).json({ ok: false, message: e.message || String(e) });
     }

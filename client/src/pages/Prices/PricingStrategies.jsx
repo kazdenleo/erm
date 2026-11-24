@@ -111,7 +111,7 @@ const FIELD_HINTS = {
   mode: 'Как считается фактическая цена: от пола, маржи, конкурентов, продаж или гибрид.',
   description: 'Пояснение для себя — на расчёт не влияет.',
   target_margin:
-    'Желаемая валовая маржа от себестоимости: цена ≈ себестоимость / (1 − %). Не опускается ниже рассчитанного минимума (пола).',
+    'Наценка к себестоимости: цена = себестоимость × (1 + %/100). Не опускается ниже рассчитанного минимума (пола).',
   band_percent:
     'Если новая цена отличается от текущей меньше чем на этот %, цену не меняем — чтобы не дёргать карточку из‑за мелких колебаний.',
   max_change_percent:
@@ -409,12 +409,22 @@ export function PricingStrategies() {
           })),
         },
       };
-      if (editing) await pricingStrategiesApi.update(editing.id, payload);
-      else await pricingStrategiesApi.create(payload);
+      const saveRes = editing
+        ? await pricingStrategiesApi.update(editing.id, payload)
+        : await pricingStrategiesApi.create(payload);
       setModalOpen(false);
       await load();
-      setMessage(editing ? 'Стратегия сохранена' : 'Стратегия создана');
-      setTimeout(() => setMessage(null), 4000);
+      const recalc = saveRes?.data?.recalculated || saveRes?.recalculated;
+      const recalcHint =
+        recalc && Number(recalc.products) > 0
+          ? ` Пересчитаны продажные цены: товаров ${recalc.products}, изменено ${recalc.changed ?? 0}.`
+          : recalc && Number(recalc.products) === 0
+            ? ' Назначений с товарами нет — продажные цены не менялись.'
+            : '';
+      setMessage(
+        (editing ? 'Стратегия сохранена.' : 'Стратегия создана.') + recalcHint
+      );
+      setTimeout(() => setMessage(null), 6000);
     } catch (e) {
       setMessage('Ошибка: ' + (e.response?.data?.message || e.message));
     } finally {
