@@ -737,29 +737,29 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   return null;
 }
 
-/** Вписать ШК в слот (как на товарных этикетках). */
+/**
+ * Вписать ШК в слот.
+ * Важно: для линейного кода ширину и высоту меняем раздельно.
+ * Старый «вписать с сохранением пропорций» при нехватке высоты сжимал ширину —
+ * короткий L13 превращался в узкую полоску, сканер молчал (телефон ещё читал).
+ */
 async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const slotW = Math.max(10, Math.round(innerW));
   const slotH = Math.max(10, Math.round(hPx));
-  const img = sharp(pngBuffer);
-  const meta = await img.metadata();
+  const meta = await sharp(pngBuffer).metadata();
   if (!meta.width || !meta.height) return null;
 
-  const maxW = slotW - 2;
-  const maxH = slotH - 2;
+  const maxW = Math.max(1, slotW - 2);
+  const maxH = Math.max(1, slotH - 2);
 
-  let w = maxW;
-  let h = Math.round(meta.height * (w / meta.width));
-  if (h > maxH) {
-    h = maxH;
-    w = Math.round(meta.width * (h / meta.height));
-  }
-  w = Math.max(1, w);
-  h = Math.max(1, h);
-
-  const resized = await img.resize({ width: w, height: h, kernel: sharp.kernel.nearest }).png().toBuffer();
-  const left = Math.max(0, Math.round((slotW - w) / 2));
-  const top = Math.max(0, Math.round((slotH - h) / 2));
+  // 1) Ширина слота (модули), 2) высота столбиков — nearest, без повторного сжатия ширины.
+  const resized = await sharp(pngBuffer)
+    .resize({ width: maxW, kernel: sharp.kernel.nearest })
+    .resize({ width: maxW, height: maxH, fit: 'fill', kernel: sharp.kernel.nearest })
+    .png()
+    .toBuffer();
+  const left = Math.max(0, Math.round((slotW - maxW) / 2));
+  const top = Math.max(0, Math.round((slotH - maxH) / 2));
 
   return sharp({
     create: { width: slotW, height: slotH, channels: 3, background: { r: 255, g: 255, b: 255 } },
