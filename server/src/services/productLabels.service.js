@@ -41,8 +41,10 @@ const MM_TO_PX = 8;
 const CELL_MM_TO_PX = 8;
 /** Минимальная высота полосок ячейки, мм (GS1: ≥6.35 мм; для ручного сканера лучше ≥15). */
 const CELL_BARCODE_MIN_HEIGHT_MM = 18;
-/** Целевая ширина модуля Code128, мм (3 точки @ 203 dpi). */
-const CELL_BARCODE_MODULE_MM = 0.375;
+/** Целевая ширина модуля Code128, мм (4 точки @ 203 dpi = 0.5 мм — надёжнее для ручных сканеров). */
+const CELL_BARCODE_MODULE_MM = 0.5;
+/** Ниже 3 точек @ 203 dpi (~0.375 мм) обычный сканер часто молчит. */
+const CELL_BARCODE_MIN_SCALE = 3;
 
 /** Кэш PNG этикеток: повторная печать / пакетный print helper не гоняют sharp заново. */
 const LABEL_PNG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -510,9 +512,10 @@ export function defaultCellTemplate() {
 
 export function sampleCellLabel() {
   return {
+    id: 42,
     code: 'A-01-3-2',
     legend: 'Стеллаж A · Ряд 01 · Полка 3 · Ячейка 2',
-    barcode: 'A-01-3-2',
+    barcode: 'L42',
     warehouseName: 'Основной склад',
   };
 }
@@ -750,47 +753,53 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
 }
 
 /**
- * Code128 ячейки: фиксированный X-dimension под 203 dpi, без растягивания по ширине.
- * Возвращает PNG ровно нужной высоты; ширина = натуральная (модули целыми пикселями).
+ * Code128 ячейки: X-dimension ≥0.375 мм (лучше 0.5), без растягивания по ширине.
+ * Если длинный текст не влезает — пробуем короткий L… payload из text, не опускаем scale ниже 3.
  */
 async function generateCellBarcodePng(text, { maxWidthPx, heightPx, mmToPx = CELL_MM_TO_PX }) {
-  const spec = resolveBarcodeSpec(text) || (text ? { bcid: 'code128', text: String(text) } : null);
-  if (!spec) return null;
-
   const maxW = Math.max(40, Math.floor(Number(maxWidthPx) || 0));
   const hPx = Math.max(24, Math.round(Number(heightPx) || 0));
   const barMm = Math.max(CELL_BARCODE_MIN_HEIGHT_MM, hPx / Math.max(1, mmToPx));
   const quiet = 10;
-  let scale = Math.max(3, Math.round(CELL_BARCODE_MODULE_MM * mmToPx));
+  const preferredScale = Math.max(CELL_BARCODE_MIN_SCALE, Math.round(CELL_BARCODE_MODULE_MM * mmToPx));
 
-  for (; scale >= 2; scale -= 1) {
-    try {
-      const raw = await bwipToBufferWithTimeout({
-        bcid: spec.bcid === 'ean13' ? 'code128' : spec.bcid,
-        text: spec.text,
-        scale,
-        height: barMm,
-        paddingwidth: quiet,
-        paddingheight: 0,
-        includetext: false,
-        inkspread: 0,
-      });
-      const meta = await sharp(raw).metadata();
-      if (!meta.width || meta.width > maxW) continue;
-      return sharp(raw)
-        .resize({
-          width: meta.width,
-          height: hPx,
-          fit: 'fill',
-          kernel: sharp.kernel.nearest,
-        })
-        .png()
-        .toBuffer();
-    } catch {
-      /* try smaller scale */
+  const primary = String(text || '').trim();
+  if (!primary) return null;
+
+  async function tryEncode(payload) {
+    const spec = resolveBarcodeSpec(payload) || { bcid: 'code128', text: payload };
+    const bcid = spec.bcid === 'ean13' ? 'code128' : spec.bcid;
+    for (let scale = preferredScale; scale >= CELL_BARCODE_MIN_SCALE; scale -= 1) {
+      try {
+        const raw = await bwipToBufferWithTimeout({
+          bcid,
+          text: spec.text,
+          scale,
+          height: barMm,
+          paddingwidth: quiet,
+          paddingheight: 0,
+          includetext: false,
+          inkspread: 0,
+        });
+        const meta = await sharp(raw).metadata();
+        if (!meta.width || meta.width > maxW) continue;
+        return sharp(raw)
+          .resize({
+            width: meta.width,
+            height: hPx,
+            fit: 'fill',
+            kernel: sharp.kernel.nearest,
+          })
+          .png()
+          .toBuffer();
+      } catch {
+        /* next scale */
+      }
     }
+    return null;
   }
-  return null;
+
+  return tryEncode(primary);
 }
 
 /**

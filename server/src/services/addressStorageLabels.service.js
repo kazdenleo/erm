@@ -14,7 +14,8 @@ import { getLabelSvgFontFaceCss, labelSvgFontFamily } from '../utils/labelFonts.
 /** 8 px/мм ≈ 203 dpi — модули Code128 целыми точками термоголовы. */
 const PX_PER_MM = 8;
 const PT_PER_MM = 72 / 25.4;
-const BARCODE_MODULE_MM = 0.375;
+const BARCODE_MODULE_MM = 0.5;
+const BARCODE_MIN_SCALE = 3;
 
 function escXml(s) {
   return String(s ?? '')
@@ -53,10 +54,10 @@ export async function renderLabelPng(loc, settings) {
     paddingheight: 0,
     inkspread: 0,
   };
-  let scale = Math.max(3, Math.round(BARCODE_MODULE_MM * PX_PER_MM));
+  let scale = Math.max(BARCODE_MIN_SCALE, Math.round(BARCODE_MODULE_MM * PX_PER_MM));
   let raw = null;
   let drawW = 0;
-  for (; scale >= 2; scale -= 1) {
+  for (; scale >= BARCODE_MIN_SCALE; scale -= 1) {
     const buf = await bwipjs.toBuffer({ ...bwipOpts, scale });
     const meta = await sharp(buf).metadata();
     if (meta.width && meta.width <= maxBarW) {
@@ -66,8 +67,8 @@ export async function renderLabelPng(loc, settings) {
     }
   }
   if (!raw) {
-    scale = 2;
-    raw = await bwipjs.toBuffer({ ...bwipOpts, scale });
+    // Длинный payload не влез — кодируем как есть на min scale (лучше тишина, чем битые доли).
+    raw = await bwipjs.toBuffer({ ...bwipOpts, scale: BARCODE_MIN_SCALE });
     drawW = Math.min((await sharp(raw).metadata()).width || maxBarW, maxBarW);
   }
   const bc = await sharp(raw)

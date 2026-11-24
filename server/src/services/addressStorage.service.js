@@ -54,11 +54,18 @@ function isPrintableAscii(s) {
   return /^[\x20-\x7E]+$/.test(String(s || ''));
 }
 
-/** Штрихкод ячейки: свой, иначе код (если ASCII — Code128 не кодирует кириллицу), иначе L<id>. */
+/**
+ * Штрихкод ячейки для печати/скана.
+ * Свой barcode — если задан; иначе всегда L{id}: короткий Code128 → толстые модули (0.375–0.5 мм),
+ * обычный сканер читает. Длинный адрес вроде A-01-3-2 в Code128 на 58 мм даёт модуль ~0.25 мм — тишина.
+ * Адрес ячейки печатается текстом на этикетке; resolveScan принимает и L{id}, и code.
+ */
 export function effectiveBarcode(loc) {
-  if (loc?.barcode) return String(loc.barcode);
+  const custom = loc?.barcode != null ? String(loc.barcode).trim() : '';
+  if (custom) return custom;
+  if (loc?.id != null && String(loc.id).trim() !== '') return `L${loc.id}`;
   if (isPrintableAscii(loc?.code)) return String(loc.code);
-  return `L${loc?.id}`;
+  return '';
 }
 
 /** Нормализация скана этикетки ячейки: AIM-префиксы сканеров, юникод-тире, невидимые символы. */
