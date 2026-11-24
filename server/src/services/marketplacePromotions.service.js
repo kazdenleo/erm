@@ -26,6 +26,13 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Money для /v1/actions/products/update (после единой предельной цены, окт 2026). */
+function ozonActionMoney(amount) {
+  const n = num(amount);
+  if (n == null || n <= 0) return null;
+  return { amount: String(Math.round(n)), currency: 'RUB' };
+}
+
 function scopeOf(options = {}) {
   return pricesService._integrationScopeFromOptions(options);
 }
@@ -293,7 +300,7 @@ export async function joinOzonAction({ actionId, products = [] }, options = {}) 
         continue;
       }
     }
-    // action_price — та же единая предельная цена, что и в «Ценах»: Ozon копирует её во все разделы.
+    // Вход через /v1/actions/products/update (activate заблокирован единой предельной ценой).
     const item = { product_id: ozonProductId, action_price: actionPrice };
     const stock = num(row.stock);
     if (stock != null && stock > 0) item.stock = Math.round(stock);
@@ -303,21 +310,19 @@ export async function joinOzonAction({ actionId, products = [] }, options = {}) 
     return { ok: false, error: blocked[0]?.message || 'Нет товаров, которые можно добавить', blocked, added: 0 };
   }
 
-  const response = await fetch('https://api-seller.ozon.ru/v2/actions/products/activate', {
-    method: 'POST',
-    headers: pricesService._ozonApiHeaders(client_id, api_key),
-    body: JSON.stringify({ action_id: id, products: allowed }),
-  });
-  const text = await response.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-  if (!response.ok) {
-    return { ok: false, error: `Ozon ${response.status}: ${text.slice(0, 240)}`, blocked, added: 0 };
-  }
+  const updated = await postOzonActionPrices(client_id, api_key, id, allowed);
   await pricesService.forgetOzonActionProductsCache(id, options).catch(() => {});
-  const result = data?.result && typeof data.result === 'object' ? data.result : data || {};
-  const rejected = Array.isArray(result.rejected) ? result.rejected : [];
-  const added = Array.isArray(result.product_ids) ? result.product_ids.length : Math.max(0, allowed.length - rejected.length);
+  if (!updated.ok) {
+    return {
+      ok: false,
+      error: updated.error || 'Не удалось добавить в акцию',
+      blocked,
+      added: 0,
+      rejected: updated.rejected || [],
+    };
+  }
+  const rejected = updated.rejected || [];
+  const added = Math.max(0, allowed.length - rejected.length);
   return {
     ok: rejected.length === 0,
     added,
@@ -342,35 +347,26 @@ async function leaveOzonByRaisingPrice(client_id, api_key, actionId, products) {
   if (!items.length) {
     return { ok: false, error: blocked[0]?.message || 'Не удалось поднять предельную цену', blocked };
   }
-  const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/update', {
-    method: 'POST',
-    headers: pricesService._ozonApiHeaders(client_id, api_key),
-    body: JSON.stringify({ action_id: Number(actionId), products: items }),
-  });
-  const text = await response.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-  if (!response.ok) {
-    return { ok: false, error: `Ozon ${response.status}: ${text.slice(0, 240)}`, blocked };
-  }
-  const result = data?.result && typeof data.result === 'object' ? data.result : data || {};
-  const rejected = Array.isArray(result.rejected) ? result.rejected : [];
+  const updated = await postOzonActionPrices(client_id, api_key, actionId, items);
+  const rejected = updated.rejected || [];
   const reason = rejected.map((row) => row?.reason || row?.message).find(Boolean);
   const price = items.length === 1 ? items[0].action_price : null;
   return {
-    ok: rejected.length === 0 && blocked.length === 0,
+    ok: updated.ok === true && blocked.length === 0,
     deactivated: items.length - rejected.length,
     rejected,
     blocked,
     raisedTo: price,
-    error: rejected.length
-      ? `Ozon не принял новую предельную цену${reason ? `: ${reason}` : ''}`
-      : (blocked[0]?.message || undefined),
-    notice: rejected.length
-      ? undefined
-      : (price != null
+    error: !updated.ok
+      ? (updated.error || 'Ozon не принял новую предельную цену')
+      : (rejected.length
+        ? `Ozon не принял новую предельную цену${reason ? `: ${reason}` : ''}`
+        : (blocked[0]?.message || undefined)),
+    notice: updated.ok && !rejected.length
+      ? (price != null
         ? `Предельную цену подняли до ${price} ₽ — выше порога акции, товар выходит из неё`
-        : 'Предельную цену подняли выше порога акции, товары выходят из неё'),
+        : 'Предельную цену подняли выше порога акции, товары выходят из неё')
+      : undefined,
   };
 }
 
@@ -398,10 +394,23 @@ export async function leaveOzonAction({ actionId, ozonProductIds = [], products 
 }
 
 async function postOzonActionPrices(client_id, api_key, actionId, items) {
+  const products = [];
+  for (const row of items || []) {
+    const product_id = Number(row.product_id ?? row.ozonProductId ?? row.id);
+    const action_price = ozonActionMoney(row.action_price ?? row.actionPrice);
+    if (!Number.isFinite(product_id) || product_id < 1 || !action_price) continue;
+    const entry = { product_id, action_price };
+    const stock = num(row.stock);
+    if (stock != null && stock > 0) entry.stock = String(Math.round(stock));
+    products.push(entry);
+  }
+  if (!products.length) {
+    return { ok: false, error: 'Нет товаров для обновления цены акции', rejected: [] };
+  }
   const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/update', {
     method: 'POST',
     headers: pricesService._ozonApiHeaders(client_id, api_key),
-    body: JSON.stringify({ action_id: Number(actionId), products: items }),
+    body: JSON.stringify({ action_id: Number(actionId), products }),
   });
   const text = await response.text();
   let data = null;
