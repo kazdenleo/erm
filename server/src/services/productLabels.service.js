@@ -27,10 +27,6 @@ import {
   labelSvgFontFamily,
 } from '../utils/labelFonts.js';
 import { formatCargoBarcodeLabel, isWbCargoQrPayload } from '../utils/wbCargoQr.js';
-import {
-  barcodePlacementToPdfBox,
-  drawVectorLinearBarcode,
-} from '../utils/vectorBarcode.js';
 
 const SIZE_PRESETS = {
   '58x40': { widthMm: 58, heightMm: 40 },
@@ -38,17 +34,8 @@ const SIZE_PRESETS = {
 };
 
 const MM_TO_PX = 8;
-/**
- * Ячейки: 8 px/мм ≈ 203 dpi термопринтера.
- * Модуль Code128 = 3 px → 0.375 мм (целые точки головы) — иначе сканер не берёт.
- */
-const CELL_MM_TO_PX = 8;
-/** Минимальная высота полосок ячейки, мм (для лазерного сканера лучше ≥20). */
-const CELL_BARCODE_MIN_HEIGHT_MM = 20;
-/** Целевая ширина модуля Code128, мм (4 точки @ 203 dpi = 0.5 мм — надёжнее для ручных сканеров). */
-const CELL_BARCODE_MODULE_MM = 0.5;
-/** Ниже 3 точек @ 203 dpi (~0.375 мм) обычный сканер часто молчит. */
-const CELL_BARCODE_MIN_SCALE = 3;
+/** Как у товарных этикеток: не даём полоскам ужаться ниже рабочего минимума. */
+const BARCODE_MIN_HEIGHT_MM = 14;
 
 /** Кэш PNG этикеток: повторная печать / пакетный print helper не гоняют sharp заново. */
 const LABEL_PNG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -104,13 +91,7 @@ function resolveMmToPx(previewScale) {
   return MM_TO_PX * Math.min(6, Math.max(2, s));
 }
 
-function resolveCellMmToPx(previewScale) {
-  const s = Number(previewScale);
-  if (!Number.isFinite(s) || s <= 1) return CELL_MM_TO_PX;
-  return CELL_MM_TO_PX * Math.min(6, Math.max(2, s));
-}
-
-/** Подготовка шаблона ячейки к печати: ШК не ниже читаемой высоты (кегль SKU/адреса не трогаем). */
+/** Шаблон ячейки: высота ШК как у товара (≥14 мм), остальное из конструктора. */
 function normalizeCellTemplateForPrint(template) {
   const src = template && typeof template === 'object' ? template : {};
   const elements = (Array.isArray(src.elements) ? src.elements : []).map((el) => {
@@ -120,10 +101,10 @@ function normalizeCellTemplateForPrint(template) {
       return {
         ...el,
         heightMm: Math.max(
-          CELL_BARCODE_MIN_HEIGHT_MM,
-          Number.isFinite(h) && h > 0 ? h : CELL_BARCODE_MIN_HEIGHT_MM
+          BARCODE_MIN_HEIGHT_MM,
+          Number.isFinite(h) && h > 0 ? h : BARCODE_MIN_HEIGHT_MM
         ),
-        widthMm: Math.max(40, Number(el.widthMm) || 54),
+        widthMm: Number(el.widthMm) > 0 ? Number(el.widthMm) : 54,
       };
     }
     return el;
@@ -283,7 +264,7 @@ function estimateElementMinHeight(el, ctx) {
   if (el.type === 'barcode') {
     if (!barcodeValue) return 0;
     const configured = Number(el.heightMm) || 12;
-    const hMm = isCell ? Math.max(CELL_BARCODE_MIN_HEIGHT_MM, configured) : configured;
+    const hMm = Math.max(isCell || isPackaging ? BARCODE_MIN_HEIGHT_MM : 8, configured);
     const hPx = Math.round(hMm * mmToPx);
     const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, isPackaging ? 36 : 14);
     const textUnderH = el.showText !== false ? digitFs + 4 : 0;
@@ -494,7 +475,7 @@ export function defaultCellLabelElements() {
       type: 'barcode',
       enabled: true,
       widthMm: 54,
-      heightMm: CELL_BARCODE_MIN_HEIGHT_MM,
+      heightMm: BARCODE_MIN_HEIGHT_MM,
       showText: false,
       textFontSize: 8,
       align: 'center',
@@ -756,64 +737,8 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   return null;
 }
 
-/**
- * ШК ячейки: Code39 (лазерные сканеры берут стабильнее, чем Code128 с термопечати),
- * модуль ≥0.375 мм, без растягивания по ширине.
- */
-async function generateCellBarcodePng(text, { maxWidthPx, heightPx, mmToPx = CELL_MM_TO_PX }) {
-  const maxW = Math.max(40, Math.floor(Number(maxWidthPx) || 0));
-  const hPx = Math.max(24, Math.round(Number(heightPx) || 0));
-  const barMm = Math.max(CELL_BARCODE_MIN_HEIGHT_MM, hPx / Math.max(1, mmToPx));
-  const quiet = 10;
-  const preferredScale = Math.max(CELL_BARCODE_MIN_SCALE, Math.round(CELL_BARCODE_MODULE_MM * mmToPx));
-
-  const primary = String(text || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^0-9A-Z\-.$\/+%\s]/g, '');
-  if (!primary) return null;
-
-  // Сначала более толстый модуль (scale↓); Code128 плотнее → чаще влезает при 0.5 мм.
-  // Code39 — запасной: часть ручных сканеров его берёт охотнее после термопечати.
-  const symbologies = ['code128', 'code39'];
-  for (let scale = preferredScale; scale >= CELL_BARCODE_MIN_SCALE; scale -= 1) {
-    for (const bcid of symbologies) {
-      try {
-        const raw = await bwipToBufferWithTimeout({
-          bcid,
-          text: primary,
-          scale,
-          height: barMm,
-          paddingwidth: quiet,
-          paddingheight: 0,
-          includetext: false,
-          inkspread: 0,
-        });
-        const meta = await sharp(raw).metadata();
-        if (!meta.width || meta.width > maxW) continue;
-        return sharp(raw)
-          .resize({
-            width: meta.width,
-            height: hPx,
-            fit: 'fill',
-            kernel: sharp.kernel.nearest,
-          })
-          .png()
-          .toBuffer();
-      } catch {
-        /* next */
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Вписать ШК в слот.
- * Для линейных (Code128/EAN): ширину модулей НЕ растягиваем — иначе ломаются доли 1:2:3:4 и сканер молчит.
- * Высоту столбиков можно менять nearest-neighbor.
- */
-async function fitBarcodePngToSlot(pngBuffer, innerW, hPx, { linear = false } = {}) {
+/** Вписать ШК в слот (как на товарных этикетках). */
+async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const slotW = Math.max(10, Math.round(innerW));
   const slotH = Math.max(10, Math.round(hPx));
   const img = sharp(pngBuffer);
@@ -823,26 +748,16 @@ async function fitBarcodePngToSlot(pngBuffer, innerW, hPx, { linear = false } = 
   const maxW = slotW - 2;
   const maxH = slotH - 2;
 
-  let w;
-  let h;
-  if (linear) {
+  let w = maxW;
+  let h = Math.round(meta.height * (w / meta.width));
+  if (h > maxH) {
     h = maxH;
-    w = meta.width <= maxW ? meta.width : maxW;
-  } else {
-    w = maxW;
-    h = Math.round(meta.height * (w / meta.width));
-    if (h > maxH) {
-      h = maxH;
-      w = Math.round(meta.width * (h / meta.height));
-    }
+    w = Math.round(meta.width * (h / meta.height));
   }
-  w = Math.max(1, Math.min(maxW, w));
-  h = Math.max(1, Math.min(maxH, h));
+  w = Math.max(1, w);
+  h = Math.max(1, h);
 
-  const resized = await img
-    .resize({ width: w, height: h, fit: 'fill', kernel: sharp.kernel.nearest })
-    .png()
-    .toBuffer();
+  const resized = await img.resize({ width: w, height: h, kernel: sharp.kernel.nearest }).png().toBuffer();
   const left = Math.max(0, Math.round((slotW - w) / 2));
   const top = Math.max(0, Math.round((slotH - h) / 2));
 
@@ -945,10 +860,6 @@ async function buildLabelSvg({
   };
 
   const blocks = [];
-  /** @type {{ input: Buffer, left: number, top: number }[]} */
-  const barcodeOverlays = [];
-  /** @type {{ text: string, xPx: number, yPx: number, wPx: number, hPx: number, mmToPx: number }[]} */
-  const barcodePlacements = [];
   let y = padT;
 
   for (let elIndex = 0; elIndex < elements.length; elIndex += 1) {
@@ -1050,23 +961,20 @@ async function buildLabelSvg({
         y += blockGap;
       }
     } else if (el.type === 'barcode' && barcodeValue) {
-      // Штрихкод обязателен: не отдаём место названию/составу ниже — они ужимаются сами.
+      // Тот же путь, что у товарных этикеток: generateBarcodePng → SVG <image>.
       const barcodeMaxY = maxContentY;
       const configuredMm = Number(el.heightMm) || 12;
-      const hMm = cell ? Math.max(CELL_BARCODE_MIN_HEIGHT_MM, configuredMm) : configuredMm;
+      const hMm = Math.max(cell || packaging ? BARCODE_MIN_HEIGHT_MM : 4, configuredMm);
       let hPx = Math.round(hMm * mmToPx);
-      // Ячейки: вся ширина под ШК — толще модули, сканеру проще.
-      const { widthPx: barWidthPx, offsetX: barOffsetX } = cell
-        ? { widthPx: innerW, offsetX: 0 }
-        : resolveBarcodeSlot(el, innerW, mmToPx);
+      const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
       const barX = padL + barOffsetX;
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
       const barcodeCaption = barcodeDisplayText(barcodeValue);
       const showBarcodeText = el.showText !== false;
       const textUnderH = showBarcodeText ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
-      const minBarcodePx = Math.round((cell ? CELL_BARCODE_MIN_HEIGHT_MM : 8) * mmToPx);
-      const absoluteMinPx = Math.round((cell ? 12 : 4) * mmToPx);
+      const minBarcodePx = Math.round(8 * mmToPx);
+      const absoluteMinPx = Math.round(4 * mmToPx);
       const available = barcodeMaxY - y - textGap - blockGap;
 
       if (available < absoluteMinPx) {
@@ -1095,45 +1003,17 @@ async function buildLabelSvg({
       }
       const barHeightMm = hPx / mmToPx;
 
-      if (cell) {
-        // Белый слот: в PDF полоски — вектором; растр только для превью на экране.
-        blocks.push(
-          `<rect x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" fill="#fff"/>`
-        );
-        barcodePlacements.push({
-          text: barcodeValue,
-          xPx: barX,
-          yPx: y,
-          wPx: barWidthPx,
-          hPx,
-          mmToPx,
-        });
-        const cellBar = await generateCellBarcodePng(barcodeValue, {
-          maxWidthPx: barWidthPx,
-          heightPx: hPx,
-          mmToPx,
-        });
-        if (cellBar) {
-          const meta = await sharp(cellBar).metadata();
-          const bw = meta.width || barWidthPx;
-          const left = Math.max(0, barX + Math.round((barWidthPx - bw) / 2));
-          barcodeOverlays.push({ input: cellBar, left, top: Math.round(y) });
-        }
-      } else {
-        const barcodePng = await generateBarcodePng(barcodeValue, {
-          widthPx: barWidthPx,
-          barHeightMm,
-        });
-        if (barcodePng) {
-          const fitted = await fitBarcodePngToSlot(barcodePng, barWidthPx, hPx, {
-            linear: true,
-          });
-          if (fitted) {
-            const b64 = fitted.toString('base64');
-            blocks.push(
-              `<image x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" href="data:image/png;base64,${b64}" xlink:href="data:image/png;base64,${b64}" />`
-            );
-          }
+      const barcodePng = await generateBarcodePng(barcodeValue, {
+        widthPx: barWidthPx,
+        barHeightMm,
+      });
+      if (barcodePng) {
+        const fitted = await fitBarcodePngToSlot(barcodePng, barWidthPx, hPx);
+        if (fitted) {
+          const b64 = fitted.toString('base64');
+          blocks.push(
+            `<image x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" href="data:image/png;base64,${b64}" xlink:href="data:image/png;base64,${b64}" />`
+          );
         }
       }
       y += hPx;
@@ -1253,8 +1133,6 @@ async function buildLabelSvg({
     svg: ensureLabelSvgFonts(svg),
     widthMm,
     heightMm,
-    barcodeOverlays,
-    barcodePlacements,
   };
 }
 
@@ -1320,14 +1198,7 @@ async function renderWithTemplate(
   template,
   product,
   format = 'png',
-  {
-    previewScale = null,
-    marketplace = null,
-    packaging = null,
-    cell = null,
-    /** Для печати ячеек: не вшивать растровый ШК — в PDF полоски векторные. */
-    skipBarcodeComposite = false,
-  } = {}
+  { previewScale = null, marketplace = null, packaging = null, cell = null } = {}
 ) {
   const categoryId = template.user_category_id ?? template.userCategoryId;
   const categoryAttributeIds = packaging || cell ? [] : await loadCategoryAttributeIds(categoryId);
@@ -1339,9 +1210,9 @@ async function renderWithTemplate(
         .filter((id) => Number.isFinite(id));
   const attributeNames = await loadAttributeNames(attrIds);
   const printTemplate = cell ? normalizeCellTemplateForPrint(template) : template;
-  const mmToPx = cell ? resolveCellMmToPx(previewScale) : resolveMmToPx(previewScale);
+  const mmToPx = resolveMmToPx(previewScale);
   const productForLabel = packaging || cell ? product : await enrichProductForLabel(product, printTemplate);
-  const { svg, widthMm, heightMm, barcodeOverlays, barcodePlacements } = await buildLabelSvg({
+  const { svg, widthMm, heightMm } = await buildLabelSvg({
     template: printTemplate,
     product: productForLabel,
     attributeNames,
@@ -1351,29 +1222,12 @@ async function renderWithTemplate(
     packaging,
     cell,
   });
-  let pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
-  if (!skipBarcodeComposite && Array.isArray(barcodeOverlays) && barcodeOverlays.length) {
-    pngBuffer = await sharp(pngBuffer).composite(barcodeOverlays).png().toBuffer();
-  }
+  const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
   if (format === 'pdf') {
     let pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
-    return {
-      buffer: pdf,
-      contentType: 'application/pdf',
-      widthMm,
-      heightMm,
-      pngBuffer,
-      barcodePlacements,
-    };
+    return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm, pngBuffer };
   }
-  return {
-    buffer: pngBuffer,
-    contentType: 'image/png',
-    widthMm,
-    heightMm,
-    pngBuffer,
-    barcodePlacements,
-  };
+  return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm, pngBuffer };
 }
 
 export const productLabelsService = {
@@ -1437,31 +1291,14 @@ export const productLabelsService = {
     const pageMode = options.pageMode === 'a4' ? 'a4' : 'single';
     const doc = await PDFDocument.create();
 
-    const paintCellPage = async (page, rendered, originXPt, originYPt, labelWPt, labelHPt) => {
-      const image = await doc.embedPng(rendered.buffer);
-      page.drawImage(image, { x: originXPt, y: originYPt, width: labelWPt, height: labelHPt });
-      for (const placement of rendered.barcodePlacements || []) {
-        const box = barcodePlacementToPdfBox(placement, labelHPt);
-        drawVectorLinearBarcode(page, {
-          text: box.text,
-          xPt: originXPt + box.xPt,
-          yPt: originYPt + box.yPt,
-          widthPt: box.widthPt,
-          heightPt: box.heightPt,
-        });
-      }
-    };
-
     if (pageMode !== 'a4') {
       for (const cell of list) {
-        const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', {
-          cell,
-          skipBarcodeComposite: true,
-        });
+        const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
         const widthPt = mmToPt(rendered.widthMm);
         const heightPt = mmToPt(rendered.heightMm);
+        const image = await doc.embedPng(rendered.buffer);
         const page = doc.addPage([widthPt, heightPt]);
-        await paintCellPage(page, rendered, 0, 0, widthPt, heightPt);
+        page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
       }
       return Buffer.from(await doc.save());
     }
@@ -1497,15 +1334,13 @@ export const productLabelsService = {
       if (indexOnPage === 0) {
         page = doc.addPage([pageWPt, pageHPt]);
       }
-      const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', {
-        cell,
-        skipBarcodeComposite: true,
-      });
+      const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
+      const image = await doc.embedPng(rendered.buffer);
       const col = indexOnPage % cols;
       const row = Math.floor(indexOnPage / cols);
       const x = mmToPt(sheetMarginMm + col * (labelW + gapMm));
       const y = pageHPt - mmToPt(sheetMarginMm + row * (labelH + gapMm) + labelH);
-      await paintCellPage(page, rendered, x, y, drawW, drawH);
+      page.drawImage(image, { x, y, width: drawW, height: drawH });
       page.drawRectangle({
         x,
         y,
