@@ -168,8 +168,12 @@ async function assertCargoPlacementZoneCompatible(cargoUnitId, supplyItem, suppl
   }
 }
 
-/** Совпадение штрихкода/артикула со строкой поставки (в т.ч. комплектующая комплекта). */
-const SUPPLY_ITEM_BARCODE_MATCH_SQL = `
+/**
+ * Прямое совпадение строки поставки (ШК/SKU самой позиции или карточки).
+ * Без комплектующих: иначе скан одиночной щётки уходит в комплект «550 350 Getz»
+ * и показывает «Лишний товар» по комплекту.
+ */
+const SUPPLY_ITEM_DIRECT_MATCH_SQL = `
   (
     TRIM(COALESCE(i.barcode, '')) = $CODE
     OR TRIM(COALESCE(i.sku, '')) = $CODE
@@ -183,23 +187,35 @@ const SUPPLY_ITEM_BARCODE_MATCH_SQL = `
       SELECT 1 FROM product_skus ps
       WHERE ps.product_id = p.id AND TRIM(ps.sku) = $CODE
     )
-    OR EXISTS (
-      SELECT 1
-      FROM kit_components kc
-      JOIN products comp ON comp.id = kc.component_product_id
-      WHERE kc.kit_product_id = p.id
-        AND (
-          TRIM(COALESCE(comp.sku, '')) = $CODE
-          OR EXISTS (
-            SELECT 1 FROM barcodes b2
-            WHERE b2.product_id = comp.id AND TRIM(b2.barcode) = $CODE
-          )
-          OR EXISTS (
-            SELECT 1 FROM product_skus ps2
-            WHERE ps2.product_id = comp.id AND TRIM(ps2.sku) = $CODE
-          )
+  )
+`;
+
+/** Скан комплектующей → строка комплекта в поставке. */
+const SUPPLY_ITEM_KIT_COMPONENT_MATCH_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM kit_components kc
+    JOIN products comp ON comp.id = kc.component_product_id
+    WHERE kc.kit_product_id = p.id
+      AND (
+        TRIM(COALESCE(comp.sku, '')) = $CODE
+        OR EXISTS (
+          SELECT 1 FROM barcodes b2
+          WHERE b2.product_id = comp.id AND TRIM(b2.barcode) = $CODE
         )
-    )
+        OR EXISTS (
+          SELECT 1 FROM product_skus ps2
+          WHERE ps2.product_id = comp.id AND TRIM(ps2.sku) = $CODE
+        )
+      )
+  )
+`;
+
+/** Прямое ИЛИ комплектующая — для снятия из ГМ (ищем что реально лежит). */
+const SUPPLY_ITEM_BARCODE_MATCH_SQL = `
+  (
+    ${SUPPLY_ITEM_DIRECT_MATCH_SQL}
+    OR ${SUPPLY_ITEM_KIT_COMPONENT_MATCH_SQL}
   )
 `;
 
@@ -207,6 +223,29 @@ function barcodeMatchSql(codeParamIndex) {
   return SUPPLY_ITEM_BARCODE_MATCH_SQL.replaceAll('$CODE', `$${codeParamIndex}`);
 }
 
+function directMatchSql(codeParamIndex) {
+  return SUPPLY_ITEM_DIRECT_MATCH_SQL.replaceAll('$CODE', `$${codeParamIndex}`);
+}
+
+function kitComponentMatchSql(codeParamIndex) {
+  return SUPPLY_ITEM_KIT_COMPONENT_MATCH_SQL.replaceAll('$CODE', `$${codeParamIndex}`);
+}
+
+/** Уже упаковано по строке поставки (для приоритета недобора). */
+const PACKED_QTY_SQL = `
+  COALESCE((
+    SELECT SUM(cc.quantity)::int
+    FROM fbo_supply_cargo_contents cc
+    INNER JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
+    WHERE cu.fbo_supply_id = i.fbo_supply_id AND cc.fbo_supply_item_id = i.id
+  ), 0)
+`;
+
+/**
+ * Dual-role (как в сборке/collect):
+ * 1) прямая позиция — всегда, даже если план набран (overage на одиночку);
+ * 2) иначе — комплектующая комплекта (сначала недобор).
+ */
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const codes = productLookupCodesFromScan(barcode);
   const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
@@ -228,17 +267,35 @@ async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
     params.push(pid);
     profileFilter = ` AND (p.profile_id IS NULL OR p.profile_id = $${params.length})`;
   }
-  const r = await query(
+
+  const orderByNeedThenId = `
+    CASE WHEN ${PACKED_QTY_SQL} < GREATEST(0, COALESCE(i.quantity, 0)) THEN 0 ELSE 1 END ASC,
+    i.id ASC
+  `;
+
+  const direct = await query(
     `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
      WHERE i.fbo_supply_id = $1${profileFilter}
-       AND ${barcodeMatchSql(2)}
-     ORDER BY i.id ASC
+       AND ${directMatchSql(2)}
+     ORDER BY ${orderByNeedThenId}
      LIMIT 1`,
     params
   );
-  return r.rows?.[0] || null;
+  if (direct.rows?.[0]) return direct.rows[0];
+
+  const viaKit = await query(
+    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
+     FROM fbo_supply_items i
+     LEFT JOIN products p ON p.id = i.product_id
+     WHERE i.fbo_supply_id = $1${profileFilter}
+       AND ${kitComponentMatchSql(2)}
+     ORDER BY ${orderByNeedThenId}
+     LIMIT 1`,
+    params
+  );
+  return viaKit.rows?.[0] || null;
 }
 
 /**
