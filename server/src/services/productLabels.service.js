@@ -91,9 +91,11 @@ function resolveMmToPx(previewScale) {
   return MM_TO_PX * Math.min(6, Math.max(2, s));
 }
 
-/** Шаблон ячейки: высота ШК как у товара (≥14 мм), остальное из конструктора. */
+/** Шаблон ячейки: высота ШК ≥14 мм, ширина почти на всю этикетку (толще модули). */
 function normalizeCellTemplateForPrint(template) {
   const src = template && typeof template === 'object' ? template : {};
+  const size = parseSize(src);
+  const fullBarcodeMm = Math.max(40, Number(size.widthMm) || 58 - 2);
   const elements = (Array.isArray(src.elements) ? src.elements : []).map((el) => {
     if (!el || typeof el !== 'object') return el;
     if (el.type === 'barcode') {
@@ -104,7 +106,9 @@ function normalizeCellTemplateForPrint(template) {
           BARCODE_MIN_HEIGHT_MM,
           Number.isFinite(h) && h > 0 ? h : BARCODE_MIN_HEIGHT_MM
         ),
-        widthMm: Number(el.widthMm) > 0 ? Number(el.widthMm) : 54,
+        // Короткий L{id}: нужна максимальная ширина слота, иначе scale=4 и узкие модули.
+        widthMm: fullBarcodeMm,
+        showText: false,
       };
     }
     return el;
@@ -667,8 +671,9 @@ function resolveBarcodeSlot(el, innerW, mmToPx) {
 function pickBarcodeScale(bcid, text, targetWidthPx) {
   const quietModules = 10;
   const modules = estimateBarcodeModules(bcid, text);
-  const scale = Math.floor((targetWidthPx * 0.94) / (modules + 2 * quietModules));
-  return Math.max(2, Math.min(8, scale));
+  // Целочисленный scale без запаса 0.94 — иначе потом тянули ширину и ломали модули.
+  const scale = Math.floor(targetWidthPx / (modules + 2 * quietModules));
+  return Math.max(3, Math.min(12, scale));
 }
 
 function bwipToBufferWithTimeout(opts, ms = 5000) {
@@ -681,11 +686,13 @@ function bwipToBufferWithTimeout(opts, ms = 5000) {
 }
 
 async function renderBarcodePngForSpec(spec, { targetW, barMm, quietModules = 10 }) {
-  let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
   const pad = Math.max(10, Number(quietModules) || 10);
+  let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
 
   try {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    // Подбираем максимальный scale, при котором PNG ≤ слота (без последующего stretch по ширине).
+    let best = null;
+    for (; scale >= 3; scale -= 1) {
       const buf = await bwipToBufferWithTimeout({
         bcid: spec.bcid,
         text: spec.text,
@@ -697,14 +704,17 @@ async function renderBarcodePngForSpec(spec, { targetW, barMm, quietModules = 10
         inkspread: 0,
       });
       const meta = await sharp(buf).metadata();
-      if (!meta.width) return buf;
-      if (meta.width >= targetW * 0.9 || scale >= 8) return buf;
-      scale += 1;
+      if (!meta.width) continue;
+      if (meta.width <= targetW) {
+        best = buf;
+        break;
+      }
     }
+    if (best) return best;
     return await bwipToBufferWithTimeout({
       bcid: spec.bcid,
       text: spec.text,
-      scale,
+      scale: 3,
       height: barMm,
       paddingwidth: pad,
       paddingheight: 2,
@@ -739,9 +749,8 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
 
 /**
  * Вписать ШК в слот.
- * Важно: для линейного кода ширину и высоту меняем раздельно.
- * Старый «вписать с сохранением пропорций» при нехватке высоты сжимал ширину —
- * короткий L13 превращался в узкую полоску, сканер молчал (телефон ещё читал).
+ * Ширину НЕ растягиваем: дробный scale даёт модули 4/5 px вперемешку — телефон читает, ТСД молчит.
+ * Только центрируем по горизонтали; высоту столбиков можно fill (для 1D это безопасно).
  */
 async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const slotW = Math.max(10, Math.round(innerW));
@@ -749,22 +758,28 @@ async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const meta = await sharp(pngBuffer).metadata();
   if (!meta.width || !meta.height) return null;
 
-  const maxW = Math.max(1, slotW - 2);
-  const maxH = Math.max(1, slotH - 2);
+  let working = pngBuffer;
+  let drawW = meta.width;
 
-  // 1) Ширина слота (модули), 2) высота столбиков — nearest, без повторного сжатия ширины.
-  const resized = await sharp(pngBuffer)
-    .resize({ width: maxW, kernel: sharp.kernel.nearest })
-    .resize({ width: maxW, height: maxH, fit: 'fill', kernel: sharp.kernel.nearest })
+  // Если вдруг шире слота — только даунскейл nearest (генератор обычно уже ≤ слота).
+  if (drawW > slotW) {
+    working = await sharp(working)
+      .resize({ width: slotW, kernel: sharp.kernel.nearest })
+      .png()
+      .toBuffer();
+    drawW = (await sharp(working).metadata()).width || slotW;
+  }
+
+  working = await sharp(working)
+    .resize({ width: drawW, height: slotH, fit: 'fill', kernel: sharp.kernel.nearest })
     .png()
     .toBuffer();
-  const left = Math.max(0, Math.round((slotW - maxW) / 2));
-  const top = Math.max(0, Math.round((slotH - maxH) / 2));
 
+  const left = Math.max(0, Math.round((slotW - drawW) / 2));
   return sharp({
     create: { width: slotW, height: slotH, channels: 3, background: { r: 255, g: 255, b: 255 } },
   })
-    .composite([{ input: resized, left, top }])
+    .composite([{ input: working, left, top: 0 }])
     .png()
     .toBuffer();
 }
@@ -966,8 +981,18 @@ async function buildLabelSvg({
       const configuredMm = Number(el.heightMm) || 12;
       const hMm = Math.max(cell || packaging ? BARCODE_MIN_HEIGHT_MM : 4, configuredMm);
       let hPx = Math.round(hMm * mmToPx);
-      const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
-      const barX = padL + barOffsetX;
+      // Ячейка: слот почти на всю этикетку (1 мм от края) — для L13 scale=5, модуль 0.625 мм.
+      let barWidthPx;
+      let barX;
+      if (cell) {
+        const inset = Math.max(1, Math.round(1 * mmToPx));
+        barWidthPx = Math.max(80, widthPx - inset * 2);
+        barX = inset;
+      } else {
+        const slot = resolveBarcodeSlot(el, innerW, mmToPx);
+        barWidthPx = slot.widthPx;
+        barX = padL + slot.offsetX;
+      }
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
       const barcodeCaption = barcodeDisplayText(barcodeValue);
       const showBarcodeText = el.showText !== false;
