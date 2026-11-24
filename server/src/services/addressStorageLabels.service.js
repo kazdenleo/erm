@@ -11,8 +11,10 @@ import { effectiveBarcode } from './addressStorage.service.js';
 import productLabelsService from './productLabels.service.js';
 import { getLabelSvgFontFaceCss, labelSvgFontFamily } from '../utils/labelFonts.js';
 
-const PX_PER_MM = 12;
+/** 8 px/мм ≈ 203 dpi — модули Code128 целыми точками термоголовы. */
+const PX_PER_MM = 8;
 const PT_PER_MM = 72 / 25.4;
+const BARCODE_MODULE_MM = 0.375;
 
 function escXml(s) {
   return String(s ?? '')
@@ -39,22 +41,35 @@ export async function renderLabelPng(loc, settings) {
   const captionH = showBarcodeText ? Math.round(H * 0.08) : 0;
   const barH = H - pad * 2 - codeH - legendH - captionH - Math.round(H * 0.04);
 
-  // Quiet zone ≥10 модулей; модули — целые пиксели; высоту растягиваем без сжатия ширины.
+  // X=0.375 мм (3 px @ 203 dpi), quiet zone 10; ширину не растягиваем — только высоту.
   const maxBarW = Math.max(40, W - pad * 2);
+  const barHeightMm = Math.max(15, barH / PX_PER_MM);
   const bwipOpts = {
     bcid: 'code128',
     text: barcodeText,
-    height: Math.max(12, Math.round(barH / PX_PER_MM)),
+    height: barHeightMm,
     includetext: false,
     paddingwidth: 10,
-    paddingheight: 2,
+    paddingheight: 0,
     inkspread: 0,
   };
-  const unit = await sharp(await bwipjs.toBuffer({ ...bwipOpts, scale: 1 })).metadata();
-  const scale = Math.max(2, Math.min(8, Math.floor(maxBarW / Math.max(1, unit.width || 1))));
-  const raw = await bwipjs.toBuffer({ ...bwipOpts, scale });
-  const rawMeta = await sharp(raw).metadata();
-  const drawW = Math.min(rawMeta.width || maxBarW, maxBarW);
+  let scale = Math.max(3, Math.round(BARCODE_MODULE_MM * PX_PER_MM));
+  let raw = null;
+  let drawW = 0;
+  for (; scale >= 2; scale -= 1) {
+    const buf = await bwipjs.toBuffer({ ...bwipOpts, scale });
+    const meta = await sharp(buf).metadata();
+    if (meta.width && meta.width <= maxBarW) {
+      raw = buf;
+      drawW = meta.width;
+      break;
+    }
+  }
+  if (!raw) {
+    scale = 2;
+    raw = await bwipjs.toBuffer({ ...bwipOpts, scale });
+    drawW = Math.min((await sharp(raw).metadata()).width || maxBarW, maxBarW);
+  }
   const bc = await sharp(raw)
     .resize({
       width: drawW,

@@ -1408,11 +1408,16 @@ export function LabelConstructor() {
                             Высота кода (мм)
                             <input
                               type="number"
-                              min={6}
+                              min={isCell ? 15 : 6}
                               max={40}
-                              value={el.heightMm ?? 14}
+                              value={el.heightMm ?? (isCell ? 18 : 14)}
                               onChange={(e) =>
-                                updateElement(idx, { heightMm: Number(e.target.value) || 14 })
+                                updateElement(idx, {
+                                  heightMm: Math.max(
+                                    isCell ? 15 : 6,
+                                    Math.min(40, Number(e.target.value) || (isCell ? 18 : 14))
+                                  ),
+                                })
                               }
                             />
                           </label>
