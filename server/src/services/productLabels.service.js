@@ -27,6 +27,10 @@ import {
   labelSvgFontFamily,
 } from '../utils/labelFonts.js';
 import { formatCargoBarcodeLabel, isWbCargoQrPayload } from '../utils/wbCargoQr.js';
+import {
+  barcodePlacementToPdfBox,
+  drawVectorLinearBarcode,
+} from '../utils/vectorBarcode.js';
 
 const SIZE_PRESETS = {
   '58x40': { widthMm: 58, heightMm: 40 },
@@ -943,6 +947,8 @@ async function buildLabelSvg({
   const blocks = [];
   /** @type {{ input: Buffer, left: number, top: number }[]} */
   const barcodeOverlays = [];
+  /** @type {{ text: string, xPx: number, yPx: number, wPx: number, hPx: number, mmToPx: number }[]} */
+  const barcodePlacements = [];
   let y = padT;
 
   for (let elIndex = 0; elIndex < elements.length; elIndex += 1) {
@@ -1090,10 +1096,18 @@ async function buildLabelSvg({
       const barHeightMm = hPx / mmToPx;
 
       if (cell) {
-        // Не вшиваем ШК в SVG: растеризация размывает модули. Кладём PNG поверх после sharp.
+        // Белый слот: в PDF полоски — вектором; растр только для превью на экране.
         blocks.push(
           `<rect x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" fill="#fff"/>`
         );
+        barcodePlacements.push({
+          text: barcodeValue,
+          xPx: barX,
+          yPx: y,
+          wPx: barWidthPx,
+          hPx,
+          mmToPx,
+        });
         const cellBar = await generateCellBarcodePng(barcodeValue, {
           maxWidthPx: barWidthPx,
           heightPx: hPx,
@@ -1240,6 +1254,7 @@ async function buildLabelSvg({
     widthMm,
     heightMm,
     barcodeOverlays,
+    barcodePlacements,
   };
 }
 
@@ -1305,7 +1320,14 @@ async function renderWithTemplate(
   template,
   product,
   format = 'png',
-  { previewScale = null, marketplace = null, packaging = null, cell = null } = {}
+  {
+    previewScale = null,
+    marketplace = null,
+    packaging = null,
+    cell = null,
+    /** Для печати ячеек: не вшивать растровый ШК — в PDF полоски векторные. */
+    skipBarcodeComposite = false,
+  } = {}
 ) {
   const categoryId = template.user_category_id ?? template.userCategoryId;
   const categoryAttributeIds = packaging || cell ? [] : await loadCategoryAttributeIds(categoryId);
@@ -1319,7 +1341,7 @@ async function renderWithTemplate(
   const printTemplate = cell ? normalizeCellTemplateForPrint(template) : template;
   const mmToPx = cell ? resolveCellMmToPx(previewScale) : resolveMmToPx(previewScale);
   const productForLabel = packaging || cell ? product : await enrichProductForLabel(product, printTemplate);
-  const { svg, widthMm, heightMm, barcodeOverlays } = await buildLabelSvg({
+  const { svg, widthMm, heightMm, barcodeOverlays, barcodePlacements } = await buildLabelSvg({
     template: printTemplate,
     product: productForLabel,
     attributeNames,
@@ -1330,14 +1352,28 @@ async function renderWithTemplate(
     cell,
   });
   let pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
-  if (Array.isArray(barcodeOverlays) && barcodeOverlays.length) {
+  if (!skipBarcodeComposite && Array.isArray(barcodeOverlays) && barcodeOverlays.length) {
     pngBuffer = await sharp(pngBuffer).composite(barcodeOverlays).png().toBuffer();
   }
   if (format === 'pdf') {
     let pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
-    return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm, pngBuffer };
+    return {
+      buffer: pdf,
+      contentType: 'application/pdf',
+      widthMm,
+      heightMm,
+      pngBuffer,
+      barcodePlacements,
+    };
   }
-  return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm, pngBuffer };
+  return {
+    buffer: pngBuffer,
+    contentType: 'image/png',
+    widthMm,
+    heightMm,
+    pngBuffer,
+    barcodePlacements,
+  };
 }
 
 export const productLabelsService = {
@@ -1401,21 +1437,37 @@ export const productLabelsService = {
     const pageMode = options.pageMode === 'a4' ? 'a4' : 'single';
     const doc = await PDFDocument.create();
 
+    const paintCellPage = async (page, rendered, originXPt, originYPt, labelWPt, labelHPt) => {
+      const image = await doc.embedPng(rendered.buffer);
+      page.drawImage(image, { x: originXPt, y: originYPt, width: labelWPt, height: labelHPt });
+      for (const placement of rendered.barcodePlacements || []) {
+        const box = barcodePlacementToPdfBox(placement, labelHPt);
+        drawVectorLinearBarcode(page, {
+          text: box.text,
+          xPt: originXPt + box.xPt,
+          yPt: originYPt + box.yPt,
+          widthPt: box.widthPt,
+          heightPt: box.heightPt,
+        });
+      }
+    };
+
     if (pageMode !== 'a4') {
       for (const cell of list) {
-        const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
+        const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', {
+          cell,
+          skipBarcodeComposite: true,
+        });
         const widthPt = mmToPt(rendered.widthMm);
         const heightPt = mmToPt(rendered.heightMm);
-        const image = await doc.embedPng(rendered.buffer);
         const page = doc.addPage([widthPt, heightPt]);
-        page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
+        await paintCellPage(page, rendered, 0, 0, widthPt, heightPt);
       }
       return Buffer.from(await doc.save());
     }
 
     const A4_W_MM = 210;
     const A4_H_MM = 297;
-    // Без промежутков между этикетками; минимальные поля листа под принтер.
     const sheetMarginMm = 2;
     const gapMm = 0;
     const size = parseSize(template);
@@ -1445,14 +1497,15 @@ export const productLabelsService = {
       if (indexOnPage === 0) {
         page = doc.addPage([pageWPt, pageHPt]);
       }
-      const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', { cell });
-      const image = await doc.embedPng(rendered.buffer);
+      const rendered = await renderWithTemplate(template, cell?.product || {}, 'png', {
+        cell,
+        skipBarcodeComposite: true,
+      });
       const col = indexOnPage % cols;
       const row = Math.floor(indexOnPage / cols);
       const x = mmToPt(sheetMarginMm + col * (labelW + gapMm));
       const y = pageHPt - mmToPt(sheetMarginMm + row * (labelH + gapMm) + labelH);
-      // Растягиваем в точный размер шаблона — без «дыр» внутри ячейки сетки.
-      page.drawImage(image, { x, y, width: drawW, height: drawH });
+      await paintCellPage(page, rendered, x, y, drawW, drawH);
       page.drawRectangle({
         x,
         y,
