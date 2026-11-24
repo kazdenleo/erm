@@ -810,9 +810,13 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return { ok: false, error: 'invalid_product' };
 
+  // buyout_rate* обязательны: без них calculateMinPrice берёт дефолт 95% выкупа
+  // и завышает чист.% — стратегия ошибочно оставляет цену на полу (как KN1037K).
   const prodRes = await query(
     `SELECT id, cost, additional_expenses, organization_id, profile_id, pricing_strategy_id,
-            min_profit_ozon, min_profit_wb, min_profit_ym, min_price AS product_min_price
+            min_profit_ozon, min_profit_wb, min_profit_ym, min_price AS product_min_price,
+            buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym,
+            length, width, height, volume, weight
      FROM products WHERE id = $1`,
     [pid]
   );

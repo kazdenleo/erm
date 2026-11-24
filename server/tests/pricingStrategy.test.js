@@ -156,4 +156,47 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     expect(r.sellingPrice).toBe(2878);
     expect(r.heldByBand).toBe(false);
   });
+
+  test('resolveTargetMarginPrice rises when buyout is lower than default 95', () => {
+    const calc = {
+      acquiring: 1,
+      brand_promotion_percent: 1,
+      logistics_cost: 63,
+      processing_cost: 0,
+      commissions: {
+        FBS: {
+          percent: 47,
+          return_amount: 623,
+          delivery_amount: 25,
+          direct_flow_trans_amount: 63,
+        },
+      },
+    };
+    const atDefaultBuyout = resolveTargetMarginPrice({
+      marginPercent: 10,
+      floor: 3022,
+      cost: 1047.54,
+      additionalExpenses: 10,
+      calculator: calc,
+      marketplace: 'ozon',
+      product: {},
+      scheme: 'FBS',
+      sppPercent: 20,
+      taxProfile: { vatRate: 0, incomeTaxRate: 0.15, incomeTaxOnRevenue: false },
+    });
+    const at50Buyout = resolveTargetMarginPrice({
+      marginPercent: 10,
+      floor: 3022,
+      cost: 1047.54,
+      additionalExpenses: 10,
+      calculator: calc,
+      marketplace: 'ozon',
+      product: { buyout_rate: 50 },
+      scheme: 'FBS',
+      sppPercent: 20,
+      taxProfile: { vatRate: 0, incomeTaxRate: 0.15, incomeTaxOnRevenue: false },
+    });
+    expect(at50Buyout).toBeGreaterThan(atDefaultBuyout);
+    expect(at50Buyout).toBeGreaterThan(3022);
+  });
 });
