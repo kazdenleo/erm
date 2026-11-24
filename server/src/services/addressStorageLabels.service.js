@@ -39,18 +39,32 @@ export async function renderLabelPng(loc, settings) {
   const captionH = showBarcodeText ? Math.round(H * 0.08) : 0;
   const barH = H - pad * 2 - codeH - legendH - captionH - Math.round(H * 0.04);
 
-  // Ширина модуля — целое число пикселей, иначе сканер хуже читает; растягиваем только по высоте.
-  const bwipOpts = { bcid: 'code128', text: barcodeText, height: 10, includetext: false, paddingwidth: 0, paddingheight: 0 };
+  // Quiet zone ≥10 модулей; модули — целые пиксели; высоту растягиваем без сжатия ширины.
+  const maxBarW = Math.max(40, W - pad * 2);
+  const bwipOpts = {
+    bcid: 'code128',
+    text: barcodeText,
+    height: Math.max(12, Math.round(barH / PX_PER_MM)),
+    includetext: false,
+    paddingwidth: 10,
+    paddingheight: 2,
+    inkspread: 0,
+  };
   const unit = await sharp(await bwipjs.toBuffer({ ...bwipOpts, scale: 1 })).metadata();
-  const quietModules = 20;
-  const scale = Math.max(1, Math.floor((W - pad * 2) / Math.max(1, (unit.width || 1) + quietModules)));
+  const scale = Math.max(2, Math.min(8, Math.floor(maxBarW / Math.max(1, unit.width || 1))));
   const raw = await bwipjs.toBuffer({ ...bwipOpts, scale });
   const rawMeta = await sharp(raw).metadata();
+  const drawW = Math.min(rawMeta.width || maxBarW, maxBarW);
   const bc = await sharp(raw)
-    .resize({ width: rawMeta.width, height: barH, fit: 'fill', kernel: sharp.kernel.nearest })
+    .resize({
+      width: drawW,
+      height: Math.max(24, barH),
+      fit: 'fill',
+      kernel: sharp.kernel.nearest,
+    })
     .png()
     .toBuffer();
-  const barLeft = Math.round((W - rawMeta.width) / 2);
+  const barLeft = Math.max(pad, Math.round((W - drawW) / 2));
 
   const levels = Array.isArray(settings.levels) ? settings.levels : [];
   const legend = (loc.parts || [])

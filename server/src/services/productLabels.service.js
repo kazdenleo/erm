@@ -34,6 +34,8 @@ const SIZE_PRESETS = {
 };
 
 const MM_TO_PX = 8;
+/** Ячейки: выше DPI — толще модули Code128, обычный сканер читает стабильнее. */
+const CELL_MM_TO_PX = 12;
 
 /** Кэш PNG этикеток: повторная печать / пакетный print helper не гоняют sharp заново. */
 const LABEL_PNG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -87,6 +89,50 @@ function resolveMmToPx(previewScale) {
   const s = Number(previewScale);
   if (!Number.isFinite(s) || s <= 1) return MM_TO_PX;
   return MM_TO_PX * Math.min(6, Math.max(2, s));
+}
+
+function resolveCellMmToPx(previewScale) {
+  const s = Number(previewScale);
+  if (!Number.isFinite(s) || s <= 1) return CELL_MM_TO_PX;
+  return CELL_MM_TO_PX * Math.min(6, Math.max(2, s));
+}
+
+/** Подготовка шаблона ячейки к печати: ШК ≥15 мм, без гигантского SKU. */
+function normalizeCellTemplateForPrint(template) {
+  const src = template && typeof template === 'object' ? template : {};
+  const elements = (Array.isArray(src.elements) ? src.elements : []).map((el) => {
+    if (!el || typeof el !== 'object') return el;
+    if (el.type === 'barcode') {
+      const h = Number(el.heightMm);
+      return {
+        ...el,
+        heightMm: Math.max(15, Number.isFinite(h) && h > 0 ? h : 15),
+        showText: true,
+        widthMm: Math.max(40, Number(el.widthMm) || 54),
+      };
+    }
+    if (el.type === 'sku' || el.type === 'name') {
+      const fs = Number(el.fontSize);
+      return {
+        ...el,
+        fontSize: Math.min(28, Number.isFinite(fs) && fs > 0 ? fs : 18),
+      };
+    }
+    if (el.type === 'code') {
+      const fs = Number(el.fontSize);
+      return {
+        ...el,
+        fontSize: Math.min(28, Number.isFinite(fs) && fs > 0 ? fs : 22),
+      };
+    }
+    return el;
+  });
+  const marginTop = Number(src.margin_top_mm ?? src.marginTopMm ?? 2);
+  return {
+    ...src,
+    margin_top_mm: Math.min(4, Number.isFinite(marginTop) ? marginTop : 2),
+    elements,
+  };
 }
 
 /** fontSize в шаблоне — для этикетки 58×40 при 8px/мм; масштабируется с previewScale. */
@@ -234,22 +280,24 @@ function estimateElementMinHeight(el, ctx) {
     catAttrSet,
     packagingUnits,
     isPackaging,
+    isCell,
   } = ctx;
   const gap = blockGap;
 
   if (el.type === 'barcode') {
     if (!barcodeValue) return 0;
-    const hMm = Number(el.heightMm) || 12;
+    const configured = Number(el.heightMm) || 12;
+    const hMm = isCell ? Math.max(15, configured) : configured;
     const hPx = Math.round(hMm * mmToPx);
     const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, isPackaging ? 36 : 14);
-    const textUnderH = el.showText !== false ? digitFs + 4 : 0;
+    const textUnderH = el.showText !== false || isCell ? digitFs + 4 : 0;
     return hPx + (textUnderH ? 2 + textUnderH : 0) + gap;
   }
 
   if (el.type === 'name') {
     const name = String(product?.name || product?.mp_ozon_name || '').trim();
     if (!name) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, isPackaging ? 48 : 24);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 28 : isPackaging ? 48 : 24);
     const lines = wrapTextLines(name, innerW, fs, Boolean(el.bold));
     return textBlockHeight(Math.max(1, lines.length), fs, lineGapPx) + gap;
   }
@@ -259,7 +307,7 @@ function estimateElementMinHeight(el, ctx) {
       String(product?.sku || '').trim() ||
       (isPackaging ? String(product?.name || '').trim() : '');
     if (!sku) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, isPackaging ? 48 : 20);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isCell ? 28 : isPackaging ? 48 : 20);
     return textBlockHeight(1, fs, lineGapPx) + gap;
   }
 
@@ -450,8 +498,8 @@ export function defaultCellLabelElements() {
       type: 'barcode',
       enabled: true,
       widthMm: 54,
-      heightMm: 12,
-      showText: false,
+      heightMm: 15,
+      showText: true,
       textFontSize: 8,
       align: 'center',
     },
@@ -654,8 +702,9 @@ function bwipToBufferWithTimeout(opts, ms = 5000) {
   ]);
 }
 
-async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
+async function renderBarcodePngForSpec(spec, { targetW, barMm, quietModules = 10 }) {
   let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
+  const pad = Math.max(10, Number(quietModules) || 10);
 
   try {
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -664,7 +713,7 @@ async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
         text: spec.text,
         scale,
         height: barMm,
-        paddingwidth: 10,
+        paddingwidth: pad,
         paddingheight: 2,
         includetext: false,
         inkspread: 0,
@@ -679,7 +728,7 @@ async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
       text: spec.text,
       scale,
       height: barMm,
-      paddingwidth: 10,
+      paddingwidth: pad,
       paddingheight: 2,
       includetext: false,
       inkspread: 0,
@@ -710,8 +759,12 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   return null;
 }
 
-/** Вписать в слот: сначала по ширине (~100% innerW), затем ограничить высотой heightMm. */
-async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
+/**
+ * Вписать ШК в слот.
+ * Для линейных (Code128/EAN): ширину модулей не сжимаем — иначе ТСД не читает;
+ * высоту можно растянуть (столбики). Сжатие по ширине — только если штрихкод шире слота.
+ */
+async function fitBarcodePngToSlot(pngBuffer, innerW, hPx, { linear = false } = {}) {
   const slotW = Math.max(10, Math.round(innerW));
   const slotH = Math.max(10, Math.round(hPx));
   const img = sharp(pngBuffer);
@@ -721,16 +774,28 @@ async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const maxW = slotW - 2;
   const maxH = slotH - 2;
 
-  let w = maxW;
-  let h = Math.round(meta.height * (w / meta.width));
-  if (h > maxH) {
+  let w;
+  let h;
+  if (linear) {
+    // Растягиваем по высоте на весь слот; по ширине — только растяжение или лёгкое вписывание без «размытия».
     h = maxH;
-    w = Math.round(meta.width * (h / meta.height));
+    w = meta.width <= maxW ? maxW : maxW;
+    // Если исходник уже шире слота — вынужденно ужмём по ширине (nearest).
+  } else {
+    w = maxW;
+    h = Math.round(meta.height * (w / meta.width));
+    if (h > maxH) {
+      h = maxH;
+      w = Math.round(meta.width * (h / meta.height));
+    }
   }
-  w = Math.max(1, w);
-  h = Math.max(1, h);
+  w = Math.max(1, Math.min(maxW, w));
+  h = Math.max(1, Math.min(maxH, h));
 
-  const resized = await img.resize({ width: w, height: h, kernel: sharp.kernel.nearest }).png().toBuffer();
+  const resized = await img
+    .resize({ width: w, height: h, fit: 'fill', kernel: sharp.kernel.nearest })
+    .png()
+    .toBuffer();
   const left = Math.max(0, Math.round((slotW - w) / 2));
   const top = Math.max(0, Math.round((slotH - h) / 2));
 
@@ -829,6 +894,7 @@ async function buildLabelSvg({
     catAttrSet,
     packagingUnits: Number.isFinite(packagingUnits) && packagingUnits > 0 ? packagingUnits : null,
     isPackaging: Boolean(packaging),
+    isCell: Boolean(cell),
   };
 
   const blocks = [];
@@ -874,7 +940,7 @@ async function buildLabelSvg({
         y += blockGap;
       }
     } else if (el.type === 'name') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 24);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, cell ? 28 : largeText ? 96 : 24);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -891,7 +957,7 @@ async function buildLabelSvg({
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 96 : 20);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, cell ? 28 : largeText ? 96 : 20);
       const sku =
         String(product.sku || '').trim() ||
         (packaging ? String(product.name || '').trim() : '');
@@ -935,21 +1001,26 @@ async function buildLabelSvg({
     } else if (el.type === 'barcode' && barcodeValue) {
       // Штрихкод обязателен: не отдаём место названию/составу ниже — они ужимаются сами.
       const barcodeMaxY = maxContentY;
-      const hMm = Number(el.heightMm) || 12;
+      // Ячейки: ТСД плохо читает полоски < ~12–15 мм — поднимаем высоту из шаблона.
+      const configuredMm = Number(el.heightMm) || 12;
+      const hMm = cell ? Math.max(15, configuredMm) : configuredMm;
       let hPx = Math.round(hMm * mmToPx);
       const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
       const barX = padL + barOffsetX;
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
-      const textUnderH = el.showText !== false ? digitFs + 4 : 0;
+      const barcodeCaption = barcodeDisplayText(barcodeValue);
+      // Для ячеек с L{id} всегда показываем закодированное значение под ШК.
+      const showBarcodeText =
+        el.showText !== false || (cell && barcodeCaption && barcodeCaption !== String(cell.code || '').trim());
+      const textUnderH = showBarcodeText ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
-      const minBarcodePx = Math.round(8 * mmToPx);
-      const absoluteMinPx = Math.round(4 * mmToPx);
+      const minBarcodePx = Math.round((cell ? 12 : 8) * mmToPx);
+      const absoluteMinPx = Math.round((cell ? 8 : 4) * mmToPx);
       const available = barcodeMaxY - y - textGap - blockGap;
 
-      const barcodeCaption = barcodeDisplayText(barcodeValue);
       if (available < absoluteMinPx) {
         // Места нет даже на полоски — хотя бы крупный текст кода.
-        if (el.showText !== false && y < barcodeMaxY) {
+        if (showBarcodeText && y < barcodeMaxY) {
           y = appendWrappedTextSvg(blocks, {
             text: barcodeCaption,
             x: barX,
@@ -980,7 +1051,9 @@ async function buildLabelSvg({
         barHeightMm,
       });
       if (barcodePng) {
-        const fitted = await fitBarcodePngToSlot(barcodePng, barWidthPx, hPx);
+        const fitted = await fitBarcodePngToSlot(barcodePng, barWidthPx, hPx, {
+          linear: true,
+        });
         if (fitted) {
           const b64 = fitted.toString('base64');
           blocks.push(
@@ -989,7 +1062,7 @@ async function buildLabelSvg({
         }
       }
       y += hPx;
-      if (el.showText !== false) {
+      if (showBarcodeText) {
         y += Math.max(2, Math.round(lineGapPx * 0.25));
         y = appendWrappedTextSvg(blocks, {
           text: barcodeCaption,
@@ -1181,10 +1254,11 @@ async function renderWithTemplate(
         .map((el) => Number(el.attributeId))
         .filter((id) => Number.isFinite(id));
   const attributeNames = await loadAttributeNames(attrIds);
-  const mmToPx = resolveMmToPx(previewScale);
-  const productForLabel = packaging || cell ? product : await enrichProductForLabel(product, template);
+  const printTemplate = cell ? normalizeCellTemplateForPrint(template) : template;
+  const mmToPx = cell ? resolveCellMmToPx(previewScale) : resolveMmToPx(previewScale);
+  const productForLabel = packaging || cell ? product : await enrichProductForLabel(product, printTemplate);
   const { svg, widthMm, heightMm } = await buildLabelSvg({
-    template,
+    template: printTemplate,
     product: productForLabel,
     attributeNames,
     categoryAttributeIds,
