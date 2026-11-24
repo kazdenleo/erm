@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { authApi } from '../../services/auth.api.js';
 import { Button } from '../../components/common/Button/Button';
+import { BrandLogo } from '../../components/brand/BrandLogo.jsx';
 import api from '../../services/api.js';
 import '../Login/Login.css';
 
@@ -180,10 +181,15 @@ export function PublicRegister() {
   return (
     <div className="login-page">
       <div className="login-card card" style={{ maxWidth: 440 }}>
+        <div className="login-brand">
+          <Link to="/" aria-label="MySell">
+            <BrandLogo height={36} />
+          </Link>
+        </div>
         <h1 className="login-title">Регистрация</h1>
         <p className="login-subtitle">
-          <Link to="/">Программа Ирина</Link> — создание личного кабинета.
-          7 дней бесплатно (тариф «Бизнес»).{' '}
+          <Link to="/">MySell</Link> — создание личного кабинета.
+          14 дней бесплатно (тариф «Бизнес»), по акции на старте — до 2 месяцев.{' '}
           <Link to="/offer">Оферта</Link>
           {' · '}
           <Link to="/privacy">Конфиденциальность</Link>

@@ -20,6 +20,7 @@ import { ResetPassword } from './pages/Login/ResetPassword.jsx';
 import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
 import { Landing } from './pages/Landing/Landing.jsx';
+import { DemoRequest } from './pages/Demo/DemoRequest.jsx';
 import { OfferPage, PrivacyPage } from './pages/Legal/LegalDocument.jsx';
 import { Pricing } from './pages/Billing/Pricing.jsx';
 import { Onboarding } from './pages/Onboarding/Onboarding.jsx';
@@ -101,6 +102,7 @@ import { Cabinet } from './pages/Cabinet/Cabinet';
 import { Support } from './pages/Support/Support';
 import { Training } from './pages/Training/Training.jsx';
 import { TrainingTourProvider } from './context/TrainingTourContext.jsx';
+import { DemoUxProvider } from './context/DemoUxContext.jsx';
 import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
@@ -141,7 +143,7 @@ function ProductEnrichmentRoute() {
   );
 }
 
-/** Корень сайта: гости видят лендинг, авторизованные — главную ERP */
+/** Корень сайта: гости видят лендинг, авторизованные — главную MySell */
 function HomeOrLanding() {
   const { user, loading } = useAuth();
   if (loading) {
@@ -212,6 +214,7 @@ function App() {
     <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <ErrorBoundary>
         <AuthProvider>
+          <DemoUxProvider>
           <TrainingTourProvider>
           <Routes>
           <Route path="/login" element={<Login />} />
@@ -219,6 +222,7 @@ function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/register" element={<PublicRegister />} />
+          <Route path="/demo" element={<DemoRequest />} />
           <Route path="/offer" element={<OfferPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route
@@ -392,6 +396,7 @@ function App() {
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />
         </Routes>
           </TrainingTourProvider>
+          </DemoUxProvider>
       </AuthProvider>
       </ErrorBoundary>
     </BrowserRouter>

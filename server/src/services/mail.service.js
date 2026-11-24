@@ -14,6 +14,92 @@ function escapeHtml(s) {
 }
 
 /**
+ * Письмо с доступом к демо-кабинету (логин = телефон).
+ * @returns {Promise<{ sent: boolean, reason?: string }>}
+ */
+export async function sendDemoAccessEmail({
+  to,
+  fullName,
+  accountName,
+  password,
+  phone,
+  loginUrl,
+  trialDays = 7,
+  maxProducts = 50,
+  sampleSku = 'DEMO-001',
+}) {
+  const { mail } = config;
+  if (!mail?.enabled) {
+    logger.warn('[mail] SMTP не настроен — письмо демо не отправлено', { to, accountName });
+    return { sent: false, reason: 'smtp_disabled' };
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: mail.host,
+      port: mail.port,
+      secure: mail.secure,
+      auth:
+        mail.user && mail.pass
+          ? {
+              user: mail.user,
+              pass: mail.pass,
+            }
+          : undefined,
+    });
+
+    const subject = `Демо-доступ: ${accountName}`;
+    const greet = fullName ? `, ${fullName}` : '';
+    const days = Number(trialDays) || 7;
+    const text =
+      `Здравствуйте${greet}!\n\n` +
+      `Для вас создан демо-кабинет «${accountName}».\n\n` +
+      `Войти: ${loginUrl}\n` +
+      `Логин (телефон): ${phone}\n` +
+      `Временный пароль: ${password}\n\n` +
+      `Срок: ${days} дней. Лимит: до ${maxProducts} товаров.\n` +
+      `Уже внутри: организация, склад, товары ${sampleSku} и DEMO-002 с ценами по МП.\n\n` +
+      `За ${days} дней успейте:\n` +
+      `1) Сменить пароль при входе\n` +
+      `2) Открыть товар ${sampleSku} и раздел «Цены»\n` +
+      `3) Подключить API маркетплейса в «Интеграциях»\n` +
+      `\nЗа 1–2 дня до конца пришлём напоминание; в кабинете можно один раз продлить демо на 3 дня.\n`;
+
+    const html =
+      `<p>Здравствуйте${fullName ? `, ${escapeHtml(fullName)}` : ''}!</p>` +
+      `<p>Для вас создан демо-кабинет «<strong>${escapeHtml(accountName)}</strong>».</p>` +
+      `<p style="margin:20px 0">` +
+      `<a href="${escapeHtml(loginUrl)}" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Войти в кабинет</a>` +
+      `</p>` +
+      `<ul>` +
+      `<li>Логин (телефон): <strong>${escapeHtml(phone)}</strong></li>` +
+      `<li>Временный пароль: <strong>${escapeHtml(password)}</strong></li>` +
+      `</ul>` +
+      `<p>Срок: <strong>${days} дней</strong>. Лимит каталога: до <strong>${Number(maxProducts) || 50}</strong> товаров.</p>` +
+      `<p>Уже внутри: организация, склад, товары <code>${escapeHtml(sampleSku)}</code> и <code>DEMO-002</code> с ценами по МП.</p>` +
+      `<p><strong>За ${days} дней успейте:</strong></p>` +
+      `<ol>` +
+      `<li>Сменить пароль при входе</li>` +
+      `<li>Открыть товар ${escapeHtml(sampleSku)} и раздел «Цены»</li>` +
+      `<li>Подключить API маркетплейса в «Интеграциях»</li>` +
+      `</ol>` +
+      `<p style="color:#64748b;font-size:14px">За 1–2 дня до конца пришлём напоминание. В кабинете на главной можно один раз продлить демо на 3 дня.</p>`;
+
+    await transporter.sendMail({
+      from: mail.from,
+      to,
+      subject,
+      text,
+      html,
+    });
+    return { sent: true };
+  } catch (err) {
+    logger.error('[mail] Ошибка отправки демо-письма', { error: err?.message, to });
+    return { sent: false, reason: 'send_failed' };
+  }
+}
+
+/**
  * Письмо с временным паролем после публичной регистрации аккаунта.
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
@@ -240,13 +326,17 @@ export async function sendTrialEndingEmail({ to, fullName, accountName, trialEnd
     const greet = fullName ? `, ${fullName}` : '';
     const text =
       `Здравствуйте${greet}!\n\n` +
-      `Пробный период аккаунта «${accountName || ''}» заканчивается${endLabel ? ` ${endLabel}` : ''}.\n` +
-      `Выберите тариф и оставьте заявку: ${pricingUrl}\n`;
+      `Пробный / демо-период аккаунта «${accountName || ''}» заканчивается${endLabel ? ` ${endLabel}` : ''}.\n` +
+      `Выберите тариф: ${pricingUrl}\n` +
+      `Если это демо — в кабинете на главной можно один раз продлить доступ на 3 дня.\n`;
     const html =
       `<p>Здравствуйте${fullName ? `, ${escapeHtml(fullName)}` : ''}!</p>` +
-      `<p>Пробный период аккаунта «<strong>${escapeHtml(accountName || '')}</strong>» ` +
+      `<p>Пробный / демо-период аккаунта «<strong>${escapeHtml(accountName || '')}</strong>» ` +
       `заканчивается${endLabel ? ` <strong>${escapeHtml(endLabel)}</strong>` : ''}.</p>` +
-      `<p><a href="${escapeHtml(pricingUrl)}">Выбрать тариф</a></p>`;
+      `<p style="margin:20px 0">` +
+      `<a href="${escapeHtml(pricingUrl)}" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Выбрать тариф</a>` +
+      `</p>` +
+      `<p style="color:#64748b;font-size:14px">Если это демо — на главной в кабинете можно один раз продлить доступ на 3 дня.</p>`;
     await transporter.sendMail({ from: mail.from, to, subject, text, html });
     return { sent: true };
   } catch (err) {

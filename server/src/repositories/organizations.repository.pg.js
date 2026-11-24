@@ -29,6 +29,12 @@ class OrganizationsRepositoryPG {
     return result.rows[0] || null;
   }
 
+  /** Число организаций в системе (для акции на лендинге). */
+  async countAll() {
+    const result = await query('SELECT COUNT(*)::int AS c FROM organizations');
+    return Number(result.rows[0]?.c) || 0;
+  }
+
   async create(data) {
     const name = data.name || data;
     const inn = (typeof data === 'object' && data.inn != null) ? data.inn : null;

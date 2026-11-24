@@ -13,7 +13,16 @@ export const SUBSCRIPTION_STATUSES = Object.freeze([
 
 export const PLAN_CODES = Object.freeze(['start', 'business', 'pro']);
 
-export const TRIAL_DAYS = 7;
+/** Внутренний тариф автодемо (не в публичном прайсе). */
+export const DEMO_PLAN_CODE = 'demo';
+export const DEMO_TRIAL_DAYS = 7;
+
+export const TRIAL_DAYS = 14;
+
+/** Стартовая акция на лендинге: N месяцев бесплатно, пока есть места. */
+export const PROMO_FREE_MONTHS = 2;
+export const PROMO_FREE_DAYS = 60;
+export const PROMO_SEATS_TOTAL = 10;
 
 /** План, по которому работает пробный период. */
 export const TRIAL_PLAN_CODE = 'business';
@@ -36,6 +45,39 @@ export const TRIAL_PLAN_CODE = 'business';
 
 /** @type {Record<string, SubscriptionPlan>} */
 export const SUBSCRIPTION_PLANS = Object.freeze({
+  demo: {
+    code: 'demo',
+    name: 'Демо',
+    priceMonthRub: 0,
+    priceYearRub: null,
+    blurb: 'Автоматический демо-доступ с лимитами.',
+    highlighted: false,
+    maxUsers: 2,
+    maxOrganizations: 1,
+    maxMpCabinets: 1,
+    maxProducts: 50,
+    features: {
+      warehouse: true,
+      ordersFbs: true,
+      assembly: true,
+      prices: true,
+      fbo: true,
+      purchases: true,
+      kits: true,
+      production: false,
+      ads: true,
+      analyticsExtended: false,
+      ai: false,
+      mobileApp: true,
+    },
+    featureLabels: [
+      '7 дней доступа',
+      'До 50 товаров',
+      '2 пользователя',
+      '1 организация / 1 кабинет МП',
+      'Склад, заказы, цены, FBO',
+    ],
+  },
   start: {
     code: 'start',
     name: 'Старт',

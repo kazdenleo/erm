@@ -4,6 +4,7 @@ import * as subscriptionBilling from '../services/subscriptionBilling.service.js
 import { profileIdFromDb } from '../utils/profileId.js';
 import { getPlanUsage } from '../utils/planLimits.js';
 import { isYookassaConfigured } from '../services/yookassa.service.js';
+import { getLandingPromoSummary } from '../utils/profileSubscription.js';
 
 function requireProfileId(req, res) {
   const pid = profileIdFromDb(req.user?.profileId ?? req.user?.profile_id);
@@ -17,10 +18,12 @@ function requireProfileId(req, res) {
 class BillingController {
   async listPlans(_req, res) {
     const online = isYookassaConfigured();
+    const promoSummary = await getLandingPromoSummary();
     return res.status(200).json({
       ok: true,
       data: {
         trialDays: TRIAL_DAYS,
+        promo: promoSummary.promo,
         onlinePaymentsEnabled: online,
         paymentNote: online
           ? 'Можно оплатить онлайн (ЮKassa) или оставить заявку на счёт / перевод.'
@@ -28,6 +31,11 @@ class BillingController {
         plans: listSubscriptionPlansPublic(),
       },
     });
+  }
+
+  async getPromo(_req, res) {
+    const data = await getLandingPromoSummary();
+    return res.status(200).json({ ok: true, data });
   }
 
   async myUsage(req, res, next) {

@@ -172,8 +172,12 @@ export const authController = {
       }
 
       const passwordHash = await bcrypt.hash(plainPassword, 10);
-      const { newAccountTrialFields } = await import('../utils/profileSubscription.js');
-      const trial = newAccountTrialFields();
+      const {
+        newAccountTrialFields,
+        resolveNewAccountTrialDays,
+      } = await import('../utils/profileSubscription.js');
+      const trialDays = await resolveNewAccountTrialDays();
+      const trial = newAccountTrialFields({ days: trialDays });
 
       let createdProfileId = null;
       try {
@@ -252,9 +256,8 @@ export const authController = {
 
       res.status(201).json({
         ok: true,
-        message:
-          'Аккаунт создан. Вам доступен пробный период 7 дней. Войдите по телефону или email и паролю.',
-        trialDays: 7,
+        message: `Аккаунт создан. Вам доступен пробный период ${trial.trialDays} дн. Войдите по телефону или email и паролю.`,
+        trialDays: trial.trialDays,
       });
     } catch (error) {
       next(error);

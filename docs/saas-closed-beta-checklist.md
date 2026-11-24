@@ -15,7 +15,7 @@ SECRETS_ENCRYPTION_KEY=<64 hex или base64 на 32 байта>
 # Закрытая бета: не включать, пока не готовы isolation + бэкапы
 # PUBLIC_SIGNUP_ENABLED=1
 
-LEGAL_BRAND=Программа Ирина
+LEGAL_BRAND=MySell
 LEGAL_COMPANY=ИП Иванов И.И.
 LEGAL_INN=ИНН 123456789012
 LEGAL_OGRN=ОГРНИП ...
@@ -33,7 +33,7 @@ SMTP_HOST=...
 SMTP_PORT=587
 SMTP_USER=...
 SMTP_PASS=...
-MAIL_FROM="Программа Ирина <noreply@ваш-домен.ru>"
+MAIL_FROM="MySell <noreply@ваш-домен.ru>"
 
 # Опционально после открытия signup:
 # TURNSTILE_SITE_KEY=...

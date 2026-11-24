@@ -5,6 +5,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { BrandLogo } from '../../components/brand/BrandLogo.jsx';
 import { LANDING as C } from './landingContent.js';
 import './Landing.css';
 
@@ -48,8 +49,71 @@ export function Landing() {
   const scrolled = useScrollNav();
   const rootRef = useReveal();
   const [openFeatureId, setOpenFeatureId] = useState(null);
+  const [legalParty, setLegalParty] = useState(null);
+  const [promo, setPromo] = useState(null);
+  const [trialDays, setTrialDays] = useState(14);
   const year = new Date().getFullYear();
   const openFeature = C.features.find((f) => f.id === openFeatureId) || null;
+  const legal = {
+    company: legalParty?.company || C.legal.company,
+    inn: legalParty?.inn || C.legal.inn,
+    ogrn: legalParty?.ogrn || C.legal.ogrn,
+    address: legalParty?.address || C.legal.address,
+    domain: legalParty?.domain || C.legal.domain,
+  };
+  const contacts = (() => {
+    if (!legalParty?.configured) return C.contacts;
+    const list = [];
+    if (legalParty.email) {
+      list.push({
+        label: 'Email',
+        value: legalParty.email,
+        href: `mailto:${legalParty.email}`,
+      });
+    }
+    if (legalParty.telegram) {
+      const handle = String(legalParty.telegram).replace(/^@/, '');
+      list.push({
+        label: 'Telegram',
+        value: legalParty.telegram.startsWith('@')
+          ? legalParty.telegram
+          : `@${handle}`,
+        href: `https://t.me/${handle}`,
+      });
+    }
+    return list.length ? list : C.contacts;
+  })();
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [legalRes, promoRes] = await Promise.all([
+          fetch('/api/billing/legal/offer'),
+          fetch('/api/billing/promo'),
+        ]);
+        const legalJson = await legalRes.json();
+        const promoJson = await promoRes.json();
+        const party = legalJson?.data?.party;
+        if (!cancelled && party && typeof party === 'object') {
+          setLegalParty(party);
+        }
+        if (!cancelled && promoJson?.ok && promoJson.data) {
+          if (typeof promoJson.data.trialDays === 'number') {
+            setTrialDays(promoJson.data.trialDays);
+          }
+          if (promoJson.data.promo && typeof promoJson.data.promo === 'object') {
+            setPromo(promoJson.data.promo);
+          }
+        }
+      } catch {
+        /* лендинг остаётся на статическом fallback */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!openFeatureId) return undefined;
@@ -69,8 +133,8 @@ export function Landing() {
     <div className="landing" ref={rootRef}>
       <header className={`landing-nav${scrolled ? ' is-scrolled' : ''}`}>
         <div className="landing-shell landing-nav__inner">
-          <a className="landing-brand" href="#top">
-            {C.brand}
+          <a className="landing-brand" href="#top" aria-label={C.brand}>
+            <BrandLogo height={32} />
             {C.brandNote ? <span className="landing-brand__note">{C.brandNote}</span> : null}
           </a>
           <nav className="landing-nav__links" aria-label="Разделы">
@@ -100,9 +164,39 @@ export function Landing() {
             <h1 className="landing-hero__brand">{C.brand}</h1>
             <p className="landing-hero__headline">{C.tagline}</p>
             <p className="landing-hero__support">{C.heroSupport}</p>
+            {promo ? (
+              <div
+                className={`landing-promo${promo.active ? '' : ' landing-promo--ended'}`}
+                role="status"
+              >
+                <div className="landing-promo__top">
+                  <span className="landing-promo__badge">{C.promo.badge}</span>
+                  <strong className="landing-promo__title">
+                    {promo.title || C.promo.title}
+                  </strong>
+                </div>
+                <p className="landing-promo__lead">
+                  {promo.active
+                    ? C.promo.lead
+                    : 'Места по акции закончились. Доступен обычный пробный период.'}{' '}
+                  Пробный период — {trialDays} дней.
+                </p>
+                <div className="landing-promo__seats">
+                  <span className="landing-promo__seats-label">{C.promo.seatsLabel}</span>
+                  <span className="landing-promo__seats-value">
+                    {typeof promo.seatsLeft === 'number'
+                      ? promo.seatsLeft
+                      : C.promo.seatsFallback}
+                  </span>
+                </div>
+              </div>
+            ) : null}
             <div className="landing-hero__cta">
-              <Link className="ld-btn ld-btn--primary ld-btn--lg" to={C.ctaPrimary.to}>
-                {C.ctaPrimary.label}
+              <Link
+                className="ld-btn ld-btn--primary ld-btn--lg"
+                to={promo?.active ? C.promo.ctaTo : C.ctaPrimary.to}
+              >
+                {promo?.active ? C.promo.cta : C.ctaPrimary.label}
               </Link>
               <Link className="ld-btn ld-btn--ghost ld-btn--lg" to={C.ctaSecondary.to}>
                 {C.ctaSecondary.label}
@@ -231,10 +325,14 @@ export function Landing() {
           <div className="landing-shell">
             <div className="landing-section__head ld-reveal">
               <h2 className="landing-section__title">{C.contactsTitle}</h2>
-              <p className="landing-section__lead">{C.contactsLead}</p>
+              <p className="landing-section__lead">
+                {legalParty?.configured
+                  ? 'Свяжитесь с нами — ответим по делу.'
+                  : C.contactsLead}
+              </p>
             </div>
             <div className="landing-contacts ld-reveal">
-              {C.contacts.map((row) => (
+              {contacts.map((row) => (
                 <div key={row.label} className="landing-contact-row">
                   <span className="landing-contact-row__label">{row.label}</span>
                   <a className="landing-contact-row__value" href={row.href}>
@@ -313,8 +411,8 @@ export function Landing() {
       <footer className="landing-footer">
         <div className="landing-shell">
           <div className="landing-footer__top">
-            <a className="landing-brand" href="#top">
-              {C.brand}
+            <a className="landing-brand" href="#top" aria-label={C.brand}>
+              <BrandLogo height={28} />
             </a>
             <nav className="landing-footer__links" aria-label="Подвал">
               {C.footerLinks.map((link) =>
@@ -331,15 +429,15 @@ export function Landing() {
             </nav>
           </div>
           <div className="landing-footer__legal">
-            <span>{C.legal.company}</span>
+            <span>{legal.company}</span>
             <span>
-              {C.legal.inn} · {C.legal.ogrn}
+              {legal.inn} · {legal.ogrn}
             </span>
-            <span>{C.legal.address}</span>
-            <span>{C.legal.domain}</span>
+            <span>{legal.address}</span>
+            <span>{legal.domain}</span>
           </div>
           <p className="landing-footer__copy">
-            © {year} {C.brand}. Шаблон продающего сайта.
+            © {year} {C.brand}
           </p>
         </div>
       </footer>

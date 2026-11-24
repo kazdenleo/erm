@@ -6,6 +6,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 const router = express.Router();
 
 router.get('/plans', wrapAsync((req, res) => billingController.listPlans(req, res)));
+router.get('/promo', wrapAsync((req, res) => billingController.getPromo(req, res)));
 router.get('/legal/offer', wrapAsync((req, res) => billingController.getOffer(req, res)));
 router.get('/legal/privacy', wrapAsync((req, res) => billingController.getPrivacy(req, res)));
 

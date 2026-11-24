@@ -12,6 +12,7 @@ import { isNavFeatureEnabled } from '../../utils/userNavSections.js';
 import { isProfileFboEnabled } from '../../utils/profileFlags.js';
 import { WIDGETS, defaultLayout, sizeColClass } from './widgets/widgetRegistry';
 import { HomeWidgetsEditor } from './widgets/HomeWidgetsEditor';
+import { DemoGuidePanel } from '../../components/DemoGuide/DemoGuidePanel.jsx';
 import { errorMessage } from './widgets/widgetUtils';
 import './Home.css';
 
@@ -114,6 +115,8 @@ export function Home() {
           {saveError}
         </div>
       )}
+
+      <DemoGuidePanel />
 
       {items == null ? (
         <div className="text-muted">Загрузка…</div>

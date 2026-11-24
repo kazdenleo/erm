@@ -83,6 +83,13 @@ const configSchema = z.object({
    * Закрытая бета: по умолчанию выключена. Включить: PUBLIC_SIGNUP_ENABLED=1
    */
   PUBLIC_SIGNUP_ENABLED: z.string().optional(),
+  /**
+   * Автовыдача демо с лендинга (POST /demo/request).
+   * По умолчанию включена. Выключить: DEMO_REQUEST_ENABLED=0
+   */
+  DEMO_REQUEST_ENABLED: z.string().optional(),
+  /** Дней демо-доступа (по умолчанию 7). */
+  DEMO_TRIAL_DAYS: z.string().optional(),
   /** Cloudflare Turnstile secret (опционально; при PUBLIC_SIGNUP_ENABLED проверяет captcha) */
   TURNSTILE_SECRET_KEY: z.string().optional().default(''),
   /** Cloudflare Turnstile site key для фронта (отдаётся в GET /api/config) */
@@ -161,6 +168,13 @@ try {
   // Закрытая бета: signup выключен, пока явно не включён PUBLIC_SIGNUP_ENABLED=1
   const publicSignupEnabled =
     publicSignupFlag === '1' || publicSignupFlag === 'true';
+  const demoFlag = String(parsed.DEMO_REQUEST_ENABLED ?? '1').trim().toLowerCase();
+  const demoRequestEnabled = !(demoFlag === '0' || demoFlag === 'false' || demoFlag === 'off');
+  const demoTrialDaysParsed = Number.parseInt(String(parsed.DEMO_TRIAL_DAYS || '').trim(), 10);
+  const demoTrialDays =
+    Number.isFinite(demoTrialDaysParsed) && demoTrialDaysParsed > 0
+      ? Math.min(90, demoTrialDaysParsed)
+      : 7;
   
   config = {
     // Server
@@ -240,6 +254,8 @@ try {
     auth: {
       disabled: authDisabled,
       publicSignupEnabled,
+      demoRequestEnabled,
+      demoTrialDays,
       turnstileSecretKey: String(parsed.TURNSTILE_SECRET_KEY || '').trim(),
       turnstileSiteKey: String(parsed.TURNSTILE_SITE_KEY || '').trim(),
       /**

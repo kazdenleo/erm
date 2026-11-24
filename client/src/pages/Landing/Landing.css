@@ -64,7 +64,7 @@
 
 .landing-brand {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.55rem;
   font-family: var(--ld-display);
   font-weight: 800;
@@ -238,6 +238,89 @@
   font-size: 1.05rem;
   max-width: 38ch;
   animation: ld-rise 0.8s ease 0.18s both;
+}
+
+.landing-promo {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.15rem;
+  max-width: 28rem;
+  border-radius: 16px;
+  border: 1px solid rgba(61, 207, 142, 0.35);
+  background: linear-gradient(
+    145deg,
+    rgba(31, 170, 110, 0.22),
+    rgba(12, 18, 16, 0.55)
+  );
+  backdrop-filter: blur(8px);
+  animation: ld-rise 0.8s ease 0.22s both;
+}
+
+.landing-promo--ended {
+  border-color: rgba(242, 246, 243, 0.12);
+  background: rgba(12, 18, 16, 0.45);
+}
+
+.landing-promo__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.landing-promo__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0c1210;
+  background: #3dcf8e;
+}
+
+.landing-promo__title {
+  font-family: var(--ld-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #f2f6f3;
+}
+
+.landing-promo__lead {
+  margin: 0 0 0.85rem;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: var(--ld-muted);
+}
+
+.landing-promo__seats {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid rgba(242, 246, 243, 0.1);
+}
+
+.landing-promo__seats-label {
+  font-size: 0.85rem;
+  color: var(--ld-muted);
+}
+
+.landing-promo__seats-value {
+  font-family: var(--ld-display);
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #3dcf8e;
+  line-height: 1;
+}
+
+.landing-promo--ended .landing-promo__seats-value {
+  color: rgba(242, 246, 243, 0.55);
 }
 
 .landing-hero__cta {

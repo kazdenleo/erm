@@ -12,6 +12,7 @@ import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 import { SubscriptionBanner } from '../../SubscriptionBanner/SubscriptionBanner.jsx';
+import { DemoPageHint } from '../../DemoGuide/DemoPageHint.jsx';
 
 const MOBILE_LAYOUT_MQ = '(max-width: 991.98px)';
 
@@ -117,6 +118,7 @@ export function Layout({ children }) {
                   <SubscriptionBanner />
                 </div>
               ) : null}
+              {!authLoading && user ? <DemoPageHint /> : null}
               {children && <NavSectionGuard>{children}</NavSectionGuard>}
             </div>
           </div>

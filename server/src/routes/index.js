@@ -9,6 +9,7 @@ import { wrapAsync } from '../middleware/errorHandler.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { enforceSubscriptionAccess } from '../middleware/subscriptionAccess.js';
 import authRoutes from './auth.routes.js';
+import demoRoutes from './demo.routes.js';
 import billingRoutes from './billing.routes.js';
 import profilesRoutes from './profiles.routes.js';
 import usersRoutes from './users.routes.js';
@@ -103,6 +104,8 @@ router.get('/config', (req, res) => {
     data: {
       printHelperUrl: config.printHelperUrl || '',
       publicSignupEnabled: !!config.auth?.publicSignupEnabled,
+      demoRequestEnabled: config.auth?.demoRequestEnabled !== false,
+      demoTrialDays: Number(config.auth?.demoTrialDays) || 7,
       turnstileSiteKey: config.auth?.turnstileSiteKey || '',
     },
   });
@@ -253,6 +256,9 @@ router.use('/billing', billingRoutes);
 
 // Auth (логин публичный, /me — с авторизацией внутри роута)
 router.use('/auth', authRoutes);
+
+// Публичная автовыдача демо-кабинета
+router.use('/demo', demoRoutes);
 
 // Пробный период / тариф: мутации при past_due и доступ при suspended
 router.use(enforceSubscriptionAccess);

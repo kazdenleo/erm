@@ -170,7 +170,11 @@ export function Pricing() {
       >
       <h1 className="title">Тарифы</h1>
       <p className="subtitle text-muted">
-        Пробный период — {data?.trialDays ?? 7} дней. {data?.paymentNote || ''}
+        Пробный период — {data?.trialDays ?? 14} дней
+        {data?.promo?.active
+          ? `. Акция: ${data.promo.freeMonths} мес. бесплатно, осталось мест: ${data.promo.seatsLeft}.`
+          : '.'}{' '}
+        {data?.paymentNote || ''}
       </p>
       {!isAuthenticated ? (
         <p className="small mb-2">
@@ -354,7 +358,7 @@ export function Pricing() {
         ) : (
           <Link to="/register">
             <Button type="button" variant="primary">
-              Регистрация — 7 дней бесплатно
+              Регистрация — 14 дней бесплатно
             </Button>
           </Link>
         )}

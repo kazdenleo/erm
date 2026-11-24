@@ -5,6 +5,9 @@
 import {
   TRIAL_DAYS,
   TRIAL_PLAN_CODE,
+  PROMO_FREE_DAYS,
+  PROMO_FREE_MONTHS,
+  PROMO_SEATS_TOTAL,
   getSubscriptionPlan,
   planFeatureFlagsForProfile,
   restrictedFeatureFlags,
@@ -15,8 +18,36 @@ import logger from './logger.js';
 
 export function computeTrialEndsAt(fromDate = new Date(), days = TRIAL_DAYS) {
   const d = new Date(fromDate);
-  d.setUTCDate(d.getUTCDate() + Number(days) || TRIAL_DAYS);
+  const n = Number(days);
+  d.setUTCDate(d.getUTCDate() + (Number.isFinite(n) && n > 0 ? n : TRIAL_DAYS));
   return d;
+}
+
+/** Сводка акции лендинга: места = PROMO_SEATS_TOTAL − число организаций. */
+export async function getLandingPromoSummary() {
+  const orgsRepo = repositoryFactory.getOrganizationsRepository();
+  const organizationsCount = await orgsRepo.countAll();
+  const seatsLeft = Math.max(0, PROMO_SEATS_TOTAL - organizationsCount);
+  return {
+    trialDays: TRIAL_DAYS,
+    promo: {
+      active: seatsLeft > 0,
+      freeMonths: PROMO_FREE_MONTHS,
+      freeDays: PROMO_FREE_DAYS,
+      seatsTotal: PROMO_SEATS_TOTAL,
+      organizationsCount,
+      seatsLeft,
+      title: `Бесплатный доступ на ${PROMO_FREE_MONTHS} месяца`,
+      subtitle: 'Старт без оплаты — пока есть места по акции',
+    },
+  };
+}
+
+/** Длительность trial для нового аккаунта: акция 2 мес., иначе обычный trial. */
+export async function resolveNewAccountTrialDays() {
+  const summary = await getLandingPromoSummary();
+  if (summary.promo.active) return summary.promo.freeDays;
+  return TRIAL_DAYS;
 }
 
 export function normalizeSubscriptionStatus(raw) {
@@ -120,15 +151,24 @@ export function subscriptionPayloadForClient(profile) {
   };
 }
 
-/** Значения для INSERT нового аккаунта (self-serve trial). */
-export function newAccountTrialFields() {
-  const trialEndsAt = computeTrialEndsAt();
-  const flags = planFeatureFlagsForProfile(TRIAL_PLAN_CODE);
+/**
+ * Значения для INSERT нового аккаунта (self-serve trial).
+ * @param {{ days?: number }} [opts]
+ */
+export function newAccountTrialFields(opts = {}) {
+  const days = opts.days != null ? Number(opts.days) : TRIAL_DAYS;
+  const planCode =
+    opts.planCode != null && String(opts.planCode).trim()
+      ? String(opts.planCode).trim().toLowerCase()
+      : TRIAL_PLAN_CODE;
+  const trialEndsAt = computeTrialEndsAt(new Date(), days);
+  const flags = planFeatureFlagsForProfile(planCode);
   return {
     subscription_status: 'trial',
-    plan_code: TRIAL_PLAN_CODE,
+    plan_code: getSubscriptionPlan(planCode) ? planCode : TRIAL_PLAN_CODE,
     trial_ends_at: trialEndsAt.toISOString(),
     subscription_ends_at: null,
+    trialDays: Number.isFinite(days) && days > 0 ? days : TRIAL_DAYS,
     ...flags,
   };
 }

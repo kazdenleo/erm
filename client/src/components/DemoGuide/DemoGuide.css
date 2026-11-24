@@ -1,0 +1,156 @@
+.demo-guide-panel {
+  border: 1px solid #cce3dc;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f3faf7 0%, #fff 48%);
+  padding: 14px 16px;
+}
+
+.demo-guide-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.demo-guide-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #0f766e;
+}
+
+.demo-guide-sub {
+  font-size: 0.82rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.demo-guide-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.demo-guide-checklist-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.92rem;
+}
+
+.demo-guide-dismiss {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.demo-guide-dismiss:hover {
+  color: #0f766e;
+}
+
+.demo-guide-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.demo-guide-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  font-size: 0.9rem;
+}
+
+.demo-guide-steps li.is-done {
+  color: #64748b;
+}
+
+.demo-guide-check {
+  width: 1.1rem;
+  text-align: center;
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.demo-guide-hint-inline {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  flex-basis: 100%;
+  padding-left: 1.7rem;
+}
+
+.demo-guide-badges {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.demo-guide-badges-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.demo-guide-badge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.demo-guide-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.demo-guide-ok {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  font-size: 0.85rem;
+}
+
+.demo-guide-err {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.85rem;
+}
+
+.demo-page-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
