@@ -143,4 +143,17 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     });
     expect(r.sellingPrice).toBe(1300);
   });
+
+  test('band does not block climb toward target_margin', () => {
+    const r = computeSellingPriceFromInputs({
+      mode: 'target_margin',
+      config: { target_margin_percent: 10, band_percent: 2, max_change_percent: null },
+      floor: 2800,
+      cost: 1000,
+      targetMarginPrice: 2878,
+      previousSelling: 2831,
+    });
+    expect(r.sellingPrice).toBe(2878);
+    expect(r.heldByBand).toBe(false);
+  });
 });

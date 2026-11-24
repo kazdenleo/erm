@@ -431,7 +431,17 @@ export function computeSellingPriceFromInputs({
     Number(previousSelling) > ceilingN;
   const heldPrevious = roundRub(previousCapped ?? previousSelling);
   const heldRespectsFloor = floorN == null || (heldPrevious != null && heldPrevious >= floorN);
+  // Не блокируем подъём к целевой марже: «полоса» только гасит мелкие колебания у цели.
+  const climbingToTarget =
+    (m === 'target_margin' || m === 'hybrid') &&
+    targetMarginPrice != null &&
+    Number.isFinite(Number(targetMarginPrice)) &&
+    heldPrevious != null &&
+    rounded != null &&
+    rounded > heldPrevious &&
+    heldPrevious + 0.5 < Number(targetMarginPrice);
   if (
+    !climbingToTarget &&
     !previousWouldExceedCeiling &&
     heldRespectsFloor &&
     withinBand(rounded, previousCapped, cfg.band_percent) &&
@@ -838,15 +848,18 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     /* ignore */
   }
   try {
+    // integrations.code = ozon|wildberries|yandex (колонки marketplace нет)
     const integ = await query(
-      `SELECT marketplace, config
+      `SELECT code, config
        FROM integrations
-       WHERE (profile_id = $1 OR organization_id = $2)
-         AND LOWER(TRIM(marketplace)) IN ('wb','wildberries','ozon','ym','yandex')`,
+       WHERE type = 'marketplace'
+         AND is_active = true
+         AND (profile_id = $1 OR organization_id = $2)
+         AND LOWER(TRIM(code)) IN ('wb','wildberries','ozon','ym','yandex')`,
       [product.profile_id, product.organization_id]
     );
     for (const row of integ.rows || []) {
-      const mp = String(row.marketplace || '').toLowerCase();
+      const mp = String(row.code || '').toLowerCase();
       const cfg =
         row.config && typeof row.config === 'object'
           ? row.config
@@ -858,11 +871,26 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
           cfg.acquiring_percent != null ? Number(cfg.acquiring_percent) : null;
         wbGemServicesPercent =
           cfg.gem_services_percent != null ? Number(cfg.gem_services_percent) : null;
-        wbSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+        wbSppPercent =
+          cfg.spp_percent != null
+            ? Number(cfg.spp_percent)
+            : cfg.sppPercent != null
+              ? Number(cfg.sppPercent)
+              : null;
       } else if (mp === 'ozon') {
-        ozonSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+        ozonSppPercent =
+          cfg.spp_percent != null
+            ? Number(cfg.spp_percent)
+            : cfg.sppPercent != null
+              ? Number(cfg.sppPercent)
+              : null;
       } else if (mp === 'ym' || mp === 'yandex') {
-        ymSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+        ymSppPercent =
+          cfg.spp_percent != null
+            ? Number(cfg.spp_percent)
+            : cfg.sppPercent != null
+              ? Number(cfg.sppPercent)
+              : null;
       }
     }
   } catch {
