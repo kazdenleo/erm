@@ -3,7 +3,7 @@
  *
  * Режимы:
  * - floor — цена продажи = расчётный минимум (FBS/FBO по price_push_settings профиля)
- * - target_margin — себестоимость + целевая маржа %, не ниже пола
+ * - target_margin — целевая чистая маржа % от цены (калькулятор МП); не ниже пола
  * - competitor — от цен конкурентов (WB/YM; на Ozon шаг пропускается)
  * - sales — корректировка от скорости продаж (FBS orders)
  * - hybrid — цель/пол → конкурент → продажи, всегда ≥ пол
@@ -20,6 +20,8 @@ import {
   logMarketplacePriceChange,
 } from './marketplacePriceChanges.service.js';
 import { applyToolPriceAttributeValues } from './computedAttributes.service.js';
+import { calculateMinPrice } from './min-price-calculator.service.js';
+import { resolveOrganizationTaxProfile } from '../utils/organizationTaxRates.js';
 
 export const PRICING_STRATEGY_MODES = ['floor', 'target_margin', 'competitor', 'sales', 'hybrid'];
 
@@ -77,6 +79,8 @@ export function defaultStrategyConfig(mode = 'hybrid') {
 }
 
 function num(v, fallback = null) {
+  // Number(null) === 0 — не считаем null/'' числом
+  if (v == null || v === '') return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -237,6 +241,70 @@ function withinBand(candidate, previousSelling, bandPercent) {
 /**
  * Чистый расчёт цены продажи по стратегии.
  */
+/**
+ * Цена под целевую чистую маржу % от цены продажи (как «чист.%» на Ценах).
+ * Итерация через calculateMinPrice(profitRub = price * margin/100).
+ * Без калькулятора: факт = мин × (1 + %/100).
+ */
+export function resolveTargetMarginPrice({
+  marginPercent,
+  floor,
+  cost = 0,
+  additionalExpenses = 0,
+  calculator = null,
+  marketplace = null,
+  product = null,
+  wbAcquiringPercent = null,
+  wbGemServicesPercent = null,
+  taxProfile = null,
+  scheme = null,
+  sppPercent = null,
+}) {
+  const marginPct = num(marginPercent, 25) ?? 25;
+  const floorN = floorRub(floor);
+  const basePrice = (num(cost, 0) || 0) + (num(additionalExpenses, 0) || 0);
+
+  if (calculator && marketplace) {
+    let price = floorN != null ? floorN : Math.max(basePrice * 2, 100);
+    for (let i = 0; i < 28; i++) {
+      const targetNet = Math.max(0, price * (marginPct / 100));
+      const next = calculateMinPrice(
+        basePrice,
+        calculator,
+        String(marketplace).toLowerCase(),
+        targetNet,
+        product,
+        wbAcquiringPercent,
+        wbGemServicesPercent,
+        taxProfile,
+        scheme,
+        sppPercent
+      );
+      if (next == null || !Number.isFinite(Number(next)) || Number(next) <= 0) break;
+      const n = Number(next);
+      if (Math.abs(n - price) < 1) {
+        price = n;
+        break;
+      }
+      price = n;
+    }
+    const rounded = floorRub(price);
+    if (rounded != null && floorN != null) return Math.max(rounded, floorN);
+    return rounded ?? floorN;
+  }
+
+  // Fallback без калькулятора МП: надбавка к полу (иначе cost+% почти всегда < пола).
+  if (floorN != null && marginPct > 0) {
+    return floorRub(floorN * (1 + marginPct / 100));
+  }
+  if (basePrice > 0) {
+    const fromCost = floorRub(basePrice * (1 + marginPct / 100));
+    if (fromCost != null && floorN != null) return Math.max(fromCost, floorN);
+    return fromCost ?? floorN;
+  }
+  return floorN;
+}
+
 export function computeSellingPriceFromInputs({
   mode,
   config,
@@ -248,6 +316,8 @@ export function computeSellingPriceFromInputs({
   marketplace = null,
   ceiling = null,
   maxPrice = null,
+  /** Готовая база для target_margin/hybrid (из калькулятора МП) */
+  targetMarginPrice = null,
 }) {
   const m = PRICING_STRATEGY_MODES.includes(mode) ? mode : 'floor';
   const cfg = mergeConfig(m, config);
@@ -266,9 +336,30 @@ export function computeSellingPriceFromInputs({
       // база = пол; дальше шаги конкурента/продаж
       base = floorN;
       details.steps.push({ step: 'base_floor', price: base });
+    } else if (targetMarginPrice != null && Number.isFinite(Number(targetMarginPrice))) {
+      base = floorRub(targetMarginPrice);
+      if (floorN != null && (base == null || base < floorN)) base = floorN;
+      details.steps.push({
+        step: 'target_margin',
+        margin_percent: marginPct,
+        cost: costN,
+        price: base,
+        source: 'marketplace_net_margin',
+      });
     } else {
-      base = costN > 0 ? costN * (1 + marginPct / 100) : floorN;
-      details.steps.push({ step: 'target_margin', margin_percent: marginPct, cost: costN, price: base });
+      // Без заранее посчитанной МП-цены: надбавка к полу, иначе cost+% тонет под минимумом.
+      base = resolveTargetMarginPrice({
+        marginPercent: marginPct,
+        floor: floorN,
+        cost: costN,
+      });
+      details.steps.push({
+        step: 'target_margin',
+        margin_percent: marginPct,
+        cost: costN,
+        price: base,
+        source: 'floor_premium_fallback',
+      });
     }
   } else {
     base = floorN;
@@ -710,7 +801,8 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   if (!Number.isFinite(pid) || pid < 1) return { ok: false, error: 'invalid_product' };
 
   const prodRes = await query(
-    `SELECT id, cost, organization_id, profile_id, pricing_strategy_id
+    `SELECT id, cost, additional_expenses, organization_id, profile_id, pricing_strategy_id,
+            min_profit_ozon, min_profit_wb, min_profit_ym, min_price AS product_min_price
      FROM products WHERE id = $1`,
     [pid]
   );
@@ -719,6 +811,12 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
 
   // Пол стратегии = тот же выбор FBS/FBO, что и при пуше мин. цен на МП.
   let pushSchemes = parsePricePushSettings(null);
+  let taxProfile = null;
+  let wbAcquiringPercent = null;
+  let wbGemServicesPercent = null;
+  let wbSppPercent = null;
+  let ozonSppPercent = null;
+  let ymSppPercent = null;
   try {
     const pref = await query(
       `SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1`,
@@ -728,12 +826,55 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   } catch {
     /* колонка/профиль могут отсутствовать — дефолт обеих схем */
   }
+  try {
+    if (product.organization_id != null) {
+      const org = await query(
+        `SELECT tax_system, vat FROM organizations WHERE id = $1 LIMIT 1`,
+        [product.organization_id]
+      );
+      if (org.rows?.[0]) taxProfile = resolveOrganizationTaxProfile(org.rows[0]);
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const integ = await query(
+      `SELECT marketplace, config
+       FROM integrations
+       WHERE (profile_id = $1 OR organization_id = $2)
+         AND LOWER(TRIM(marketplace)) IN ('wb','wildberries','ozon','ym','yandex')`,
+      [product.profile_id, product.organization_id]
+    );
+    for (const row of integ.rows || []) {
+      const mp = String(row.marketplace || '').toLowerCase();
+      const cfg =
+        row.config && typeof row.config === 'object'
+          ? row.config
+          : typeof row.config === 'string'
+            ? JSON.parse(row.config || '{}')
+            : {};
+      if (mp === 'wb' || mp === 'wildberries') {
+        wbAcquiringPercent =
+          cfg.acquiring_percent != null ? Number(cfg.acquiring_percent) : null;
+        wbGemServicesPercent =
+          cfg.gem_services_percent != null ? Number(cfg.gem_services_percent) : null;
+        wbSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+      } else if (mp === 'ozon') {
+        ozonSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+      } else if (mp === 'ym' || mp === 'yandex') {
+        ymSppPercent = cfg.spp_percent != null ? Number(cfg.spp_percent) : null;
+      }
+    }
+  } catch {
+    /* integrations optional — калькулятор/fallback и так справятся */
+  }
 
   let floorsRes;
   try {
     floorsRes = await query(
       `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, max_price,
-              price_before_discount, COALESCE(selling_price_manual, false) AS selling_price_manual
+              price_before_discount, COALESCE(selling_price_manual, false) AS selling_price_manual,
+              calculation_details, calculation_details_fbs, calculation_details_fbo
        FROM product_marketplace_prices
        WHERE product_id = $1
          AND (
@@ -751,13 +892,15 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       !msg.includes('price_before_discount') &&
       !msg.includes('min_price_fbs') &&
       !msg.includes('min_price_fbo') &&
-      !msg.includes('selling_price_manual')
+      !msg.includes('selling_price_manual') &&
+      !msg.includes('calculation_details')
     ) {
       throw colErr;
     }
     floorsRes = await query(
       `SELECT marketplace, min_price, selling_price,
-              COALESCE(selling_price_manual, false) AS selling_price_manual
+              COALESCE(selling_price_manual, false) AS selling_price_manual,
+              calculation_details
        FROM product_marketplace_prices
        WHERE product_id = $1
          AND min_price IS NOT NULL AND min_price > 0
@@ -940,6 +1083,49 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       ? await loadSalesVelocity(pid, mp, cfg.sales?.window_days)
       : null;
 
+    let targetMarginPrice = null;
+    if (mode === 'target_margin' || mode === 'hybrid') {
+      const pushFbs = pushSchemes?.pushFbs !== false;
+      const pushFbo = pushSchemes?.pushFbo !== false;
+      let scheme = mp === 'wb' ? 'FBO' : 'FBS';
+      let calculator =
+        row.calculation_details ||
+        row.calculation_details_fbs ||
+        row.calculation_details_fbo ||
+        null;
+      if (mp === 'wb') {
+        if (pushFbo && row.calculation_details_fbo) {
+          scheme = 'FBO';
+          calculator = row.calculation_details_fbo;
+        } else if (pushFbs && row.calculation_details_fbs) {
+          scheme = 'FBS';
+          calculator = row.calculation_details_fbs;
+        }
+      } else if (pushFbs && row.calculation_details_fbs) {
+        scheme = 'FBS';
+        calculator = row.calculation_details_fbs;
+      } else if (pushFbo && row.calculation_details_fbo) {
+        scheme = 'FBO';
+        calculator = row.calculation_details_fbo;
+      }
+      const spp =
+        mp === 'wb' ? wbSppPercent : mp === 'ozon' ? ozonSppPercent : mp === 'ym' ? ymSppPercent : null;
+      targetMarginPrice = resolveTargetMarginPrice({
+        marginPercent: cfg.target_margin_percent,
+        floor: floorRounded,
+        cost: product.cost,
+        additionalExpenses: product.additional_expenses,
+        calculator,
+        marketplace: mp,
+        product,
+        wbAcquiringPercent,
+        wbGemServicesPercent,
+        taxProfile,
+        scheme,
+        sppPercent: spp,
+      });
+    }
+
     const computed = computeSellingPriceFromInputs({
       mode,
       config,
@@ -950,6 +1136,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       previousSelling,
       marketplace: mp,
       ceiling: row.max_price,
+      targetMarginPrice,
     });
 
     const details = {
@@ -1651,7 +1838,7 @@ export async function ensureDefaultStrategies(profileId) {
     {
       name: 'Целевая маржа',
       mode: 'target_margin',
-      description: 'Себестоимость + % маржи, не ниже пола.',
+      description: 'Чистая маржа % от цены через калькулятор МП, не ниже минимума.',
       config: { target_margin_percent: 25 },
     },
     {
@@ -1684,6 +1871,7 @@ export default {
   PRICING_STRATEGY_MODES,
   defaultStrategyConfig,
   computeSellingPriceFromInputs,
+  resolveTargetMarginPrice,
   recalculateSellingPricesForProduct,
   resolveStrategyRow,
   normalizeStrategyMarketplace,

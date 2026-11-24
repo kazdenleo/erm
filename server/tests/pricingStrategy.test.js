@@ -2,6 +2,7 @@ import {
   computeSellingPriceFromInputs,
   defaultStrategyConfig,
   normalizeStrategyMarketplace,
+  resolveTargetMarginPrice,
   rulePriority,
 } from '../src/services/pricingStrategy.service.js';
 
@@ -125,5 +126,21 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     expect(rulePriority('product', null)).toBeGreaterThan(rulePriority('brand', 'wb'));
     expect(rulePriority('brand', null)).toBeGreaterThan(rulePriority('category', null));
     expect(rulePriority('category', null)).toBeGreaterThan(rulePriority('profile', null));
+  });
+
+  test('target margin without calculator raises above floor', () => {
+    expect(resolveTargetMarginPrice({ marginPercent: 10, floor: 1000, cost: 300 })).toBe(1100);
+  });
+
+  test('target_margin mode uses marketplace target price when provided', () => {
+    const r = computeSellingPriceFromInputs({
+      mode: 'target_margin',
+      config: { target_margin_percent: 10, band_percent: 0, max_change_percent: null },
+      floor: 1000,
+      cost: 300,
+      targetMarginPrice: 1300,
+      previousSelling: 1000,
+    });
+    expect(r.sellingPrice).toBe(1300);
   });
 });
