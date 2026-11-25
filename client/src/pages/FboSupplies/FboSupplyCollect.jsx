@@ -222,6 +222,13 @@ export function FboSupplyCollect({
       const mine = filteredItems.find((it) => Number(it.id) === stickyId && !it.complete);
       if (mine) return mine;
     }
+    // Только что собирали эту строку (1/N) — предлагаем её снова, не другой комплект с той же щёткой.
+    if (lastScannedItemId != null) {
+      const last = filteredItems.find(
+        (it) => Number(it.id) === Number(lastScannedItemId) && !it.complete
+      );
+      if (last) return last;
+    }
     // Приоритет — комплект, который уже начали (частичный прогресс комплектующих).
     const inProgress = filteredItems.find((it) => {
       if (it.complete || !it.isKit) return false;
@@ -232,7 +239,7 @@ export function FboSupplyCollect({
     if (inProgress) return inProgress;
     // «Следующий» — только то, что есть на складе.
     return filteredItems.find((it) => !it.complete && it.inStock !== false) || null;
-  }, [filteredItems, state?.myStickySupplyItemId]);
+  }, [filteredItems, state?.myStickySupplyItemId, lastScannedItemId]);
   const nextTargets = useMemo(() => getNextScanTargets(nextItem), [nextItem]);
 
   const sendToPrinter = useCallback(

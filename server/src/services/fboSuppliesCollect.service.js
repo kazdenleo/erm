@@ -359,7 +359,12 @@ function clearStickiesForSupplyItem(supplyId, supplyItemId) {
   }
 }
 
-/** Sticky текущего пользователя, только если у строки ещё есть незакрытый прогресс. */
+/**
+ * Sticky текущего пользователя.
+ * hard — есть незакрытый прогресс комплектующих (нельзя уходить на другой комплект);
+ * affinity — единица только что собрана, прогресс пуст, но строка ещё нужна:
+ *   следующий скан той же комплектующей остаётся на этом комплекте (550+400, не 650+400).
+ */
 async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
   const stickyId = getUserStickyItemId(supplyId, { userId, userName });
   if (stickyId == null) return null;
@@ -376,11 +381,11 @@ async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
   }
-  const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
-  if (Math.max(0, parseInt(row.collected_quantity, 10) || 0) >= planned) {
+  if (!itemStillNeedsCollect(row)) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
   }
+  const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
   // Комплект уже полностью в коробах — не держим sticky, иначе скан комплектующей
   // (той же, что и одиночная позиция) уходит в overage комплекта.
   if (planned > 0) {
@@ -391,19 +396,20 @@ async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
     }
   }
   const progress = parseProgress(row.collect_component_progress);
+  const pid = row.product_id != null ? Number(row.product_id) : null;
+  const kitMeta = pid != null ? (await loadKitMetaMap([pid])).get(pid) : null;
+  if (kitMeta?.isKit) {
+    if (hasPartialKitComponentProgress(progress, kitMeta.components)) {
+      return { ...row, _stickyHard: true };
+    }
+    // Affinity: пустой прогресс, строка ещё не добрана.
+    return { ...row, _stickyHard: false };
+  }
   if (!Object.keys(progress).length) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
   }
-  const pid = row.product_id != null ? Number(row.product_id) : null;
-  const kitMeta = pid != null ? (await loadKitMetaMap([pid])).get(pid) : null;
-  if (kitMeta?.isKit) {
-    if (!hasPartialKitComponentProgress(progress, kitMeta.components)) {
-      clearUserSticky(supplyId, { userId, userName });
-      return null;
-    }
-  }
-  return row;
+  return { ...row, _stickyHard: true };
 }
 
 async function findSupplyItemDirect(supplyId, barcode, profileId) {
@@ -507,10 +513,14 @@ async function findSupplyItemsByKitComponent(supplyId, barcode, profileId) {
   }));
 }
 
-/** Выбрать комплект, которому комплектующая ещё нужна; иначе первый незакрытый. */
+/**
+ * Выбрать комплект, которому комплектующая ещё нужна.
+ * Приоритет: частичный прогресс → уже начатая строка (collected>0) → остальные незакрытые.
+ */
 async function pickPreferredKitComponentMatch(matches) {
   if (!matches?.length) return null;
 
+  const candidates = [];
   for (const m of matches) {
     if (!itemStillNeedsCollect(m.item)) continue;
     const kitPid = m.item.product_id != null ? Number(m.item.product_id) : null;
@@ -518,9 +528,23 @@ async function pickPreferredKitComponentMatch(matches) {
     const isKit = await isKitProductId(kitPid);
     if (!isKit) continue;
     const components = aggregateKitComponents(await getKitComponents(kitPid));
-    if (kitComponentStillNeeded(m.item.collect_component_progress, components, m.scannedProductId)) {
-      return m;
+    if (!kitComponentStillNeeded(m.item.collect_component_progress, components, m.scannedProductId)) {
+      continue;
     }
+    const collected = Math.max(0, parseInt(m.item.collected_quantity, 10) || 0);
+    const hasPartial = hasPartialKitComponentProgress(
+      m.item.collect_component_progress,
+      components
+    );
+    candidates.push({ m, collected, hasPartial });
+  }
+  if (candidates.length) {
+    candidates.sort((a, b) => {
+      if (a.hasPartial !== b.hasPartial) return a.hasPartial ? -1 : 1;
+      if (a.collected > 0 !== b.collected > 0) return a.collected > 0 ? -1 : 1;
+      return Number(a.m.item.id) - Number(b.m.item.id);
+    });
+    return candidates[0].m;
   }
 
   const open = matches.find((m) => itemStillNeedsCollect(m.item));
@@ -531,10 +555,11 @@ async function pickPreferredKitComponentMatch(matches) {
  * Один штрихкод может быть и отдельной строкой (K501-14), и комплектующей комплекта (WH550350 Getz).
  * Приоритет (в т.ч. при sticky):
  *   1) прямая позиция с недобором — не «перепрыгиваем» на комплект, пока одиночки не собраны;
- *   2) комплектующая sticky-комплекта / незакрытого комплекта;
- *   3) прямая позиция уже закрыта и открытых комплектов нет — overage на одиночку.
- * Sticky не должен уводить скан одиночки на комплект, пока у одиночки ещё недобор.
- * Чужой sticky не блокирует. Sticky блокирует только уход на другой товар/комплект.
+ *   2) комплектующая sticky-комплекта (hard или affinity на ту же строку);
+ *   3) иначе незакрытый комплект (частичный → уже начатый → прочие);
+ *   4) прямая позиция уже закрыта и открытых комплектов нет — overage на одиночку.
+ * Hard-sticky блокирует уход на другой комплект; affinity (пустой прогресс) — нет,
+ * но тот же ШК комплектующей остаётся на недавно собранной строке.
  */
 /** Резолв скана → строка поставки (экспорт для экспресс-режима). */
 export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
@@ -552,28 +577,32 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
 
     if (sticky) {
       const stickyId = Number(sticky.id);
+      const hardSticky = sticky._stickyHard === true;
       const kitOnSticky = kitMatches.find((m) => Number(m.item.id) === stickyId) || null;
 
+      // Тот же комплект (в т.ч. affinity после 1/N) — продолжаем его, не 650+400 вместо 550+400.
       if (kitOnSticky) return kitOnSticky;
 
-      // Одиночка уже закрыта, а sticky ждёт другую комплектующую — не даём уйти на чужой товар.
-      if (kitMatches.length === 0 && !direct) continue;
-      if (kitMatches.length === 0 && direct) {
-        // ШК только одиночки (комплектов с этой комплектующей нет) — overage на неё.
-        return direct;
-      }
+      if (hardSticky) {
+        // Незакрытый набор: нельзя перепрыгивать на другой товар/комплект.
+        if (kitMatches.length === 0 && !direct) continue;
+        if (kitMatches.length === 0 && direct) {
+          return direct;
+        }
 
-      const err = new Error(
-        'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
-      );
-      err.statusCode = 409;
-      err.code = 'COLLECT_KIT_STICKY';
-      err.details = {
-        stickySupplyItemId: stickyId,
-        stickySku: sticky.sku || sticky.product_sku || null,
-        stickyName: sticky.name || sticky.product_name || null,
-      };
-      throw err;
+        const err = new Error(
+          'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
+        );
+        err.statusCode = 409;
+        err.code = 'COLLECT_KIT_STICKY';
+        err.details = {
+          stickySupplyItemId: stickyId,
+          stickySku: sticky.sku || sticky.product_sku || null,
+          stickyName: sticky.name || sticky.product_name || null,
+        };
+        throw err;
+      }
+      // Affinity без прогресса: комплектующая не из этого комплекта — можно начать другой.
     }
 
     const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
@@ -1193,7 +1222,15 @@ class FboSuppliesCollectService {
     }
 
     const progressKeys = Object.keys(progressAfter || {}).length;
+    const stillNeedsLine =
+      updatedRow != null &&
+      Math.max(0, parseInt(updatedRow.collected_quantity, 10) || 0) <
+        Math.max(0, parseInt(updatedRow.quantity, 10) || 0);
     if (isComponentScan && progressKeys > 0) {
+      setUserSticky(supplyId, itemId, { userId, userName });
+    } else if (progressKeys === 0 && stillNeedsLine && isKit) {
+      // Единица закрыта (550+400 собран), строка ещё нужна — affinity sticky,
+      // чтобы следующий скан 400мм шёл снова в 550+400, а не в 650+400.
       setUserSticky(supplyId, itemId, { userId, userName });
     } else if (progressKeys === 0) {
       clearStickiesForSupplyItem(supplyId, itemId);

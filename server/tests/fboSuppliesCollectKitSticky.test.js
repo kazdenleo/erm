@@ -69,3 +69,13 @@ test('sticky per-user: two users can share the same kit sticky', () => {
   assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), 10);
   collectStickyTestApi.resetAll();
 });
+
+test('affinity sticky id survives empty progress until line cleared by caller', () => {
+  // После сборки единицы progress пуст, но setUserSticky оставляют на строке —
+  // getUserStickyItemId должен помнить id (loadUserStickyItem проверит remaining в БД).
+  collectStickyTestApi.resetAll();
+  const supplyId = 200;
+  collectStickyTestApi.setUserSticky(supplyId, 55, { userId: 7, userName: 'picker' });
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 7 }), 55);
+  collectStickyTestApi.resetAll();
+});
