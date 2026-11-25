@@ -725,24 +725,21 @@ function collectOzonBundleIdsForSupply(order, supply, orderDetails = null) {
 }
 
 function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDetails }) {
+  // Берём максимум из доступных источников: meta из /get часто занижен на этапе
+  // «Заполнение данных», а сумма /bundle (totalCount) совпадает с тем, что уйдёт в ERM.
   const fromItems = sumSupplyItemsQuantity(items);
-  if (fromItems > 0) return fromItems;
-
   const fromMeta = resolveOzonSupplyMetaCounts(order, supply, orderDetails);
-  if (fromMeta > 0) return fromMeta;
+  const fromBundleOrPassed = parseOzonPositiveInt(totalCount);
 
-  const parsedTotal = parseOzonPositiveInt(totalCount);
-  if (parsedTotal > 0) return parsedTotal;
-
+  let fromDetailsOrder = 0;
   const detailSupplies = ozonDetailsSuppliesList(orderDetails?.raw ?? {});
   const orderSupplies = order?.supplies ?? [];
   const supplyCount = Math.max(detailSupplies.length, orderSupplies.length, 1);
   if (supplyCount <= 1) {
-    const fromDetails = parseOzonPositiveInt(orderDetails?.totalQuantity);
-    if (fromDetails > 0) return fromDetails;
+    fromDetailsOrder = parseOzonPositiveInt(orderDetails?.totalQuantity);
   }
 
-  return 0;
+  return Math.max(fromItems, fromMeta, fromBundleOrPassed, fromDetailsOrder, 0);
 }
 
 async function fetchOzonBundleItems(
@@ -759,27 +756,40 @@ async function fetchOzonBundleItems(
   };
 
   if (summaryOnly) {
+    // Только qty/кластер: листаем все страницы (лимит Ozon = 100), иначе itemCount = сумма 1-й страницы.
     try {
-      const bundleData = await ozonApiPostWithRetry(
-        '/v1/supply-order/bundle',
-        { bundle_ids: [String(bundleId)], limit: 100 },
-        ozonApiOpts
-      );
-      const parsed = parseOzonBundleResponse(bundleData);
+      let lastId = '';
       let qtySum = 0;
+      let reportedLineCount = 0;
       const localClusterQty = new Map();
-      for (const row of parsed.rows) {
-        const qty = parseOzonBundleRowQuantity(row);
-        qtySum += qty;
-        const rowCluster = ozonClusterFromBundleRow(row);
-        if (rowCluster && qty > 0) {
-          localClusterQty.set(rowCluster, (localClusterQty.get(rowCluster) || 0) + qty);
+      for (let page = 0; page < 40; page++) {
+        const body = { bundle_ids: [String(bundleId)], limit: 100 };
+        if (lastId) body.last_id = lastId;
+        const bundleData = await ozonApiPostWithRetry(
+          '/v1/supply-order/bundle',
+          body,
+          ozonApiOpts
+        );
+        const parsed = parseOzonBundleResponse(bundleData);
+        if (parsed.totalCount > reportedLineCount) reportedLineCount = parsed.totalCount;
+        for (const row of parsed.rows) {
+          const qty = parseOzonBundleRowQuantity(row);
+          qtySum += qty;
+          const rowCluster = ozonClusterFromBundleRow(row);
+          if (rowCluster && qty > 0) {
+            localClusterQty.set(rowCluster, (localClusterQty.get(rowCluster) || 0) + qty);
+          }
         }
+        const more =
+          parsed.hasNext ||
+          (parsed.lastId && parsed.lastId !== lastId && parsed.rows.length >= 100);
+        if (!more || !parsed.lastId || parsed.lastId === lastId) break;
+        lastId = parsed.lastId;
       }
       addClusterQty(localClusterQty);
       return {
         items: [],
-        totalCount: Math.max(parsed.totalCount, qtySum),
+        totalCount: Math.max(reportedLineCount, qtySum),
         shippingCluster: pickDominantOzonCluster(clusterQty),
       };
     } catch {
@@ -794,7 +804,7 @@ async function fetchOzonBundleItems(
 
   try {
     let lastId = '';
-    for (let page = 0; page < 20; page++) {
+    for (let page = 0; page < 40; page++) {
       const body = { bundle_ids: [String(bundleId)], limit: 100 };
       if (lastId) body.last_id = lastId;
       const bundleData = await ozonApiPostWithRetry('/v1/supply-order/bundle', body, ozonApiOpts);
@@ -809,8 +819,11 @@ async function fetchOzonBundleItems(
           clusterQty.set(rowCluster, (clusterQty.get(rowCluster) || 0) + qty);
         }
       }
-      if (!parsed.hasNext) break;
-      if (!parsed.lastId || parsed.lastId === lastId) break;
+      // has_next иногда отсутствует — продолжаем, пока есть last_id и страница полная.
+      const more =
+        parsed.hasNext ||
+        (parsed.lastId && parsed.lastId !== lastId && parsed.rows.length >= 100);
+      if (!more || !parsed.lastId || parsed.lastId === lastId) break;
       lastId = parsed.lastId;
     }
 
@@ -972,10 +985,11 @@ async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimes
   let lastId = '';
   const listStates = states?.length ? states : OZON_SUPPLY_LIST_STATES;
   for (let page = 0; page < 30; page++) {
-    const listData = await integrationsService._ozonApiPost(
+    const listData = await ozonApiPostWithRetry(
       '/v3/supply-order/list',
       buildOzonSupplyListBody(daysBack, lastId, listStates, { useTimeslotFilter }),
-      ozonApiOpts
+      ozonApiOpts,
+      { priority: 'high', maxAttempts: 4 }
     );
     const batch = parseOzonListOrderIds(listData);
     ids.push(...batch);
@@ -1000,10 +1014,11 @@ async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
   const unique = [...new Set((orderIds || []).map((id) => String(id)).filter(Boolean))];
   for (let i = 0; i < unique.length; i += 50) {
     const chunk = unique.slice(i, i + 50);
-    const data = await integrationsService._ozonApiPost(
+    const data = await ozonApiPostWithRetry(
       '/v3/supply-order/get',
       { order_ids: chunk },
-      ozonApiOpts
+      ozonApiOpts,
+      { priority: 'high', maxAttempts: 4 }
     );
     const list = data?.result?.orders ?? data?.orders ?? [];
     if (Array.isArray(list)) orders.push(...list);
@@ -2650,6 +2665,30 @@ function needsOzonHydrate(row) {
   return row.ozonPreviewOnly === true || !hasItems;
 }
 
+function needsWbHydrate(row) {
+  const mp = String(row?.marketplace || '').trim().toLowerCase();
+  if (mp !== 'wb' && !mp.includes('wild')) return false;
+  const hasItems = (row.items || []).some((it) => (Number(it?.quantity) || 0) > 0);
+  return row.wbPreviewOnly === true || !hasItems;
+}
+
+async function hydrateWbImportRow(row, { profileId } = {}) {
+  const items = await fetchWbMpItemsForSupply(row, { profileId });
+  if (!items?.length) {
+    const err = new Error(
+      `Wildberries не вернул состав поставки ${String(row.externalShipmentNumber || '').trim()}`.trim()
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return {
+    ...row,
+    items,
+    itemCount: sumSupplyItemsQuantity(items),
+    wbPreviewOnly: false,
+  };
+}
+
 async function getOzonOrderDetailsCached(supplyOrderId, ozonApiOpts, cache) {
   const key = String(supplyOrderId);
   if (!cache.has(key)) {
@@ -2910,34 +2949,26 @@ class FboSuppliesImportService {
 
     let ozonOrders;
     let ozonWarehousesById;
-    let ozonClusterByWarehouseId;
-    let ozonMacrolocalById;
     try {
+      // Без cluster/list в превью — меньше 429 и очередь не конкурирует с пушем остатков.
       const fetched = await fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts);
       ozonOrders = fetched.orders;
       ozonWarehousesById = fetched.warehousesById;
-      const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts);
-      ozonClusterByWarehouseId = clusterMaps.warehouseById;
-      ozonMacrolocalById = clusterMaps.macrolocalById;
     } catch (e) {
       const err = new Error(e?.message || 'Не удалось загрузить детали поставок Ozon');
       err.statusCode = 400;
       throw err;
     }
 
-    const candidates = [];
-    const ozonDetailsCache = new Map();
-    for (const { order, supply } of flattenOzonSupplyOrders(ozonOrders)) {
-      if (!isOzonSupplyImportable(order, supply)) continue;
+    // Состав (строки) — при confirm. Qty в превью считаем через summaryOnly /bundle
+    // (все страницы), иначе meta из /get на «Заполнение данных» занижает штуки.
+    const importable = flattenOzonSupplyOrders(ozonOrders).filter(({ order, supply }) =>
+      isOzonSupplyImportable(order, supply)
+    );
+    const detailsCache = new Map();
 
+    const built = await mapWithConcurrency(importable, 3, async ({ order, supply }) => {
       const supplyOrderId = ozonSupplyOrderId(order);
-      if (!ozonDetailsCache.has(String(supplyOrderId))) {
-        ozonDetailsCache.set(
-          String(supplyOrderId),
-          await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts)
-        );
-      }
-      const orderDetails = ozonDetailsCache.get(String(supplyOrderId));
 
       const supplyId = supply?.supply_id ?? supply?.id;
       const supplyIdStr = supplyId != null ? String(supplyId).trim() : '';
@@ -2948,57 +2979,10 @@ class FboSuppliesImportService {
         baseNumber && supplyIdStr && baseNumber !== supplyIdStr
           ? `${baseNumber}-${supplyIdStr}`
           : baseNumber || supplyIdStr;
-      if (!externalNumber) continue;
+      if (!externalNumber) return null;
 
       if (ozonSupplyAlreadyImported(imported, externalNumber, supplyId, supplyOrderId)) {
-        continue;
-      }
-
-      let items = [];
-      let itemCount = 0;
-      let shippingClusterFromDetails = null;
-      try {
-        const fetchedItems = await fetchOzonSupplyItems(
-          order,
-          supply,
-          ozonApiOpts,
-              profileId,
-          orderDetails,
-          {
-            warehousesById: ozonWarehousesById,
-            clusterByWarehouseId: ozonClusterByWarehouseId,
-            macrolocalById: ozonMacrolocalById,
-            summaryOnly: true,
-          }
-        );
-        items = [];
-        itemCount = resolveOzonPreviewItemCount({
-          items: [],
-          totalCount: fetchedItems.totalCount,
-          order,
-          supply,
-          orderDetails,
-        });
-        shippingClusterFromDetails = fetchedItems.shippingCluster;
-        } catch {
-          items = [];
-        itemCount = resolveOzonPreviewItemCount({
-          items: [],
-          totalCount: 0,
-          order,
-          supply,
-          orderDetails,
-        });
-        shippingClusterFromDetails =
-          resolveOzonMacrolocalClusterName(supply, order, orderDetails?.raw, ozonMacrolocalById) ||
-          orderDetails?.shippingCluster ||
-          resolveOzonShippingCluster(
-            order,
-            supply,
-            ozonWarehousesById,
-            ozonClusterByWarehouseId,
-            orderDetails?.raw
-          );
+        return null;
       }
 
       const storageWhId =
@@ -3015,18 +2999,47 @@ class FboSuppliesImportService {
         order.warehouse ??
         order.warehouse_info ??
         {};
-      const shippingCluster =
-        shippingClusterFromDetails ||
-        resolveOzonMacrolocalClusterName(supply, order, orderDetails?.raw, ozonMacrolocalById) ||
-        resolveOzonShippingCluster(
+      let shippingCluster =
+        resolveOzonMacrolocalClusterName(supply, order, null, null) ||
+        resolveOzonShippingCluster(order, supply, ozonWarehousesById, null, null) ||
+        wh.cluster_name ||
+        wh.macrocluster_name ||
+        null;
+
+      let orderDetails = null;
+      let bundleTotal = 0;
+      try {
+        orderDetails = await getOzonOrderDetailsCached(supplyOrderId, ozonApiOpts, detailsCache);
+        const fetched = await fetchOzonSupplyItems(
           order,
           supply,
-          ozonWarehousesById,
-          ozonClusterByWarehouseId,
-          orderDetails?.raw
+          ozonApiOpts,
+          profileId,
+          orderDetails,
+          {
+            warehousesById: ozonWarehousesById,
+            clusterByWarehouseId: null,
+            macrolocalById: null,
+            summaryOnly: true,
+          }
         );
+        bundleTotal = parseOzonPositiveInt(fetched?.totalCount);
+        if (!shippingCluster && fetched?.shippingCluster) {
+          shippingCluster = fetched.shippingCluster;
+        }
+      } catch {
+        /* meta fallback below */
+      }
 
-      candidates.push({
+      const itemCount = resolveOzonPreviewItemCount({
+        items: [],
+        totalCount: bundleTotal,
+        order,
+        supply,
+        orderDetails,
+      });
+
+      return {
         importKey: `ozon:${externalNumber}`,
         marketplace: 'ozon',
         name: null,
@@ -3057,13 +3070,13 @@ class FboSuppliesImportService {
         deductStock: true,
         status: mapOzonStateToStatus(supply?.state ?? order.state ?? order.status),
         ozonState: ozonSupplyRowState(order, supply),
-        items,
+        items: [],
         itemCount,
         alreadyImported: false,
-      });
-    }
+      };
+    });
 
-    return candidates;
+    return built.filter(Boolean);
   }
 
   async fetchWbPreview({ profileId, organizationId, daysBack = 90 } = {}) {
@@ -3107,78 +3120,27 @@ class FboSuppliesImportService {
       rows = parseWbSuppliesListResponse(fallbackData);
     }
 
-    // WB FBW: ~30 req/min, burst ~10 — goods и details последовательно, мало параллели.
-    const built = await mapWithConcurrency(rows, 2, async (row) => {
+    // Превью лёгкое: только details (кол-во/склад). Состав goods — при confirm.
+    const built = await mapWithConcurrency(rows, 4, async (row) => {
       const externalNumber = wbExternalShipmentNumber(row);
       const goodsRef = wbSupplyGoodsApiRef(row);
       if (!externalNumber || !goodsRef?.id) return null;
 
-      let items = [];
-      let details = null;
-      const goodsPath = wbSupplyApiPath(goodsRef.id, {
+      let details = await fetchWbSupplyDetails(apiKey, goodsRef.id, {
         isPreorder: goodsRef.isPreorder,
-        suffix: '/goods',
       });
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          const goodsData = await wbFbwRequest(goodsPath, {
-            apiKey,
-            method: 'GET',
-            timeoutMs: 30000,
-          });
-          details = await fetchWbSupplyDetails(apiKey, goodsRef.id, {
-            isPreorder: goodsRef.isPreorder,
-          });
-          const list = parseWbGoodsResponse(goodsData);
-          items = [];
-          for (const g of list) {
-            const qty = wbQtyFromGoodsRow(g);
-            if (!qty) continue;
-            const sku =
-              g.vendorCode ??
-              g.supplierArticle ??
-              g.supplierVendorCode ??
-              g.sku ??
-              null;
-            const barcode = g.barcode ?? g.barCode ?? g.barcodes?.[0] ?? null;
-            const productId = await resolveProductId({ sku, barcode, profileId });
-            items.push({
-              productId,
-              quantity: qty,
-              sku,
-              barcode,
-              mpOfferId: sku,
-              mpProductId:
-                g.nmID != null ? String(g.nmID) : g.nmId != null ? String(g.nmId) : null,
-              name: g.name ?? g.subject ?? g.brand ?? null,
-              unresolved: productId == null,
-            });
-          }
-          break;
-        } catch {
-          items = [];
-          details = await fetchWbSupplyDetails(apiKey, goodsRef.id, {
-            isPreorder: goodsRef.isPreorder,
-          }).catch(() => null);
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 1200));
-          }
-        }
-      }
-
       let whFields = resolveWbSupplyWarehouseFields(row, details);
-      // Детали склада часто отваливаются по 429 — один повтор с паузой.
-      if (!whFields.marketplaceWarehouseName) {
-        await new Promise((r) => setTimeout(r, 800));
+      if (!whFields.marketplaceWarehouseName || !wbQtyFromSupplyDetails(details)) {
+        await new Promise((r) => setTimeout(r, 400));
         details =
           (await fetchWbSupplyDetails(apiKey, goodsRef.id, {
             isPreorder: goodsRef.isPreorder,
           }).catch(() => null)) || details;
         whFields = resolveWbSupplyWarehouseFields(row, details);
       }
+
       const supplyId = row.supplyID ?? row.supplyId;
       const preorderId = row.preorderID ?? row.preorderId;
-      const itemsQty = sumSupplyItemsQuantity(items);
       const detailsQty = wbQtyFromSupplyDetails(details);
 
       return {
@@ -3197,8 +3159,9 @@ class FboSuppliesImportService {
         organizationId: organizationId != null ? Number(organizationId) : null,
         deductStock: true,
         status: mapWbStateToStatus(row.statusName ?? row.status ?? row.statusID),
-        items,
-        itemCount: Math.max(itemsQty, detailsQty),
+        wbPreviewOnly: true,
+        items: [],
+        itemCount: detailsQty,
         alreadyImported: false,
       };
     });
@@ -3372,10 +3335,12 @@ class FboSuppliesImportService {
       try {
             const mp = String(row.marketplace || '').trim().toLowerCase();
             const ozonCtx = mp === 'ozon' ? ozonContexts.get(ozonImportOrgKey(row.organizationId)) ?? null : null;
-            const importRow =
-              mp === 'ozon' && needsOzonHydrate(row)
-                ? await hydrateOzonImportRow(row, { profileId, ozonCtx })
-                : row;
+            let importRow = row;
+            if (mp === 'ozon' && needsOzonHydrate(row)) {
+              importRow = await hydrateOzonImportRow(row, { profileId, ozonCtx });
+            } else if (needsWbHydrate(row)) {
+              importRow = await hydrateWbImportRow(row, { profileId });
+            }
         const doc = await fboSuppliesService.create(
           {
                 marketplace: importRow.marketplace,

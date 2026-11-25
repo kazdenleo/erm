@@ -90,7 +90,13 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
         );
       }
     } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось получить поставки');
+      const timedOut =
+        e.code === 'ECONNABORTED' || String(e.message || '').toLowerCase().includes('timeout');
+      setErr(
+        timedOut
+          ? 'Слишком долгий ответ маркетплейса. Уменьшите период (например 30 дней) и попробуйте снова.'
+          : e.response?.data?.message || e.message || 'Не удалось получить поставки'
+      );
     } finally {
       setLoading(false);
     }
@@ -179,12 +185,11 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
               />
             </div>
             <Button type="button" variant="primary" onClick={() => loadFromApi()} disabled={loading}>
-              {loading
-                ? marketplace === 'wb'
-                  ? 'Загрузка с WB…'
-                  : 'Загрузка…'
-                : 'Получить список'}
+              {loading ? 'Загрузка…' : 'Получить список'}
             </Button>
+            {loading ? (
+              <span className="text-muted small">Запрос к маркетплейсу, обычно до 15 сек…</span>
+            ) : null}
           </div>
         )}
         {mode === 'api' && !organizationId ? (
@@ -196,7 +201,8 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
         {mode === 'api' && marketplace === 'ozon' ? (
           <p className="text-muted small mb-2">
             Ozon: заявки «Заполнение данных» и «Готово к отгрузке» (раздел «Подготовка к поставке»).
-            Поставки в пути и архив не показываются.
+            Поставки в пути и архив не показываются. Количество в списке — фактическое (как после
+            загрузки); состав позиций подтянется при загрузке выбранных.
           </p>
         ) : null}
         {mode === 'api' && marketplace === 'wb' ? (
@@ -346,7 +352,13 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                           {cluster || '—'}
                         </td>
                         <td className="fbo-import-col-qty">
-                          {qty}
+                          {c.ozonPreviewOnly && !qty ? (
+                            <span className="text-muted" title="Состав подтянется при загрузке">
+                              —
+                            </span>
+                          ) : (
+                            qty
+                          )}
                           {unresolved > 0 && (
                             <div className="fbo-import-warn">{unresolved} без привязки</div>
                           )}
