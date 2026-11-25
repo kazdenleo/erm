@@ -26,6 +26,7 @@ import { Pricing } from './pages/Billing/Pricing.jsx';
 import { Onboarding } from './pages/Onboarding/Onboarding.jsx';
 import { Home } from './pages/Home/Home';
 import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
+import { AnalyticsHub } from './pages/Analytics/AnalyticsHub';
 import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
 import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesAnalytics';
 import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
@@ -262,7 +263,7 @@ function App() {
             <Route path="hypotheses" element={<Hypotheses />} />
           </Route>
           <Route path="/analytics" element={<ProtectedRoute><Layout><AnalyticsLayout /></Layout></ProtectedRoute>}>
-            <Route index element={<Navigate to="/analytics/sales" replace />} />
+            <Route index element={<AnalyticsHub />} />
             <Route path="sales" element={<SalesAnalytics />} />
             <Route path="fbo-sales" element={<FboSalesAnalytics />} />
             <Route path="categories" element={<CategorySalesAnalytics />} />
