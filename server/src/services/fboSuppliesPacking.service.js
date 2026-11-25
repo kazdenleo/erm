@@ -243,8 +243,9 @@ const PACKED_QTY_SQL = `
 
 /**
  * Dual-role (как в сборке/collect):
- * 1) прямая позиция — всегда, даже если план набран (overage на одиночку);
- * 2) иначе — комплектующая комплекта (сначала недобор).
+ * 1) прямая позиция с недобором — не уходим в комплект, пока одиночки не упакованы;
+ * 2) иначе — комплектующая комплекта (сначала недобор);
+ * 3) иначе — закрытая прямая позиция (окно «лишний товар» на одиночку).
  */
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const codes = productLookupCodesFromScan(barcode);
@@ -254,6 +255,13 @@ async function findSupplyItemForScan(supplyId, barcode, profileId) {
     if (found) return found;
   }
   return null;
+}
+
+function itemStillNeedsPack(row) {
+  if (!row) return false;
+  const planned = Math.max(0, Number(row.quantity) || 0);
+  const packed = Math.max(0, Number(row.packed_qty) || 0);
+  return packed < planned;
 }
 
 async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
@@ -268,13 +276,14 @@ async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
     profileFilter = ` AND (p.profile_id IS NULL OR p.profile_id = $${params.length})`;
   }
 
+  const selectWithPacked = `${SUPPLY_ITEM_SCAN_SELECT}, (${PACKED_QTY_SQL})::int AS packed_qty`;
   const orderByNeedThenId = `
     CASE WHEN ${PACKED_QTY_SQL} < GREATEST(0, COALESCE(i.quantity, 0)) THEN 0 ELSE 1 END ASC,
     i.id ASC
   `;
 
   const direct = await query(
-    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
+    `SELECT ${selectWithPacked}
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
      WHERE i.fbo_supply_id = $1${profileFilter}
@@ -283,10 +292,10 @@ async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
      LIMIT 1`,
     params
   );
-  if (direct.rows?.[0]) return direct.rows[0];
+  const directRow = direct.rows?.[0] || null;
 
   const viaKit = await query(
-    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
+    `SELECT ${selectWithPacked}
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
      WHERE i.fbo_supply_id = $1${profileFilter}
@@ -295,7 +304,12 @@ async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
      LIMIT 1`,
     params
   );
-  return viaKit.rows?.[0] || null;
+  const kitRow = viaKit.rows?.[0] || null;
+
+  if (directRow && itemStillNeedsPack(directRow)) return directRow;
+  if (kitRow && itemStillNeedsPack(kitRow)) return kitRow;
+  if (kitRow) return kitRow;
+  return directRow;
 }
 
 /**

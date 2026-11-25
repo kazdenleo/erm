@@ -530,9 +530,10 @@ async function pickPreferredKitComponentMatch(matches) {
 /**
  * Один штрихкод может быть и отдельной строкой (K501-14), и комплектующей комплекта (WH550350 Getz).
  * Приоритет (в т.ч. при sticky):
- *   1) прямая позиция (одиночка) — всегда, даже если план уже набран (overage на одиночку);
- *   2) иначе — комплектующая sticky-комплекта / незакрытого комплекта.
- * Sticky не должен «перепрыгивать» скан одиночной щётки на комплект с тем же ШК.
+ *   1) прямая позиция с недобором — не «перепрыгиваем» на комплект, пока одиночки не собраны;
+ *   2) комплектующая sticky-комплекта / незакрытого комплекта;
+ *   3) прямая позиция уже закрыта и открытых комплектов нет — overage на одиночку.
+ * Sticky не должен уводить скан одиночки на комплект, пока у одиночки ещё недобор.
  * Чужой sticky не блокирует. Sticky блокирует только уход на другой товар/комплект.
  */
 /** Резолв скана → строка поставки (экспорт для экспресс-режима). */
@@ -544,9 +545,10 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
   for (const code of toTry) {
     const direct = await findSupplyItemDirect(supplyId, code, profileId);
     const kitMatches = await findSupplyItemsByKitComponent(supplyId, code, profileId);
+    const directNeeds = direct && itemStillNeedsCollect(direct.item);
 
-    // Dual-role: одиночка важнее комплекта / sticky (комплект — своим ШК или когда одиночки нет).
-    if (direct) return direct;
+    // Dual-role: пока одиночка не набрана — она важнее комплекта / sticky.
+    if (directNeeds) return direct;
 
     if (sticky) {
       const stickyId = Number(sticky.id);
@@ -554,7 +556,12 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
 
       if (kitOnSticky) return kitOnSticky;
 
-      if (kitMatches.length === 0) continue;
+      // Одиночка уже закрыта, а sticky ждёт другую комплектующую — не даём уйти на чужой товар.
+      if (kitMatches.length === 0 && !direct) continue;
+      if (kitMatches.length === 0 && direct) {
+        // ШК только одиночки (комплектов с этой комплектующей нет) — overage на неё.
+        return direct;
+      }
 
       const err = new Error(
         'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
@@ -570,11 +577,15 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
     }
 
     const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
-    if (!viaKitResolved) continue;
+    if (viaKitResolved) {
+      const kitOpen = itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
+      if (kitOpen) return kitOpen;
+      // Комплекты тоже закрыты — ниже вернём direct для overage, иначе закрытый комплект.
+      if (!direct) return viaKitResolved;
+    }
 
-    const kitOpen = itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
-    if (kitOpen) return kitOpen;
-    return viaKitResolved;
+    // Одиночка закрыта, открытых комплектов нет → окно «уже собрана» / overage на одиночку.
+    if (direct) return direct;
   }
   return null;
 }
