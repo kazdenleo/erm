@@ -84,8 +84,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
       if (!list.length) {
         const mpLabel = getMarketplaceLabel(marketplace);
         setErr(
-          `За выбранный период ${mpLabel} не вернул поставок. Проверьте ключ в «Интеграции»${
-            marketplace === 'wb' ? ' (токен категории «Поставки» FBW)' : ''
+          `За выбранный период ${mpLabel} не вернул поставок к загрузке. Проверьте организацию в шапке, ключ в «Интеграции»${
+            marketplace === 'wb'
+              ? ' (токен категории «Поставки» FBW)'
+              : marketplace === 'ozon'
+                ? ' и что заявки в ЛК в статусе «Заполнение данных» или «Готово к отгрузке»'
+                : ''
           } и период в днях.`
         );
       }
@@ -130,7 +134,17 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
     try {
       const source = mode === 'excel' ? 'excel' : 'api';
       const result = await fboSuppliesApi.confirmImport(toImport, source);
+      const failed = (result?.skipped || []).filter((s) => s.reason === 'error');
       onImported?.(result);
+      if (failed.length) {
+        const nums = failed.map((f) => f.externalShipmentNumber || 'без номера').join(', ');
+        setErr(
+          `Загружено ${result?.created?.length || 0}, не удалось: ${nums}. ${
+            failed[0]?.message || ''
+          }`.trim()
+        );
+        return;
+      }
       handleClose();
     } catch (e) {
       const status = e.response?.status;
