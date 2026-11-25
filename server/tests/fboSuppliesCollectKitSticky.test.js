@@ -70,12 +70,22 @@ test('sticky per-user: two users can share the same kit sticky', () => {
   collectStickyTestApi.resetAll();
 });
 
-test('affinity sticky id survives empty progress until line cleared by caller', () => {
-  // После сборки единицы progress пуст, но setUserSticky оставляют на строке —
-  // getUserStickyItemId должен помнить id (loadUserStickyItem проверит remaining в БД).
+test('pending component: store and clear per user for ambiguous kit part', () => {
   collectStickyTestApi.resetAll();
   const supplyId = 200;
-  collectStickyTestApi.setUserSticky(supplyId, 55, { userId: 7, userName: 'picker' });
-  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 7 }), 55);
+  collectStickyTestApi.setUserPendingComponent(
+    supplyId,
+    { productId: 400, barcode: 'BC400', sku: '400mm' },
+    { userId: 7, userName: 'picker' }
+  );
+  const pending = collectStickyTestApi.getUserPendingComponent(supplyId, { userId: 7 });
+  assert.equal(pending?.productId, 400);
+  assert.equal(pending?.sku, '400mm');
+  assert.equal(
+    collectStickyTestApi.getUserPendingComponent(supplyId, { userId: 8 }),
+    null
+  );
+  collectStickyTestApi.clearUserPendingComponent(supplyId, { userId: 7 });
+  assert.equal(collectStickyTestApi.getUserPendingComponent(supplyId, { userId: 7 }), null);
   collectStickyTestApi.resetAll();
 });

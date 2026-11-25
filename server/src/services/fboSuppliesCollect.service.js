@@ -174,14 +174,18 @@ export function kitComponentStillNeeded(progress, aggregatedComponents, componen
   return got < need;
 }
 
-/** Тестовые хелперы sticky per-user (in-memory). */
+/** Тестовые хелперы sticky / pending per-user (in-memory). */
 export const collectStickyTestApi = {
   setUserSticky,
   getUserStickyItemId,
   clearUserSticky,
   clearStickiesForSupplyItem,
+  setUserPendingComponent,
+  getUserPendingComponent,
+  clearUserPendingComponent,
   resetAll() {
     collectStickyByKey.clear();
+    collectPendingByKey.clear();
   },
 };
 
@@ -269,6 +273,12 @@ const collectPresenceByKey = new Map();
 const COLLECT_STICKY_TTL_MS = 8 * 60 * 60 * 1000;
 const collectStickyByKey = new Map();
 
+/**
+ * Неоднозначная комплектующая (400мм есть и в 550+400, и в 650+400):
+ * ждём вторую щётку, чтобы выбрать комплект. Per-user, in-memory.
+ */
+const collectPendingByKey = new Map();
+
 function collectActorKey(supplyId, { userId, userName } = {}) {
   const sid = Number(supplyId);
   if (!Number.isFinite(sid) || sid <= 0) return null;
@@ -348,6 +358,54 @@ function clearUserSticky(supplyId, { userId, userName } = {}) {
   collectStickyByKey.delete(actor.key);
 }
 
+function getUserPendingComponent(supplyId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  if (!actor) return null;
+  const row = collectPendingByKey.get(actor.key);
+  if (!row) return null;
+  if (Date.now() - Number(row.at || 0) > COLLECT_STICKY_TTL_MS) {
+    collectPendingByKey.delete(actor.key);
+    return null;
+  }
+  if (Number(row.supplyId) !== actor.supplyId) {
+    collectPendingByKey.delete(actor.key);
+    return null;
+  }
+  const productId = Number(row.productId);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    collectPendingByKey.delete(actor.key);
+    return null;
+  }
+  return {
+    productId,
+    barcode: row.barcode != null ? String(row.barcode) : null,
+    sku: row.sku != null ? String(row.sku) : null,
+  };
+}
+
+function setUserPendingComponent(
+  supplyId,
+  { productId, barcode = null, sku = null } = {},
+  { userId, userName } = {}
+) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  const pid = Number(productId);
+  if (!actor || !Number.isFinite(pid) || pid <= 0) return;
+  collectPendingByKey.set(actor.key, {
+    supplyId: actor.supplyId,
+    productId: pid,
+    barcode: barcode != null ? String(barcode).slice(0, 256) : null,
+    sku: sku != null ? String(sku).slice(0, 200) : null,
+    at: Date.now(),
+  });
+}
+
+function clearUserPendingComponent(supplyId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  if (!actor) return;
+  collectPendingByKey.delete(actor.key);
+}
+
 /** Снять sticky у всех, кто держал эту строку (комплект закрыт / прогресс сброшен). */
 function clearStickiesForSupplyItem(supplyId, supplyItemId) {
   const sid = Number(supplyId);
@@ -360,10 +418,8 @@ function clearStickiesForSupplyItem(supplyId, supplyItemId) {
 }
 
 /**
- * Sticky текущего пользователя.
- * hard — есть незакрытый прогресс комплектующих (нельзя уходить на другой комплект);
- * affinity — единица только что собрана, прогресс пуст, но строка ещё нужна:
- *   следующий скан той же комплектующей остаётся на этом комплекте (550+400, не 650+400).
+ * Sticky только при незакрытом прогрессе комплектующих (hard).
+ * Выбор между 550+400 и 650+400 после общей щётки 400 — через pending (вторая щётка).
  */
 async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
   const stickyId = getUserStickyItemId(supplyId, { userId, userName });
@@ -396,20 +452,19 @@ async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
     }
   }
   const progress = parseProgress(row.collect_component_progress);
-  const pid = row.product_id != null ? Number(row.product_id) : null;
-  const kitMeta = pid != null ? (await loadKitMetaMap([pid])).get(pid) : null;
-  if (kitMeta?.isKit) {
-    if (hasPartialKitComponentProgress(progress, kitMeta.components)) {
-      return { ...row, _stickyHard: true };
-    }
-    // Affinity: пустой прогресс, строка ещё не добрана.
-    return { ...row, _stickyHard: false };
-  }
   if (!Object.keys(progress).length) {
     clearUserSticky(supplyId, { userId, userName });
     return null;
   }
-  return { ...row, _stickyHard: true };
+  const pid = row.product_id != null ? Number(row.product_id) : null;
+  const kitMeta = pid != null ? (await loadKitMetaMap([pid])).get(pid) : null;
+  if (kitMeta?.isKit) {
+    if (!hasPartialKitComponentProgress(progress, kitMeta.components)) {
+      clearUserSticky(supplyId, { userId, userName });
+      return null;
+    }
+  }
+  return row;
 }
 
 async function findSupplyItemDirect(supplyId, barcode, profileId) {
@@ -513,15 +568,10 @@ async function findSupplyItemsByKitComponent(supplyId, barcode, profileId) {
   }));
 }
 
-/**
- * Выбрать комплект, которому комплектующая ещё нужна.
- * Приоритет: частичный прогресс → уже начатая строка (collected>0) → остальные незакрытые.
- */
-async function pickPreferredKitComponentMatch(matches) {
-  if (!matches?.length) return null;
-
+/** Кандидаты-комплекты, которым ещё нужна эта комплектующая. */
+async function listOpenKitComponentCandidates(matches) {
   const candidates = [];
-  for (const m of matches) {
+  for (const m of matches || []) {
     if (!itemStillNeedsCollect(m.item)) continue;
     const kitPid = m.item.product_id != null ? Number(m.item.product_id) : null;
     if (kitPid == null) continue;
@@ -536,30 +586,77 @@ async function pickPreferredKitComponentMatch(matches) {
       m.item.collect_component_progress,
       components
     );
-    candidates.push({ m, collected, hasPartial });
+    candidates.push({ m, components, collected, hasPartial });
   }
-  if (candidates.length) {
-    candidates.sort((a, b) => {
-      if (a.hasPartial !== b.hasPartial) return a.hasPartial ? -1 : 1;
-      if (a.collected > 0 !== b.collected > 0) return a.collected > 0 ? -1 : 1;
-      return Number(a.m.item.id) - Number(b.m.item.id);
-    });
-    return candidates[0].m;
-  }
+  candidates.sort((a, b) => {
+    if (a.hasPartial !== b.hasPartial) return a.hasPartial ? -1 : 1;
+    if (a.collected > 0 !== b.collected > 0) return a.collected > 0 ? -1 : 1;
+    return Number(a.m.item.id) - Number(b.m.item.id);
+  });
+  return candidates;
+}
 
+/**
+ * Выбрать комплект, которому комплектующая ещё нужна.
+ * Приоритет: частичный прогресс → уже начатая строка (collected>0) → остальные незакрытые.
+ */
+async function pickPreferredKitComponentMatch(matches) {
+  if (!matches?.length) return null;
+  const candidates = await listOpenKitComponentCandidates(matches);
+  if (candidates.length) return candidates[0].m;
   const open = matches.find((m) => itemStillNeedsCollect(m.item));
   return open || matches[0];
+}
+
+/**
+ * Комплект, которому нужны и pending-комплектующая, и только что отсканированная
+ * (400 + 550 → 550+400; 400 + 650 → 650+400).
+ */
+async function pickKitMatchingPendingAndCurrent(kitMatchesForCurrent, pendingProductId) {
+  const pendingId = Number(pendingProductId);
+  if (!Number.isFinite(pendingId) || pendingId <= 0) return null;
+  const candidates = [];
+  for (const m of kitMatchesForCurrent || []) {
+    if (!itemStillNeedsCollect(m.item)) continue;
+    const kitPid = m.item.product_id != null ? Number(m.item.product_id) : null;
+    if (kitPid == null) continue;
+    const isKit = await isKitProductId(kitPid);
+    if (!isKit) continue;
+    const components = aggregateKitComponents(await getKitComponents(kitPid));
+    const hasPending = components.some((c) => Number(c.component_product_id) === pendingId);
+    if (!hasPending) continue;
+    if (!kitComponentStillNeeded(m.item.collect_component_progress, components, pendingId)) {
+      continue;
+    }
+    if (
+      !kitComponentStillNeeded(m.item.collect_component_progress, components, m.scannedProductId)
+    ) {
+      continue;
+    }
+    const collected = Math.max(0, parseInt(m.item.collected_quantity, 10) || 0);
+    const hasPartial = hasPartialKitComponentProgress(
+      m.item.collect_component_progress,
+      components
+    );
+    candidates.push({ m, collected, hasPartial });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => {
+    if (a.hasPartial !== b.hasPartial) return a.hasPartial ? -1 : 1;
+    if (a.collected > 0 !== b.collected > 0) return a.collected > 0 ? -1 : 1;
+    return Number(a.m.item.id) - Number(b.m.item.id);
+  });
+  return candidates[0].m;
 }
 
 /**
  * Один штрихкод может быть и отдельной строкой (K501-14), и комплектующей комплекта (WH550350 Getz).
  * Приоритет (в т.ч. при sticky):
  *   1) прямая позиция с недобором — не «перепрыгиваем» на комплект, пока одиночки не собраны;
- *   2) комплектующая sticky-комплекта (hard или affinity на ту же строку);
+ *   2) комплектующая hard-sticky комплекта;
  *   3) иначе незакрытый комплект (частичный → уже начатый → прочие);
  *   4) прямая позиция уже закрыта и открытых комплектов нет — overage на одиночку.
- * Hard-sticky блокирует уход на другой комплект; affinity (пустой прогресс) — нет,
- * но тот же ШК комплектующей остаётся на недавно собранной строке.
+ * Неоднозначная комплектующая (несколько комплектов) обрабатывается в scan() через pending.
  */
 /** Резолв скана → строка поставки (экспорт для экспресс-режима). */
 export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
@@ -577,43 +674,36 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
 
     if (sticky) {
       const stickyId = Number(sticky.id);
-      const hardSticky = sticky._stickyHard === true;
       const kitOnSticky = kitMatches.find((m) => Number(m.item.id) === stickyId) || null;
 
-      // Тот же комплект (в т.ч. affinity после 1/N) — продолжаем его, не 650+400 вместо 550+400.
       if (kitOnSticky) return kitOnSticky;
 
-      if (hardSticky) {
-        // Незакрытый набор: нельзя перепрыгивать на другой товар/комплект.
-        if (kitMatches.length === 0 && !direct) continue;
-        if (kitMatches.length === 0 && direct) {
-          return direct;
-        }
-
-        const err = new Error(
-          'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
-        );
-        err.statusCode = 409;
-        err.code = 'COLLECT_KIT_STICKY';
-        err.details = {
-          stickySupplyItemId: stickyId,
-          stickySku: sticky.sku || sticky.product_sku || null,
-          stickyName: sticky.name || sticky.product_name || null,
-        };
-        throw err;
+      // Незакрытый набор: нельзя перепрыгивать на другой товар/комплект.
+      if (kitMatches.length === 0 && !direct) continue;
+      if (kitMatches.length === 0 && direct) {
+        return direct;
       }
-      // Affinity без прогресса: комплектующая не из этого комплекта — можно начать другой.
+
+      const err = new Error(
+        'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
+      );
+      err.statusCode = 409;
+      err.code = 'COLLECT_KIT_STICKY';
+      err.details = {
+        stickySupplyItemId: stickyId,
+        stickySku: sticky.sku || sticky.product_sku || null,
+        stickyName: sticky.name || sticky.product_name || null,
+      };
+      throw err;
     }
 
     const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
     if (viaKitResolved) {
       const kitOpen = itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
       if (kitOpen) return kitOpen;
-      // Комплекты тоже закрыты — ниже вернём direct для overage, иначе закрытый комплект.
       if (!direct) return viaKitResolved;
     }
 
-    // Одиночка закрыта, открытых комплектов нет → окно «уже собрана» / overage на одиночку.
     if (direct) return direct;
   }
   return null;
@@ -706,6 +796,7 @@ class FboSuppliesCollectService {
     const sid = Number(supplyId);
     const stickyId = getUserStickyItemId(supplyId, { userId, userName });
     clearUserSticky(supplyId, { userId, userName });
+    clearUserPendingComponent(supplyId, { userId, userName });
     if (stickyId == null) {
       return { cleared: 0, stickySupplyItemId: null };
     }
@@ -749,6 +840,7 @@ class FboSuppliesCollectService {
     touchCollectPresence(supplyId, { userId, userName });
 
     const myStickySupplyItemId = getUserStickyItemId(supplyId, { userId, userName });
+    const myPendingComponent = getUserPendingComponent(supplyId, { userId, userName });
 
     const itemsR = await query(
       `SELECT ${ITEM_SELECT}
@@ -955,6 +1047,7 @@ class FboSuppliesCollectService {
       completeCount: items.filter((it) => it.complete).length,
       itemCount: items.length,
       myStickySupplyItemId,
+      myPendingComponent,
       activeUsers: [...activeUsersMap.values()],
       recentScans: (recentR.rows || []).map((row) => ({
         id: Number(row.id),
@@ -994,12 +1087,132 @@ class FboSuppliesCollectService {
       throw err;
     }
 
-    const resolved = await resolveScanToSupplyItem(supplyId, code, profileId, { userId, userName });
+    // Неоднозначная комплектующая: 400мм есть в 550+400 и 650+400 — ждём вторую щётку.
+    let resolved = null;
+    let applyProductIdsBefore = [];
+    const stickyEarly = await loadUserStickyItem(supplyId, { userId, userName });
+    const pendingEarly = getUserPendingComponent(supplyId, { userId, userName });
+
+    if (!stickyEarly) {
+      const codesTry = productLookupCodesFromScan(code);
+      const toTry = codesTry.length ? codesTry : [code];
+      for (const tryCode of toTry) {
+        const directTry = await findSupplyItemDirect(supplyId, tryCode, profileId);
+        if (directTry && itemStillNeedsCollect(directTry.item)) {
+          clearUserPendingComponent(supplyId, { userId, userName });
+          resolved = directTry;
+          break;
+        }
+        const kitMatches = await findSupplyItemsByKitComponent(supplyId, tryCode, profileId);
+        if (!kitMatches.length) continue;
+
+        const candidates = await listOpenKitComponentCandidates(kitMatches);
+        const scannedProductId =
+          candidates[0]?.m?.scannedProductId != null
+            ? Number(candidates[0].m.scannedProductId)
+            : kitMatches[0]?.scannedProductId != null
+              ? Number(kitMatches[0].scannedProductId)
+              : null;
+        const scannedSku =
+          candidates[0]?.m?.scannedComponentSku || kitMatches[0]?.scannedComponentSku || null;
+
+        if (pendingEarly && scannedProductId) {
+          if (Number(pendingEarly.productId) === scannedProductId) {
+            setUserPendingComponent(
+              supplyId,
+              { productId: scannedProductId, barcode: tryCode, sku: scannedSku },
+              { userId, userName }
+            );
+            touchCollectPresence(supplyId, { userId, userName });
+            const state = await this.getCollectState(supplyId, { profileId, userId, userName });
+            return {
+              action: 'kit_component_pending',
+              match: 'kit_component',
+              message: `Комплектующая ${scannedSku || tryCode} уже в ожидании. Отсканируйте вторую часть комплекта (другую щётку), чтобы выбрать 550+400 или 650+400.`,
+              pendingComponent: state.myPendingComponent,
+              candidateKits: candidates.slice(0, 8).map((c) => ({
+                supplyItemId: Number(c.m.item.id),
+                sku: c.m.item.sku || c.m.item.product_sku || null,
+                name: c.m.item.name || c.m.item.product_name || null,
+                collected: Math.max(0, parseInt(c.m.item.collected_quantity, 10) || 0),
+                planned: Math.max(0, parseInt(c.m.item.quantity, 10) || 0),
+              })),
+              unitsCompleted: 0,
+              print: null,
+              item: null,
+              state,
+              supplyStatus: supply.status || 'new',
+              lastCollectAt: null,
+            };
+          }
+          const paired = await pickKitMatchingPendingAndCurrent(kitMatches, pendingEarly.productId);
+          if (paired) {
+            clearUserPendingComponent(supplyId, { userId, userName });
+            resolved = paired;
+            applyProductIdsBefore = [Number(pendingEarly.productId)];
+            break;
+          }
+          // Пара не нашлась — начинаем ожидание заново с текущей комплектующей.
+        }
+
+        if (candidates.length > 1) {
+          setUserPendingComponent(
+            supplyId,
+            { productId: scannedProductId, barcode: tryCode, sku: scannedSku },
+            { userId, userName }
+          );
+          touchCollectPresence(supplyId, { userId, userName });
+          const state = await this.getCollectState(supplyId, { profileId, userId, userName });
+          const hintSkus = candidates
+            .slice(0, 4)
+            .map((c) => c.m.item.sku || c.m.item.product_sku || `#${c.m.item.id}`)
+            .filter(Boolean);
+          return {
+            action: 'kit_component_pending',
+            match: 'kit_component',
+            message: `Комплектующая ${scannedSku || tryCode} подходит к нескольким комплектам (${hintSkus.join(', ')}). Отсканируйте вторую щётку — соберём нужный комплект.`,
+            pendingComponent: state.myPendingComponent,
+            candidateKits: candidates.slice(0, 8).map((c) => ({
+              supplyItemId: Number(c.m.item.id),
+              sku: c.m.item.sku || c.m.item.product_sku || null,
+              name: c.m.item.name || c.m.item.product_name || null,
+              collected: Math.max(0, parseInt(c.m.item.collected_quantity, 10) || 0),
+              planned: Math.max(0, parseInt(c.m.item.quantity, 10) || 0),
+            })),
+            unitsCompleted: 0,
+            print: null,
+            item: null,
+            state,
+            supplyStatus: supply.status || 'new',
+            lastCollectAt: null,
+          };
+        }
+
+        if (candidates.length === 1) {
+          clearUserPendingComponent(supplyId, { userId, userName });
+          resolved = candidates[0].m;
+          break;
+        }
+      }
+    }
+
+    if (!resolved) {
+      resolved = await resolveScanToSupplyItem(supplyId, code, profileId, { userId, userName });
+    }
     if (!resolved?.item) {
       const err = new Error('Товар не найден в этой поставке (ни как позиция, ни как комплектующая комплекта)');
       err.statusCode = 404;
       err.code = 'COLLECT_ITEM_NOT_FOUND';
       throw err;
+    }
+
+    // Одиночка / однозначный комплект — сбрасываем pending ожидания.
+    if (resolved.match !== 'kit_component' || applyProductIdsBefore.length === 0) {
+      if (resolved.match !== 'kit_component') {
+        clearUserPendingComponent(supplyId, { userId, userName });
+      } else if (!stickyEarly && applyProductIdsBefore.length === 0) {
+        clearUserPendingComponent(supplyId, { userId, userName });
+      }
     }
 
     const itemId = Number(resolved.item.id);
@@ -1090,58 +1303,72 @@ class FboSuppliesCollectService {
           : null;
 
       if (isComponentScan) {
-        const compId = Number(resolved.scannedProductId);
-        const perKit =
-          components.find((c) => Number(c.component_product_id) === compId)?.quantity || 1;
-        const key = String(compId);
-        if (!kitComponentStillNeeded(progress, components, compId)) {
-          const err = new Error(
-            `Эта комплектующая уже отсканирована для текущего комплекта. Отсканируйте оставшиеся позиции или SKU комплекта целиком.`
-          );
-          err.statusCode = 409;
-          err.code = 'COLLECT_COMPONENT_ALREADY';
-          err.details = {
-            supplyItemId: itemId,
-            componentProductId: compId,
-            need: Math.max(1, parseInt(perKit, 10) || 1),
-            got: Math.max(0, parseInt(progress[key], 10) || 0),
-          };
-          throw err;
-        }
-        const beforeCompletable = kitsCompletableFromProgress(progress, components);
-        progress[key] = (progress[key] || 0) + 1;
-        const afterCompletable = kitsCompletableFromProgress(progress, components);
-        unitsCompleted = Math.max(0, afterCompletable - beforeCompletable);
+        const idsToApply = [
+          ...applyProductIdsBefore.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0),
+          Number(resolved.scannedProductId),
+        ].filter((id, idx, arr) => Number.isFinite(id) && id > 0 && arr.indexOf(id) === idx);
 
-        if (unitsCompleted > 0) {
-          const room = allowOverage
-            ? unitsCompleted
-            : Math.min(unitsCompleted, Math.max(0, plannedLocked - collectedLocked));
-          if (room <= 0 && !allowOverage) {
-            progress[key] = Math.max(0, (progress[key] || 0) - 1);
-            if (progress[key] === 0) delete progress[key];
+        unitsCompleted = 0;
+        for (const compId of idsToApply) {
+          const perKit =
+            components.find((c) => Number(c.component_product_id) === compId)?.quantity || 1;
+          const key = String(compId);
+          if (!kitComponentStillNeeded(progress, components, compId)) {
             const err = new Error(
-              `Позиция уже собрана полностью (${collectedLocked} из ${plannedLocked}). Больше не нужно добавлять этот товар в поставку.`
+              `Эта комплектующая уже отсканирована для текущего комплекта. Отсканируйте оставшиеся позиции или SKU комплекта целиком.`
             );
             err.statusCode = 409;
-            err.code = 'COLLECT_OVERAGE';
+            err.code = 'COLLECT_COMPONENT_ALREADY';
+            err.details = {
+              supplyItemId: itemId,
+              componentProductId: compId,
+              need: Math.max(1, parseInt(perKit, 10) || 1),
+              got: Math.max(0, parseInt(progress[key], 10) || 0),
+            };
             throw err;
           }
-          const applyUnits = allowOverage ? unitsCompleted : room;
-          progress = subtractKitsFromProgress(progress, components, applyUnits);
-          collectedLocked += applyUnits;
-          unitsCompleted = applyUnits;
+          const beforeCompletable = kitsCompletableFromProgress(progress, components);
+          progress[key] = (progress[key] || 0) + 1;
+          const afterCompletable = kitsCompletableFromProgress(progress, components);
+          let stepUnits = Math.max(0, afterCompletable - beforeCompletable);
+
+          if (stepUnits > 0) {
+            const room = allowOverage
+              ? stepUnits
+              : Math.min(stepUnits, Math.max(0, plannedLocked - collectedLocked));
+            if (room <= 0 && !allowOverage) {
+              progress[key] = Math.max(0, (progress[key] || 0) - 1);
+              if (progress[key] === 0) delete progress[key];
+              const err = new Error(
+                `Позиция уже собрана полностью (${collectedLocked} из ${plannedLocked}). Больше не нужно добавлять этот товар в поставку.`
+              );
+              err.statusCode = 409;
+              err.code = 'COLLECT_OVERAGE';
+              throw err;
+            }
+            const applyUnits = allowOverage ? stepUnits : room;
+            progress = subtractKitsFromProgress(progress, components, applyUnits);
+            collectedLocked += applyUnits;
+            unitsCompleted += applyUnits;
+            action = 'collected';
+            message =
+              applyUnits === 1
+                ? `Комплект собран — этикетка на печать (${collectedLocked} из ${plannedLocked})`
+                : `Собрано комплектов: ${applyUnits} — этикетки на печать (${collectedLocked} из ${plannedLocked})`;
+          } else {
+            action = 'kit_progress';
+            const summary = kitProgressSummary(progress, components);
+            message = `Комплектующая принята${
+              resolved.scannedComponentSku ? ` (${resolved.scannedComponentSku})` : ''
+            }: ${summary.scannedPieces} из ${summary.needPieces} для следующего комплекта. Этикетка пока не печатается.`;
+          }
+        }
+        if (unitsCompleted > 0) {
           action = 'collected';
           message =
-            applyUnits === 1
+            unitsCompleted === 1
               ? `Комплект собран — этикетка на печать (${collectedLocked} из ${plannedLocked})`
-              : `Собрано комплектов: ${applyUnits} — этикетки на печать (${collectedLocked} из ${plannedLocked})`;
-        } else {
-          action = 'kit_progress';
-          const summary = kitProgressSummary(progress, components);
-          message = `Комплектующая принята${
-            resolved.scannedComponentSku ? ` (${resolved.scannedComponentSku})` : ''
-          }: ${summary.scannedPieces} из ${summary.needPieces} для следующего комплекта. Этикетка пока не печатается.`;
+              : `Собрано комплектов: ${unitsCompleted} — этикетки на печать (${collectedLocked} из ${plannedLocked})`;
         }
       } else if (isWholeKitScan || !isKit || components.length === 0) {
         // Обычный товар или скан SKU комплекта целиком → сразу +1 и печать
@@ -1198,16 +1425,24 @@ class FboSuppliesCollectService {
       updatedRow = upd.rows?.[0];
       progressAfter = progress;
 
-      await insertScanLog({
-        supplyId,
-        itemId,
-        productId: updatedRow.product_id,
-        scannedProductId: resolved.scannedProductId,
-        barcode: code,
-        userId,
-        userName,
-        client,
-      });
+      const loggedProductIds = isComponentScan
+        ? [
+            ...applyProductIdsBefore.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0),
+            Number(resolved.scannedProductId),
+          ].filter((id, idx, arr) => Number.isFinite(id) && id > 0 && arr.indexOf(id) === idx)
+        : [resolved.scannedProductId];
+      for (const scannedPid of loggedProductIds) {
+        await insertScanLog({
+          supplyId,
+          itemId,
+          productId: updatedRow.product_id,
+          scannedProductId: scannedPid,
+          barcode: code,
+          userId,
+          userName,
+          client,
+        });
+      }
 
       await client.query('COMMIT');
     } catch (e) {
@@ -1222,23 +1457,16 @@ class FboSuppliesCollectService {
     }
 
     const progressKeys = Object.keys(progressAfter || {}).length;
-    const stillNeedsLine =
-      updatedRow != null &&
-      Math.max(0, parseInt(updatedRow.collected_quantity, 10) || 0) <
-        Math.max(0, parseInt(updatedRow.quantity, 10) || 0);
     if (isComponentScan && progressKeys > 0) {
       setUserSticky(supplyId, itemId, { userId, userName });
-    } else if (progressKeys === 0 && stillNeedsLine && isKit) {
-      // Единица закрыта (550+400 собран), строка ещё нужна — affinity sticky,
-      // чтобы следующий скан 400мм шёл снова в 550+400, а не в 650+400.
-      setUserSticky(supplyId, itemId, { userId, userName });
     } else if (progressKeys === 0) {
+      // Единица закрыта — sticky не держим: следующий 400мм + 650 соберёт другой комплект через pending.
       clearStickiesForSupplyItem(supplyId, itemId);
       clearUserSticky(supplyId, { userId, userName });
     } else if (action === 'collected') {
-      // Единица закрыта, но на строке ещё хвост следующего набора — держим sticky.
       setUserSticky(supplyId, itemId, { userId, userName });
     }
+    clearUserPendingComponent(supplyId, { userId, userName });
 
     touchCollectPresence(supplyId, { userId, userName });
 

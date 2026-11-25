@@ -292,6 +292,15 @@ export function FboSupplyCollect({
   const applyScanResult = useCallback(
     async (data, printSlot = null) => {
       if (data?.state) setState(data.state);
+      if (data?.action === 'kit_component_pending') {
+        setLastMsg(
+          data.message ||
+            'Комплектующая принята. Отсканируйте вторую щётку, чтобы выбрать комплект.'
+        );
+        playEventSound(SOUND_EVENTS.scan_ok);
+        closePrintSlot(printSlot);
+        return;
+      }
       if (data?.item?.id != null) {
         // Вверху только незавершённые (1/2); готовые (2/2) сразу отпускаем вниз.
         if (data.item.complete) {
@@ -538,6 +547,13 @@ export function FboSupplyCollect({
                   : '—'}
               </span>
             </div>
+            {state?.myPendingComponent?.sku || state?.myPendingComponent?.productId ? (
+              <div className="fbo-collect-flash fbo-collect-flash--ok" role="status" aria-live="polite">
+                Ожидаем вторую щётку к{' '}
+                {state.myPendingComponent.sku || `#${state.myPendingComponent.productId}`} —
+                от неё зависит комплект (550+400 или 650+400)
+              </div>
+            ) : null}
             {lastMsg || err || printHookError ? (
               <div
                 className={`fbo-collect-flash${
