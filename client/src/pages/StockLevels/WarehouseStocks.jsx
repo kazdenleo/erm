@@ -1825,7 +1825,7 @@ function MpStockBlockCell({ product, busyKey, onToggle }) {
   );
 }
 
-/** ERP-склад с привязками warehouse_mappings (для экспорта остатков на МП). */
+/** MySell-склад с привязками warehouse_mappings (для экспорта остатков на МП). */
 function pickPrimaryMarketplaceStockWarehouseId(mappings) {
   if (!Array.isArray(mappings) || mappings.length === 0) return '';
   const byWh = new Map();
@@ -2661,7 +2661,7 @@ export function WarehouseStocks() {
       return 'Выберите организацию в фильтре (не «Все») — остатки уходят в кабинет этой организации.';
     }
     if (mpLinkedWarehouseIds.length === 0) {
-      return 'Нет привязки складов ERP ↔ маркетплейсы. Настройте в разделе «Склады».';
+      return 'Нет привязки складов MySell ↔ маркетплейсы. Настройте в разделе «Склады».';
     }
     if (!stockWarehouseId) {
       return 'Выберите склад в фильтре — остатки отправляются с выбранного склада.';
@@ -3304,6 +3304,43 @@ export function WarehouseStocks() {
     [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id, stockWarehouseId]
   );
 
+  const handleUnreserveFboFromStock = useCallback(
+    async (fboRow) => {
+      if (fboRow?.supplyId == null || !reserveModalProduct?.id) return;
+      const key = `fbo-${fboRow.supplyId}`;
+      setReserveUnreserveKey(key);
+      setReserveError(null);
+      try {
+        await stockMovementsApi.releaseFboReserve(reserveModalProduct.id, {
+          supplyId: fboRow.supplyId,
+          supplyItemIds: Array.isArray(fboRow.supplyItemIds)
+            ? fboRow.supplyItemIds
+            : fboRow.supplyItemId != null
+              ? [fboRow.supplyItemId]
+              : undefined,
+        });
+        await reloadReserveOrdersList();
+        loadListRef.current?.({ page: currentPage, silent: true });
+        if (historyProduct?.id === reserveModalProduct?.id) {
+          stockMovementsApi
+            .getHistory(historyProduct.id, {
+              limit: 100,
+              warehouseId: stockWarehouseId || undefined,
+            })
+            .then((res) => {
+              const list = res?.data ?? res ?? [];
+              setHistoryList(Array.isArray(list) ? list : []);
+            });
+        }
+      } catch (e) {
+        setReserveError(e?.response?.data?.message || e?.message || 'Не удалось снять резерв FBO');
+      } finally {
+        setReserveUnreserveKey(null);
+      }
+    },
+    [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id, stockWarehouseId]
+  );
+
   const reserveModalOrdersAttributedQty = useMemo(
     () => reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0),
     [reserveOrders]
@@ -3376,7 +3413,17 @@ export function WarehouseStocks() {
     const pid = reserveModalProduct?.id;
     if (!pid || reserveBulkReleasing) return;
     const unit = reserveModalIsKit ? 'компл.' : 'шт.';
-    const confirmMsg = `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} ${unit})?`;
+    const parts = [];
+    if (reserveOrders.length > 0) {
+      parts.push(`${reserveOrders.length} зак. (${reserveModalTotalQty} ${unit})`);
+    }
+    if (reserveFboSupplies.length > 0) {
+      parts.push(`${reserveFboSupplies.length} FBO`);
+    }
+    const confirmMsg =
+      parts.length > 0
+        ? `Снять весь резерв: ${parts.join(' и ')}?`
+        : `Снять весь резерв по товару?`;
     if (!window.confirm(confirmMsg)) {
       return;
     }
@@ -3397,6 +3444,7 @@ export function WarehouseStocks() {
     reserveModalProduct?.id,
     reserveBulkReleasing,
     reserveOrders.length,
+    reserveFboSupplies.length,
     reserveModalTotalQty,
     reserveModalIsKit,
     reloadReserveOrdersList,
@@ -3827,7 +3875,7 @@ export function WarehouseStocks() {
                   <th>Артикул</th>
                   <th>Товар</th>
                   <th>В пути</th>
-                  <th title="Остаток на выбранном складе ERP (не у поставщика)">Наличие</th>
+                  <th title="Остаток на выбранном складе MySell (не у поставщика)">Наличие</th>
                   <th>Резерв</th>
                   <th title="Остаток у поставщиков, доступный к закупке (после отсечки — в следующее окно)">Поставщики</th>
                   <th title="Наличие + в пути + поставщики − резерв">Доступно</th>
@@ -3998,7 +4046,7 @@ export function WarehouseStocks() {
               Отправить остатки («Доступно») на маркетплейсы со склада «{mpPushPanel.whLabel}»?
               <br />
               <span className="text-muted small">
-                Только остаток этого склада ERP (с привязкой к Ozon / WB / Яндекс), не с других складов.
+                Только остаток этого склада MySell (с привязкой к Ozon / WB / Яндекс), не с других складов.
               </span>
             </p>
             <p className="mb-2 text-muted small">
@@ -4450,27 +4498,62 @@ export function WarehouseStocks() {
                     ? `Резерв под поставки FBO на складе «${mainWarehouseName}» (только этот склад):`
                     : 'Резерв под поставки FBO (колонка «Резерв» включает и заказы, и FBO):'}
                 </p>
+                {reserveError && reserveFboSupplies.length > 0 && reserveOrders.length === 0 ? (
+                  <p className="text-danger small mb-2" role="alert">
+                    {reserveError}
+                  </p>
+                ) : null}
                 <ul className="list-group mb-3">
-                  {reserveFboSupplies.map((f) => (
-                    <li
-                      key={`fbo-${f.supplyId}-${f.supplyItemId}`}
-                      className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
-                    >
-                      {f.supplyId ? (
-                        <Link
-                          to={`/stock-levels/fbo-supplies/${f.supplyId}`}
-                          className="stock-levels-history-link"
-                          onClick={closeReserveModal}
-                        >
-                          {f.label || `FBO поставка №${f.supplyId}`}
-                        </Link>
-                      ) : (
-                        <span>{f.label || 'FBO поставка'}</span>
-                      )}
-                      <span className="badge bg-secondary rounded-pill">{f.reservedQty} шт.</span>
-                    </li>
-                  ))}
+                  {reserveFboSupplies.map((f) => {
+                    const fboKey = `fbo-${f.supplyId}`;
+                    const busy = reserveUnreserveKey === fboKey;
+                    return (
+                      <li
+                        key={fboKey}
+                        className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
+                      >
+                        {f.supplyId ? (
+                          <Link
+                            to={`/stock-levels/fbo-supplies/${f.supplyId}`}
+                            className="stock-levels-history-link"
+                            onClick={closeReserveModal}
+                          >
+                            {f.label || `FBO поставка №${f.supplyId}`}
+                          </Link>
+                        ) : (
+                          <span>{f.label || 'FBO поставка'}</span>
+                        )}
+                        <div className="d-flex align-items-center gap-2 flex-shrink-0">
+                          <span className="badge bg-secondary rounded-pill">{f.reservedQty} шт.</span>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="small"
+                            disabled={Boolean(reserveUnreserveKey) || reserveBulkReleasing}
+                            onClick={() => handleUnreserveFboFromStock(f)}
+                          >
+                            {busy ? '…' : 'Снять резерв'}
+                          </Button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
+                {reserveOrders.length === 0 ? (
+                  <div className="mb-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={reserveBulkReleasing || Boolean(reserveUnreserveKey)}
+                      onClick={handleReleaseAllReservesFromStock}
+                    >
+                      {reserveBulkReleasing
+                        ? 'Снимаем резерв…'
+                        : `Снять весь резерв FBO (${reserveFboSupplies.length})`}
+                    </Button>
+                  </div>
+                ) : null}
               </>
             ) : null}
             {reserveOrphanQty > 0 &&
@@ -4530,8 +4613,10 @@ export function WarehouseStocks() {
                 onClick={handleReleaseAllReservesFromStock}
               >
                 {reserveBulkReleasing
-                  ? 'Снимаем резерв…'
-                  : `Снять весь резерв (${reserveModalTotalQty}${reserveModalIsKit ? ' компл.' : ' шт.'})`}
+                      ? 'Снимаем резерв…'
+                      : reserveFboSupplies.length > 0
+                        ? `Снять весь резерв (заказы + FBO)`
+                        : `Снять весь резерв (${reserveModalTotalQty}${reserveModalIsKit ? ' компл.' : ' шт.'})`}
               </Button>
             </div>
             <ul className="list-group stock-levels-reserve-orders-list">

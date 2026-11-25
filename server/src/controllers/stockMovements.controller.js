@@ -159,16 +159,19 @@ class StockMovementsController {
       const warehouseRaw = req.query.warehouseId ?? req.query.warehouse_id ?? null;
       const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw, tid);
 
-      let rows = await stockMovementsService.listReservedOrdersForProduct(id, {
-        profileId: tid,
-        warehouseId: whFilter,
-        _skipShipmentReconcile: true,
-        _skipStaleCleanup: false
-      });
-      let fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
-        profileId: tid,
-        warehouseId: whFilter
-      });
+      // Параллельно: раньше FBO ждал полный список заказов — модалка открывалась долго.
+      let [rows, fboSupplies] = await Promise.all([
+        stockMovementsService.listReservedOrdersForProduct(id, {
+          profileId: tid,
+          warehouseId: whFilter,
+          _skipShipmentReconcile: true,
+          _skipStaleCleanup: true
+        }),
+        stockMovementsService.listFboReservedSuppliesForProduct(id, {
+          profileId: tid,
+          warehouseId: whFilter
+        })
+      ]);
       let summary = await stockMovementsService.getReserveSummaryForProduct(id, {
         profileId: tid,
         warehouseId: whFilter,
@@ -177,8 +180,6 @@ class StockMovementsController {
       });
 
       const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
-      const ordersReservedQty = Math.floor(Number(summary.ordersReservedQty) || 0);
-      const fboReservedQty = Math.floor(Number(summary.fboReservedQty) || 0);
       const hasAttributedOrders = rows.length > 0 || fboSupplies.length > 0;
       // Не снимаем «лишний» резерв автоматически, если есть заказы/FBO — иначе ломается нетто в журнале.
       if (orphanQty > 0 && !hasAttributedOrders) {
@@ -187,16 +188,18 @@ class StockMovementsController {
             profileId: tid,
             warehouseId: whFilter
           });
-          rows = await stockMovementsService.listReservedOrdersForProduct(id, {
-            profileId: tid,
-            warehouseId: whFilter,
-            _skipShipmentReconcile: true,
-            _skipStaleCleanup: false
-          });
-          fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
-            profileId: tid,
-            warehouseId: whFilter
-          });
+          [rows, fboSupplies] = await Promise.all([
+            stockMovementsService.listReservedOrdersForProduct(id, {
+              profileId: tid,
+              warehouseId: whFilter,
+              _skipShipmentReconcile: true,
+              _skipStaleCleanup: true
+            }),
+            stockMovementsService.listFboReservedSuppliesForProduct(id, {
+              profileId: tid,
+              warehouseId: whFilter
+            })
+          ]);
           summary = await stockMovementsService.getReserveSummaryForProduct(id, {
             profileId: tid,
             warehouseId: whFilter,
@@ -228,6 +231,32 @@ class StockMovementsController {
       }
       const summary = await stockMovementsService.releaseOrderReserveForProduct(id, orderDbId, {
         profileId: tid
+      });
+      return res.status(200).json({ ok: true, data: summary });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Снять резерв FBO по поставке/строке (модалка остатков). */
+  async releaseFboReserve(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { released: false } });
+      }
+      const { id } = req.params;
+      const supplyId = req.body?.supplyId ?? req.body?.supply_id;
+      const supplyItemId = req.body?.supplyItemId ?? req.body?.supply_item_id ?? null;
+      const supplyItemIds = req.body?.supplyItemIds ?? req.body?.supply_item_ids ?? null;
+      if (supplyId == null || supplyId === '') {
+        return res.status(400).json({ ok: false, message: 'supplyId обязателен' });
+      }
+      const summary = await stockMovementsService.releaseFboReserveForProduct(id, {
+        supplyId,
+        supplyItemId,
+        supplyItemIds,
+        profileId: tid,
       });
       return res.status(200).json({ ok: true, data: summary });
     } catch (error) {

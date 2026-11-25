@@ -468,8 +468,15 @@ class StockMovementsService {
       }
       try {
         const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+        // Ручная правка / инвентаризация: сразу пересчитать FBO (иначе резерв «залипает»
+        // при обнулении остатка, пока debounce не сработает / skip no-op ошибочно).
+        const fboImmediate =
+          typeNormEarly === 'manual' ||
+          typeNormEarly === 'inventory' ||
+          safeDelta < 0;
         await fboSupplyReserveService.onSupplyStockEvent(idNum, warehouseId, {
           profileId: profId,
+          immediate: fboImmediate,
         });
       } catch {
         /* ignore */
@@ -1495,6 +1502,7 @@ class StockMovementsService {
 
   /**
    * Резерв под поставки FBO (meta.fbo_supply_item_id) — в колонке «Резерв» учитывается, в заказах не показывается.
+   * Одна строка на поставку (сумма по всем item_id товара в журнале).
    */
   async listFboReservedSuppliesForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -1521,36 +1529,56 @@ class StockMovementsService {
     }
 
     const res = await query(
-      `WITH nets AS (
-         SELECT meta->>'fbo_supply_item_id' AS item_id,
-                meta->>'fbo_supply_id' AS supply_id,
+      `WITH item_nets AS (
+         SELECT (meta->>'fbo_supply_item_id')::bigint AS item_id,
+                CASE
+                  WHEN (meta->>'fbo_supply_id') ~ '^[0-9]+$'
+                  THEN (meta->>'fbo_supply_id')::bigint
+                  ELSE NULL
+                END AS meta_supply_id,
                 GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS reserved_qty
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
            AND meta->>'fbo_supply_item_id' IS NOT NULL
            AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'${whSql}
-         GROUP BY meta->>'fbo_supply_item_id', meta->>'fbo_supply_id'
+         GROUP BY 1, 2
          HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0
+       ),
+       resolved AS (
+         SELECT COALESCE(n.meta_supply_id, si.fbo_supply_id) AS supply_id,
+                n.item_id,
+                n.reserved_qty
+         FROM item_nets n
+         LEFT JOIN fbo_supply_items si ON si.id = n.item_id
+       ),
+       by_supply AS (
+         SELECT supply_id,
+                SUM(reserved_qty)::int AS reserved_qty,
+                ARRAY_AGG(DISTINCT item_id ORDER BY item_id) AS item_ids
+         FROM resolved
+         WHERE supply_id IS NOT NULL
+         GROUP BY supply_id
+         HAVING SUM(reserved_qty) > 0
        )
-       SELECT n.item_id,
-              n.supply_id,
-              n.reserved_qty,
+       SELECT b.supply_id,
+              b.reserved_qty,
+              b.item_ids,
               s.marketplace,
               s.status,
-              s.external_shipment_number,
-              si.quantity::int AS line_qty
-       FROM nets n
-       LEFT JOIN fbo_supplies s ON s.id = (n.supply_id)::bigint
-       LEFT JOIN fbo_supply_items si ON si.id = (n.item_id)::bigint
-       WHERE ($2::bigint IS NULL OR s.profile_id = $2 OR s.id IS NULL)
-       ORDER BY s.ready_at ASC NULLS LAST, s.id DESC, n.item_id`,
+              s.external_shipment_number
+       FROM by_supply b
+       JOIN fbo_supplies s ON s.id = b.supply_id
+       WHERE ($2::bigint IS NULL OR s.profile_id = $2)
+       ORDER BY s.ready_at ASC NULLS LAST, s.id DESC`,
       params
     );
 
     return (res.rows || []).map((r) => {
       const supplyId = Number(r.supply_id);
-      const supplyItemId = Number(r.item_id);
+      const itemIds = Array.isArray(r.item_ids)
+        ? r.item_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+        : [];
       const ext = r.external_shipment_number != null ? String(r.external_shipment_number).trim() : '';
       const idPart = Number.isFinite(supplyId) && supplyId > 0 ? `№${supplyId}` : null;
       const label =
@@ -1563,12 +1591,13 @@ class StockMovementsService {
               : 'FBO поставка';
       return {
         supplyId: Number.isFinite(supplyId) ? supplyId : null,
-        supplyItemId: Number.isFinite(supplyItemId) ? supplyItemId : null,
+        supplyItemId: itemIds[0] ?? null,
+        supplyItemIds: itemIds,
         reservedQty: Number(r.reserved_qty) || 0,
         marketplace: r.marketplace != null ? String(r.marketplace) : '',
         status: r.status != null ? String(r.status) : '',
         externalShipmentNumber: ext,
-        lineQty: Number(r.line_qty) || 0,
+        lineQty: Number(r.reserved_qty) || 0,
         label
       };
     });
@@ -2373,10 +2402,15 @@ class StockMovementsService {
     }
 
     const list = await this.listReservedOrdersForProduct(idNum, { profileId, _skipStaleCleanup: true });
+    const fboList = await this.listFboReservedSuppliesForProduct(idNum, {
+      profileId,
+      warehouseId,
+    });
     let releasedOrders = 0;
+    let releasedFbo = 0;
     let releasedProductLines = 0;
 
-    if (!list.length) {
+    if (!list.length && !fboList.length) {
       const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId, warehouseId });
       const lines = orphan.releasedProductLines || 0;
       const qty = orphan.releasedQty || 0;
@@ -2389,8 +2423,10 @@ class StockMovementsService {
       }
       return {
         releasedOrders: 0,
+        releasedFbo: 0,
         releasedProductLines: lines,
         ordersChecked: 0,
+        fboChecked: 0,
         orphanCleanup: true
       };
     }
@@ -2419,7 +2455,26 @@ class StockMovementsService {
       if (touched) releasedOrders += 1;
     }
 
-    if (releasedProductLines === 0) {
+    for (const f of fboList) {
+      const sid = Number(f.supplyId);
+      if (!Number.isFinite(sid) || sid < 1) continue;
+      try {
+        const r = await this.releaseFboReserveForProduct(idNum, {
+          supplyId: sid,
+          supplyItemId: f.supplyItemId ?? null,
+          supplyItemIds: Array.isArray(f.supplyItemIds) ? f.supplyItemIds : null,
+          profileId,
+        });
+        if (r?.released) {
+          releasedFbo += 1;
+          releasedProductLines += 1;
+        }
+      } catch {
+        /* дальше проверим общий итог */
+      }
+    }
+
+    if (releasedProductLines === 0 && releasedFbo === 0) {
       const error = new Error(
         'Не удалось снять резерв: по товару не найдено записей в журнале для снятия'
       );
@@ -2429,8 +2484,10 @@ class StockMovementsService {
 
     return {
       releasedOrders,
+      releasedFbo,
       releasedProductLines,
-      ordersChecked: list.length
+      ordersChecked: list.length,
+      fboChecked: fboList.length,
     };
   }
 
@@ -2509,6 +2566,126 @@ class StockMovementsService {
     }
 
     return { releasedProductLines, orderDbId: oid, orderId: label };
+  }
+
+  /**
+   * Снять резерв FBO по строке/поставке из модалки остатков.
+   * После снятия — immediate rebalance: при нулевом наличии резерв не вернётся;
+   * при наличии свободного остатка очередь FBO может перераспределить его.
+   */
+  async releaseFboReserveForProduct(
+    productId,
+    { supplyId, supplyItemId = null, supplyItemIds = null, profileId = null } = {}
+  ) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    const sid = Number(supplyId);
+    if (!Number.isFinite(idNum) || idNum < 1 || !Number.isFinite(sid) || sid < 1) {
+      const error = new Error('Некорректные параметры');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) {
+        const error = new Error('Товар не найден');
+        error.statusCode = 404;
+        throw error;
+      }
+      const sr = await query(`SELECT profile_id FROM fbo_supplies WHERE id = $1`, [sid]);
+      const supplyPid = sr.rows?.[0]?.profile_id;
+      if (supplyPid == null) {
+        const error = new Error('Поставка FBO не найдена');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (String(supplyPid) !== String(tid)) {
+        const error = new Error('Поставка FBO не найдена');
+        error.statusCode = 404;
+        throw error;
+      }
+    }
+
+    const itemIds = [];
+    if (Array.isArray(supplyItemIds)) {
+      for (const raw of supplyItemIds) {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) itemIds.push(n);
+      }
+    }
+    if (
+      !itemIds.length &&
+      supplyItemId != null &&
+      String(supplyItemId).trim() !== ''
+    ) {
+      const n = Number(supplyItemId);
+      if (Number.isFinite(n) && n > 0) itemIds.push(n);
+    }
+
+    const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+    // Без item_id раньше снимали резерв всей поставки — опасно. Если ids нет —
+    // берём все item_id с нетто по этому товару в поставке.
+    let idsToRelease = [...new Set(itemIds)];
+    if (!idsToRelease.length) {
+      const listed = await this.listFboReservedSuppliesForProduct(idNum, { profileId: tid });
+      const hit = listed.find((row) => Number(row.supplyId) === sid);
+      idsToRelease = Array.isArray(hit?.supplyItemIds) ? hit.supplyItemIds : [];
+    }
+    if (!idsToRelease.length) {
+      return {
+        supplyId: sid,
+        supplyItemId: null,
+        supplyItemIds: [],
+        productIds: [],
+        released: false,
+      };
+    }
+
+    const releaseResult = await fboSupplyReserveService.releaseReservesForSupplyItemIds(
+      sid,
+      idsToRelease,
+      {
+        profileId: tid,
+        skipMarketplaceSync: true,
+      }
+    );
+
+    const productIds = new Set(
+      (releaseResult?.productIds || [])
+        .map((p) => Number(p))
+        .filter((p) => Number.isFinite(p) && p > 0)
+    );
+    productIds.add(idNum);
+
+    for (const pid of productIds) {
+      await fboSupplyReserveService
+        .onSupplyStockEvent(pid, null, { profileId: tid, immediate: true })
+        .catch(() => {});
+    }
+
+    try {
+      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+      for (const pid of productIds) {
+        await syncProductReservedQuantityFromJournal(pid).catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      supplyId: sid,
+      supplyItemId: idsToRelease[0] ?? null,
+      supplyItemIds: idsToRelease,
+      productIds: [...productIds],
+      released: productIds.size > 0,
+    };
   }
 
   /**

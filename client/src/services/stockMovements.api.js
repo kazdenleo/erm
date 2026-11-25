@@ -72,6 +72,16 @@ export const stockMovementsApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Снять резерв FBO по поставке/строке из модалки остатков. */
+  releaseFboReserve: async (productId, { supplyId, supplyItemId, supplyItemIds } = {}) => {
+    const response = await api.post(`/products/${productId}/stock-reserve-release-fbo`, {
+      supplyId,
+      ...(supplyItemId != null ? { supplyItemId } : {}),
+      ...(Array.isArray(supplyItemIds) && supplyItemIds.length ? { supplyItemIds } : {}),
+    });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Применить изменение остатка и записать движение
    * @param {number|string} productId
