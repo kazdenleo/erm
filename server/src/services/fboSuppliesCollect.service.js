@@ -528,14 +528,12 @@ async function pickPreferredKitComponentMatch(matches) {
 }
 
 /**
- * Один штрихкод может быть и отдельной строкой (K501-16), и комплектующей комплекта (WH650400-2-2).
- * Приоритет без sticky:
+ * Один штрихкод может быть и отдельной строкой (K501-14), и комплектующей комплекта (WH550350 Getz).
+ * Приоритет (в т.ч. при sticky):
  *   1) прямая позиция (одиночка) — всегда, даже если план уже набран (overage на одиночку);
- *   2) иначе — комплектующая незакрытого комплекта.
- * Иначе скан «одиночной» щётки после закрытия её строки уходил в комплект и показывал
- * «лишний товар» по комплекту, хотя оператор сканировал одиночку.
- * Sticky — на пользователя: пока у вас незакрытый комплект, комплектующая идёт в него.
- * Чужой sticky не блокирует.
+ *   2) иначе — комплектующая sticky-комплекта / незакрытого комплекта.
+ * Sticky не должен «перепрыгивать» скан одиночной щётки на комплект с тем же ШК.
+ * Чужой sticky не блокирует. Sticky блокирует только уход на другой товар/комплект.
  */
 /** Резолв скана → строка поставки (экспорт для экспресс-режима). */
 export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
@@ -547,19 +545,16 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
     const direct = await findSupplyItemDirect(supplyId, code, profileId);
     const kitMatches = await findSupplyItemsByKitComponent(supplyId, code, profileId);
 
+    // Dual-role: одиночка важнее комплекта / sticky (комплект — своим ШК или когда одиночки нет).
+    if (direct) return direct;
+
     if (sticky) {
       const stickyId = Number(sticky.id);
       const kitOnSticky = kitMatches.find((m) => Number(m.item.id) === stickyId) || null;
-      const directOnSticky =
-        direct && Number(direct.item.id) === stickyId ? direct : null;
 
-      if (kitOnSticky || directOnSticky) {
-        // Даже если комплектующая уже набрана — вернём sticky, scan() ответит «уже отсканировано».
-        if (kitOnSticky) return kitOnSticky;
-        return directOnSticky;
-      }
+      if (kitOnSticky) return kitOnSticky;
 
-      if (!direct && kitMatches.length === 0) continue;
+      if (kitMatches.length === 0) continue;
 
       const err = new Error(
         'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
@@ -575,12 +570,9 @@ export async function resolveScanToSupplyItem(supplyId, barcode, profileId, { us
     }
 
     const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
-    if (!direct && !viaKitResolved) continue;
+    if (!viaKitResolved) continue;
 
-    // Dual-role: одиночная строка важнее комплектующей (комплект — по его штрихкоду / sticky).
-    if (direct) return direct;
-
-    const kitOpen = viaKitResolved && itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
+    const kitOpen = itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
     if (kitOpen) return kitOpen;
     return viaKitResolved;
   }
