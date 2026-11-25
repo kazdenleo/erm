@@ -44,6 +44,7 @@ function emptyUserForm() {
     middleName: '',
     phone: '',
     birthDate: '',
+    baseSalary: '',
     role: 'user',
     isProfileAdmin: false,
     accountRole: 'editor',
@@ -152,6 +153,10 @@ export function SettingsUsers() {
       middleName: u.middle_name ?? '',
       phone: u.phone ?? '',
       birthDate: (u.birth_date || '').toString().slice(0, 10),
+      baseSalary:
+        u.base_salary != null && u.base_salary !== ''
+          ? String(u.base_salary)
+          : '',
       role: u.role ?? 'user',
       isProfileAdmin: !!u.is_profile_admin,
       accountRole: String(u.account_role ?? (u.is_profile_admin ? 'admin' : 'editor')).trim().toLowerCase() || 'editor',
@@ -193,6 +198,7 @@ export function SettingsUsers() {
         firstName: String(form.firstName ?? '').trim(),
         middleName: String(form.middleName ?? '').trim(),
         birthDate: String(form.birthDate ?? '').trim() || null,
+        baseSalary: String(form.baseSalary ?? '').trim() === '' ? null : String(form.baseSalary).trim(),
         role: 'user',
       };
       if (!editing || phone) {
@@ -287,7 +293,7 @@ export function SettingsUsers() {
         <>
           <p className="subtitle">
             Добавление пользователей аккаунта: телефон (логин), пароль, роль и доступ к организациям/складам.
-            Видимые разделы — на вкладке «Роли».
+            Зарплата и пропуски — в разделе «Сотрудники». Видимые разделы — на вкладке «Роли».
           </p>
           {loading && <div className="settings-users-loading">Загрузка...</div>}
           {error && <div className="settings-users-error">Ошибка: {error}</div>}
@@ -306,6 +312,12 @@ export function SettingsUsers() {
                         <span className="settings-users-email">{u.phone || u.email || 'без логина'}</span>
                         {userDisplayName(u) && <span className="settings-users-name"> — {userDisplayName(u)}</span>}
                         <span className="settings-users-role">{accountRoleLabel(u, assignableRoles)}</span>
+                        {u.base_salary != null && u.base_salary !== '' ? (
+                          <span className="settings-users-access">
+                            оклад{' '}
+                            {Number(u.base_salary).toLocaleString('ru-RU', { maximumFractionDigits: 0 })} ₽
+                          </span>
+                        ) : null}
                         <span className="settings-users-access">{accessSummary(u)}</span>
                       </div>
                       <div className="settings-users-actions">
@@ -424,6 +436,23 @@ export function SettingsUsers() {
                 autoComplete="bday"
                 disabled={savingUser}
               />
+            </label>
+            <label>
+              Оклад, ₽
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.baseSalary}
+                onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))}
+                className="login-input"
+                style={{ width: '100%', marginTop: '4px' }}
+                placeholder="например 80000"
+                disabled={savingUser}
+              />
+              <div className="text-muted small" style={{ marginTop: 4 }}>
+                Месячный оклад. Пропуски и расчёт — в разделе «Сотрудники → Зарплата».
+              </div>
             </label>
             <label>
               Роль

@@ -65,5 +65,37 @@ export const usersApi = {
   async delete(id) {
     const response = await api.delete(`/users/${id}`);
     return response.data;
-  }
+  },
+
+  /** Сводка зарплат сотрудников за месяц (YYYY-MM). */
+  async getPayroll(yearMonth, profileId) {
+    const params = {};
+    if (yearMonth) params.yearMonth = yearMonth;
+    if (profileId != null) params.profile_id = profileId;
+    const response = await api.get('/users/payroll', { params });
+    return response.data;
+  },
+
+  async getUserPayroll(id, yearMonth, profileId) {
+    const params = {};
+    if (yearMonth) params.yearMonth = yearMonth;
+    if (profileId != null) params.profile_id = profileId;
+    const response = await api.get(`/users/${id}/payroll`, { params });
+    return response.data;
+  },
+
+  async replaceUserAbsences(id, { yearMonth, dates }, profileId) {
+    const body = { yearMonth, dates };
+    if (profileId != null) body.profileId = profileId;
+    const response = await api.put(`/users/${id}/absences`, body);
+    return response.data;
+  },
+
+  async toggleUserAbsence(id, { date, present }, profileId) {
+    const body = { date };
+    if (present !== undefined) body.present = present;
+    if (profileId != null) body.profileId = profileId;
+    const response = await api.post(`/users/${id}/absences/toggle`, body);
+    return response.data;
+  },
 };

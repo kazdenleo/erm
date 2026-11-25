@@ -15,9 +15,29 @@ import { ensurePhoneAvailable, preparePhoneFields, requirePhoneFields } from '..
 import { parseBirthDate } from '../utils/userBirthDate.js';
 import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
 import { normalizeAccountRoleKey } from '../utils/userNavSections.js';
+import {
+  getPayrollSummary,
+  getUserPayrollMonth,
+  parseBaseSalaryInput,
+  setUserAbsencesMonth,
+  toggleUserAbsenceDay,
+} from '../services/employeePayroll.service.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 const profilesRepo = repositoryFactory.getProfilesRepository();
+
+function resolveTenantProfileId(req) {
+  if (req.user?.role === 'admin') {
+    const raw = req.query?.profile_id ?? req.query?.profileId ?? req.body?.profileId ?? req.body?.profile_id;
+    if (raw != null && raw !== '') {
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    return null;
+  }
+  const n = Number(req.user?.profileId);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 const SALT_ROUNDS = 10;
 
@@ -251,10 +271,26 @@ export const usersController = {
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Добавлять пользователей может только администратор профиля или системы' });
       }
-      const { email, password, phone, birthDate, birth_date: birthDateSnake, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
+      const {
+        email,
+        password,
+        phone,
+        birthDate,
+        birth_date: birthDateSnake,
+        baseSalary,
+        base_salary: baseSalarySnake,
+        role = 'user',
+        profileId,
+        isProfileAdmin,
+        accountRole,
+      } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
       if (!password) {
         return res.status(400).json({ ok: false, message: 'Укажите пароль' });
+      }
+      let effectiveBaseSalary = null;
+      if (baseSalary !== undefined || baseSalarySnake !== undefined) {
+        effectiveBaseSalary = parseBaseSalaryInput(baseSalary ?? baseSalarySnake);
       }
       const emailParsed = parseOptionalEmail(email);
       if (emailParsed.error) {
@@ -326,6 +362,7 @@ export const usersController = {
         phone: phoneFields.phone,
         phoneNormalized: phoneFields.phone_normalized,
         birthDate: birthParsed.value,
+        baseSalary: effectiveBaseSalary,
         role: effectiveRole,
         profileId: effectiveProfileId,
         isProfileAdmin: effectiveIsProfileAdmin,
@@ -428,6 +465,10 @@ export const usersController = {
       if (updates.birthDate !== undefined || updates.birth_date !== undefined) {
         applyBirthDateToUpdates(updates, updates.birthDate ?? updates.birth_date);
         delete updates.birthDate;
+      }
+      if (updates.baseSalary !== undefined || updates.base_salary !== undefined) {
+        updates.base_salary = parseBaseSalaryInput(updates.baseSalary ?? updates.base_salary);
+        delete updates.baseSalary;
       }
       let passwordChanged = false;
       if (updates.password) {
@@ -559,6 +600,102 @@ export const usersController = {
       }
       if (error?.code === '23505') {
         return res.status(400).json({ ok: false, message: uniqueConstraintMessage(error) });
+      }
+      next(error);
+    }
+  },
+
+  /** Сводка зарплат сотрудников за месяц */
+  async getPayroll(req, res, next) {
+    try {
+      if (!isAccountAdmin(req.user)) {
+        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
+      }
+      const profileId = resolveTenantProfileId(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Укажите профиль' });
+      }
+      const data = await getPayrollSummary({
+        profileId,
+        yearMonth: req.query?.yearMonth ?? req.query?.month,
+      });
+      res.json({ ok: true, data });
+    } catch (error) {
+      if (error?.status === 400 || error?.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  },
+
+  async getUserPayroll(req, res, next) {
+    try {
+      if (!isAccountAdmin(req.user)) {
+        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
+      }
+      const profileId = resolveTenantProfileId(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Укажите профиль' });
+      }
+      const data = await getUserPayrollMonth({
+        profileId,
+        userId: req.params.id,
+        yearMonth: req.query?.yearMonth ?? req.query?.month,
+      });
+      res.json({ ok: true, data });
+    } catch (error) {
+      if (error?.status === 400 || error?.status === 404) {
+        return res.status(error.status).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  },
+
+  async replaceUserAbsences(req, res, next) {
+    try {
+      if (!isAccountAdmin(req.user)) {
+        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
+      }
+      const profileId = resolveTenantProfileId(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Укажите профиль' });
+      }
+      const data = await setUserAbsencesMonth({
+        profileId,
+        userId: req.params.id,
+        yearMonth: req.body?.yearMonth ?? req.body?.month,
+        dates: req.body?.dates ?? req.body?.absenceDates ?? [],
+        createdByUserId: req.user.id,
+      });
+      res.json({ ok: true, data });
+    } catch (error) {
+      if (error?.status === 400 || error?.status === 404) {
+        return res.status(error.status).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  },
+
+  async toggleUserAbsence(req, res, next) {
+    try {
+      if (!isAccountAdmin(req.user)) {
+        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
+      }
+      const profileId = resolveTenantProfileId(req);
+      if (!profileId) {
+        return res.status(400).json({ ok: false, message: 'Укажите профиль' });
+      }
+      const data = await toggleUserAbsenceDay({
+        profileId,
+        userId: req.params.id,
+        date: req.body?.date ?? req.body?.absenceDate,
+        present: req.body?.present,
+        createdByUserId: req.user.id,
+      });
+      res.json({ ok: true, data });
+    } catch (error) {
+      if (error?.status === 400 || error?.status === 404) {
+        return res.status(error.status).json({ ok: false, message: error.message });
       }
       next(error);
     }

@@ -6,7 +6,7 @@ import { query } from '../config/database.js';
 import { looksLikeEmail, normalizePhone } from '../utils/userPhone.js';
 
 const USER_SELECT =
-  'id, email, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date::text AS birth_date, role, profile_id, is_profile_admin, account_role, must_change_password, COALESCE(session_version, 0) AS session_version, created_at, updated_at';
+  'id, email, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date::text AS birth_date, base_salary, role, profile_id, is_profile_admin, account_role, must_change_password, COALESCE(session_version, 0) AS session_version, created_at, updated_at';
 
 class UsersRepositoryPG {
   async findAll(filters = {}) {
@@ -102,6 +102,7 @@ class UsersRepositoryPG {
       phone,
       phoneNormalized,
       birthDate,
+      baseSalary = null,
       role = 'user',
       profileId,
       isProfileAdmin = false,
@@ -117,9 +118,13 @@ class UsersRepositoryPG {
         ? String(phoneNormalized).trim()
         : null;
     const birthVal = birthDate != null && String(birthDate).trim() !== '' ? String(birthDate).trim() : null;
+    const salaryVal =
+      baseSalary != null && baseSalary !== '' && Number.isFinite(Number(baseSalary))
+        ? Number(baseSalary)
+        : null;
     const result = await query(
-      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date, role, profile_id, is_profile_admin, account_role, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date, base_salary, role, profile_id, is_profile_admin, account_role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING ${USER_SELECT}`,
       [
         emailVal,
@@ -131,6 +136,7 @@ class UsersRepositoryPG {
         phoneVal,
         phoneNormVal,
         birthVal,
+        salaryVal,
         role,
         profileId || null,
         isProfileAdmin,
@@ -184,6 +190,14 @@ class UsersRepositoryPG {
     if (updates.birth_date !== undefined) {
       fields.push(`birth_date = $${i++}`);
       params.push(updates.birth_date === '' || updates.birth_date == null ? null : updates.birth_date);
+    }
+    if (updates.base_salary !== undefined) {
+      fields.push(`base_salary = $${i++}`);
+      params.push(
+        updates.base_salary === '' || updates.base_salary == null
+          ? null
+          : Number(updates.base_salary)
+      );
     }
     if (updates.role !== undefined) {
       fields.push(`role = $${i++}`);

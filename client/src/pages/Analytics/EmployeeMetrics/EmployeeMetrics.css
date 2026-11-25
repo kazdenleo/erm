@@ -2,6 +2,124 @@
   max-width: 960px;
 }
 
+.employee-metrics__tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 1rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+.employee-metrics__tabs button {
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: #64748b;
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.employee-metrics__tabs button.is-active {
+  color: #0f172a;
+  border-bottom-color: #3b82f6;
+}
+
+.employee-payroll__hint {
+  margin: 0 0 1rem;
+  color: #64748b;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.employee-payroll__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+.employee-payroll__month {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.employee-payroll__totals {
+  font-size: 0.875rem;
+  color: #64748b;
+}
+.employee-payroll__name {
+  font-weight: 600;
+}
+.employee-payroll__phone {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+.employee-payroll__actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.employee-payroll__detail-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+.employee-payroll__cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0.75rem 0 1rem;
+}
+.employee-payroll__cal-head {
+  text-align: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #64748b;
+  padding: 2px 0;
+}
+.employee-payroll__cal-empty {
+  min-height: 36px;
+}
+.employee-payroll__cal-day {
+  min-height: 36px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.employee-payroll__cal-day.is-weekend {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+}
+.employee-payroll__cal-day.is-absent {
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.45);
+  color: #b91c1c;
+}
+.employee-payroll__cal-day.is-working:not(:disabled):hover {
+  border-color: #3b82f6;
+}
+.employee-payroll__salary-label {
+  display: block;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+.employee-payroll__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .employee-metrics__chart-head {
   display: flex;
   flex-wrap: wrap;

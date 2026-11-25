@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
@@ -20,7 +21,13 @@ import {
 import '../SalesAnalytics/SalesAnalytics.css';
 import '../ProductDynamics/ProductDynamics.css';
 import { PackingCalculator } from './PackingCalculator';
+import { EmployeePayrollTab } from './EmployeePayrollTab';
 import './EmployeeMetrics.css';
+
+const PAGE_TABS = [
+  { id: 'metrics', label: 'Показатели' },
+  { id: 'payroll', label: 'Зарплата' },
+];
 
 const LINE_COLORS = ['#2563eb', '#16a34a', '#ea580c', '#7c3aed', '#dc2626', '#0891b2', '#ca8a04', '#db2777'];
 
@@ -99,6 +106,13 @@ function receiptTimeCell(r) {
 }
 
 export function EmployeeMetrics() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pageTab = searchParams.get('tab') === 'payroll' ? 'payroll' : 'metrics';
+  const setPageTab = (next) => {
+    if (next === 'payroll') setSearchParams({ tab: 'payroll' });
+    else setSearchParams({});
+  };
+
   const initial = useMemo(() => defaultAnalyticsRange(DEFAULT_ANALYTICS_PERIOD), []);
   const [periodPreset, setPeriodPreset] = useState(DEFAULT_ANALYTICS_PERIOD);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
@@ -125,8 +139,9 @@ export function EmployeeMetrics() {
   }, [dateFrom, dateTo]);
 
   useEffect(() => {
+    if (pageTab !== 'metrics') return;
     load();
-  }, [load]);
+  }, [load, pageTab]);
 
   const employees = useMemo(() => (Array.isArray(data?.employees) ? data.employees : []), [data]);
   const sorted = useMemo(() => sortRows(employees, sort, SORT_GETTERS), [employees, sort]);
@@ -174,9 +189,30 @@ export function EmployeeMetrics() {
         iconClass="pe-7s-users"
         iconBgClass="bg-premium-dark"
         title="Сотрудники"
-        subtitle="Время сборки FBS и FBO, упаковки и приёмки, ошибки сканирования по сотрудникам склада"
+        subtitle={
+          pageTab === 'payroll'
+            ? 'Оклады, пропуски и расчёт зарплаты за месяц'
+            : 'Время сборки FBS и FBO, упаковки и приёмки, ошибки сканирования по сотрудникам склада'
+        }
       />
 
+      <nav className="employee-metrics__tabs" aria-label="Разделы сотрудников">
+        {PAGE_TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            className={pageTab === id ? 'is-active' : ''}
+            onClick={() => setPageTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {pageTab === 'payroll' ? <EmployeePayrollTab /> : null}
+
+      {pageTab === 'metrics' ? (
+        <>
       <div className="sales-analytics__filters erp-filter-bar">
         <AnalyticsPeriodFilters
           periodPreset={periodPreset}
@@ -448,6 +484,8 @@ export function EmployeeMetrics() {
         {minutesLabel(data?.idleThresholdsSec?.packingBoxes ?? 600)} не считаются. Калькулятор берёт её, если по журналу
         упаковки за период данных нет.
       </p>
+        </>
+      ) : null}
     </div>
   );
 }
