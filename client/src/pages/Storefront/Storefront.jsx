@@ -91,6 +91,7 @@ function CatalogView({ store, slug, base, onCartChange }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const q = searchParams.get('q') || '';
   const categoryId = searchParams.get('categoryId') || '';
+  const brandId = searchParams.get('brandId') || '';
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -99,10 +100,10 @@ function CatalogView({ store, slug, base, onCartChange }) {
     let alive = true;
     setLoading(true);
     setError('');
-    // Не оставляем товары прошлой категории, пока «Все» ещё грузится / упало по таймауту.
+    // Не оставляем товары прошлого фильтра, пока новый запрос ещё грузится / упал.
     setData((prev) => (prev ? { ...prev, products: [] } : prev));
     onlineStoreApi
-      .publicProducts(slug, { q, categoryId })
+      .publicProducts(slug, { q, categoryId, brandId })
       .then((d) => {
         if (alive) {
           setData(d);
@@ -119,10 +120,11 @@ function CatalogView({ store, slug, base, onCartChange }) {
     return () => {
       alive = false;
     };
-  }, [slug, q, categoryId]);
+  }, [slug, q, categoryId, brandId]);
 
   const products = data?.products || [];
   const categories = data?.categories || [];
+  const brands = data?.brands || [];
   const storeView = data?.store || store;
 
   const patchParams = (patch) => {
@@ -143,12 +145,15 @@ function CatalogView({ store, slug, base, onCartChange }) {
         base={base}
         products={products}
         categories={categories}
+        brands={brands}
         categoryId={categoryId}
+        brandId={brandId}
         q={q}
         loading={loading}
         onCartChange={onCartChange}
         onSearch={(v) => patchParams({ q: v })}
         onCategory={(id) => patchParams({ categoryId: id })}
+        onBrand={(id) => patchParams({ brandId: id })}
       />
     </>
   );

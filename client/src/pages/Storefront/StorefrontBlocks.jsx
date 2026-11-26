@@ -46,6 +46,7 @@ function ProductCard({ p, slug, base, onCartChange }) {
         <ProductImage src={p.imageUrl} />
       </div>
       <div className="sf-card-body">
+        {p.brandName ? <div className="sf-card-brand">{p.brandName}</div> : null}
         <div className="sf-card-name">{p.name}</div>
         <span className={`sf-badge${p.inStock ? '' : ' out'}`}>
           {p.inStock ? 'В наличии' : 'Нет в наличии'}
@@ -84,65 +85,91 @@ function HeroBlock({ store, title, subtitle, showCta, ctaLabel, ctaHref, compact
   );
 }
 
-function CategoryNav({ categories, categoryId, onCategory }) {
-  if (!categories?.length || !onCategory) return null;
-  const total = categories.reduce((s, c) => s + (c.count || 0), 0);
-  const withImages = categories.filter((c) => c.imageUrl && String(c.id) !== 'none');
+function CategoryTiles({ categories, categoryId, onCategory }) {
+  const withImages = (categories || []).filter((c) => c.imageUrl && String(c.id) !== 'none');
+  if (!withImages.length || !onCategory) return null;
   return (
-    <>
-      {withImages.length ? (
-        <div className="sf-cat-tiles" aria-label="Категории с изображениями">
-          {withImages.map((c) => {
-            const id = String(c.id);
-            return (
-              <button
-                key={`tile-${id}`}
-                type="button"
-                className={`sf-cat-tile${categoryId === id ? ' is-active' : ''}`}
-                onClick={() => onCategory(id)}
-              >
-                <span className="sf-cat-tile-media">
-                  <img src={c.imageUrl} alt="" loading="lazy" />
-                </span>
-                <span className="sf-cat-tile-body">
-                  <strong>{c.name}</strong>
-                  <span>{c.count} тов.</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+    <div className="sf-cat-tiles" aria-label="Категории с изображениями">
+      {withImages.map((c) => {
+        const id = String(c.id);
+        return (
+          <button
+            key={`tile-${id}`}
+            type="button"
+            className={`sf-cat-tile${categoryId === id ? ' is-active' : ''}`}
+            onClick={() => onCategory(categoryId === id ? '' : id)}
+          >
+            <span className="sf-cat-tile-media">
+              <img src={c.imageUrl} alt="" loading="lazy" />
+            </span>
+            <span className="sf-cat-tile-body">
+              <strong>{c.name}</strong>
+              <span>{c.count} тов.</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CatalogFilters({
+  categories,
+  brands,
+  categoryId,
+  brandId,
+  q,
+  onCategory,
+  onBrand,
+  onSearch,
+}) {
+  const hasCats = (categories || []).length > 0;
+  const hasBrands = (brands || []).length > 0;
+  return (
+    <div className="sf-filters">
+      {hasCats ? (
+        <label className="sf-filter">
+          <span className="sf-filter-label">Категория</span>
+          <select
+            value={categoryId || ''}
+            onChange={(e) => onCategory?.(e.target.value)}
+            aria-label="Фильтр по категории"
+          >
+            <option value="">Все категории</option>
+            {categories.map((c) => (
+              <option key={String(c.id)} value={String(c.id)}>
+                {c.name} ({c.count})
+              </option>
+            ))}
+          </select>
+        </label>
       ) : null}
-      <div className="sf-cats" role="tablist" aria-label="Категории">
-        <button
-          type="button"
-          role="tab"
-          className={`sf-cat${categoryId ? '' : ' is-active'}`}
-          aria-selected={!categoryId}
-          onClick={() => onCategory('')}
-        >
-          Все <span>{total}</span>
-        </button>
-        {categories.map((c) => {
-          const id = String(c.id);
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              className={`sf-cat${categoryId === id ? ' is-active' : ''}`}
-              aria-selected={categoryId === id}
-              onClick={() => onCategory(id)}
-            >
-              {c.imageUrl ? (
-                <img className="sf-cat-thumb" src={c.imageUrl} alt="" loading="lazy" />
-              ) : null}
-              {c.name} <span>{c.count}</span>
-            </button>
-          );
-        })}
-      </div>
-    </>
+      {hasBrands ? (
+        <label className="sf-filter">
+          <span className="sf-filter-label">Бренд</span>
+          <select
+            value={brandId || ''}
+            onChange={(e) => onBrand?.(e.target.value)}
+            aria-label="Фильтр по бренду"
+          >
+            <option value="">Все бренды</option>
+            {brands.map((b) => (
+              <option key={String(b.id)} value={String(b.id)}>
+                {b.name} ({b.count})
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label className="sf-filter sf-filter-search">
+        <span className="sf-filter-label">Поиск</span>
+        <input
+          value={q || ''}
+          placeholder="Название, артикул или бренд"
+          onChange={(e) => onSearch?.(e.target.value)}
+        />
+      </label>
+    </div>
   );
 }
 
@@ -164,6 +191,7 @@ function CatalogProducts({
   products,
   categories,
   categoryId,
+  brandId,
   slug,
   base,
   onCartChange,
@@ -173,7 +201,8 @@ function CatalogProducts({
   const list = products || [];
   if (!list.length) return <div className="sf-empty">Пока нет товаров</div>;
 
-  const shouldGroup = groupWhenAll && !categoryId && (categories || []).length > 1;
+  const shouldGroup =
+    groupWhenAll && !categoryId && !brandId && (categories || []).length > 1;
   if (!shouldGroup) {
     return (
       <div className={`sf-grid${compact ? ' is-compact' : ''}`}>
@@ -208,10 +237,13 @@ function CatalogBlock({
   anchor,
   products,
   categories,
+  brands,
   categoryId,
+  brandId,
   q,
   onSearch,
   onCategory,
+  onBrand,
   slug,
   base,
   onCartChange,
@@ -225,20 +257,24 @@ function CatalogBlock({
         <h2 className="sf-section-title">{title || 'Каталог'}</h2>
         <div className="sf-section-meta">{countLabel}</div>
       </div>
-      <CategoryNav categories={categories} categoryId={categoryId} onCategory={onCategory} />
-      <div className="sf-toolbar">
-        <input
-          value={q}
-          placeholder="Поиск по названию или артикулу"
-          onChange={(e) => onSearch(e.target.value)}
-        />
-      </div>
+      <CategoryTiles categories={categories} categoryId={categoryId} onCategory={onCategory} />
+      <CatalogFilters
+        categories={categories}
+        brands={brands}
+        categoryId={categoryId}
+        brandId={brandId}
+        q={q}
+        onCategory={onCategory}
+        onBrand={onBrand}
+        onSearch={onSearch}
+      />
       {loading ? <div className="sf-muted">Загрузка каталога…</div> : null}
       {!loading && products?.length ? (
         <CatalogProducts
           products={products}
           categories={categories}
           categoryId={categoryId}
+          brandId={brandId}
           slug={slug}
           base={base}
           onCartChange={onCartChange}
@@ -256,10 +292,13 @@ export function StorefrontBlocks({
   base,
   products,
   categories = [],
+  brands = [],
   categoryId = '',
+  brandId = '',
   q,
   onSearch,
   onCategory,
+  onBrand,
   onCartChange,
   loading,
 }) {
@@ -276,10 +315,13 @@ export function StorefrontBlocks({
           title="Каталог"
           products={products}
           categories={categories}
+          brands={brands}
           categoryId={categoryId}
+          brandId={brandId}
           q={q}
           onSearch={onSearch}
           onCategory={onCategory}
+          onBrand={onBrand}
           slug={slug}
           base={base}
           onCartChange={onCartChange}
@@ -349,10 +391,13 @@ export function StorefrontBlocks({
               anchor={props.anchor || 'catalog'}
               products={list}
               categories={categories}
+              brands={brands}
               categoryId={categoryId}
+              brandId={brandId}
               q={q}
               onSearch={onSearch}
               onCategory={onCategory}
+              onBrand={onBrand}
               slug={slug}
               base={base}
               onCartChange={onCartChange}

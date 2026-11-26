@@ -24,10 +24,11 @@ export const onlineStoreApi = {
     });
     return r.data?.data ?? r.data;
   },
-  publicProducts: async (slug, { q = '', categoryId = '' } = {}) => {
+  publicProducts: async (slug, { q = '', categoryId = '', brandId = '' } = {}) => {
     const params = {};
     if (q) params.q = q;
     if (categoryId) params.categoryId = categoryId;
+    if (brandId) params.brandId = brandId;
     const r = await api.get(`/online-store/public/${encodeURIComponent(slug)}/products`, {
       params: Object.keys(params).length ? params : undefined,
     });

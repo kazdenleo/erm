@@ -298,6 +298,66 @@
   border-color: color-mix(in srgb, var(--sf-brand) 45%, var(--sf-line));
 }
 
+.sf-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 1.1rem;
+}
+
+.sf-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.sf-filter-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sf-muted);
+}
+
+.sf-filter select,
+.sf-filter input {
+  width: 100%;
+  border: 1px solid var(--sf-line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+  font: inherit;
+  background: var(--sf-surface);
+  color: inherit;
+}
+
+.sf-filter select:focus,
+.sf-filter input:focus {
+  outline: 2px solid color-mix(in srgb, var(--sf-brand) 35%, transparent);
+  border-color: color-mix(in srgb, var(--sf-brand) 45%, var(--sf-line));
+}
+
+.sf-filter-search {
+  grid-column: span 1;
+}
+
+@media (max-width: 860px) {
+  .sf-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sf-filter-search {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .sf-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
 .sf-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
@@ -546,6 +606,15 @@
   flex-direction: column;
   gap: 0.4rem;
   flex: 1;
+}
+
+.sf-card-brand {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--sf-muted);
+  margin-bottom: 0.2rem;
 }
 
 .sf-card-name {

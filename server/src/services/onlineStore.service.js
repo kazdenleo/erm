@@ -296,6 +296,12 @@ function mapPublicProduct(product, link, stock) {
       : product.categoryId != null
         ? Number(product.categoryId)
         : null;
+  const brandId =
+    product.brand_id != null && product.brand_id !== ''
+      ? Number(product.brand_id)
+      : product.brandId != null
+        ? Number(product.brandId)
+        : null;
   return {
     id: Number(product.id),
     sku: product.sku || null,
@@ -307,6 +313,8 @@ function mapPublicProduct(product, link, stock) {
     imageUrl: primaryImageUrl(product.images),
     categoryId: Number.isFinite(categoryId) && categoryId > 0 ? categoryId : null,
     categoryName: product.category_name || product.categoryName || null,
+    brandId: Number.isFinite(brandId) && brandId > 0 ? brandId : null,
+    brandName: product.brand_name || product.brandName || null,
   };
 }
 
@@ -329,6 +337,27 @@ function buildPublicCategories(products) {
     categories.push({ id: 'none', name: 'Без категории', count: uncategorized });
   }
   return categories;
+}
+
+function buildPublicBrands(products) {
+  const map = new Map();
+  let unbranded = 0;
+  for (const p of products || []) {
+    if (p.brandId != null && p.brandName) {
+      const prev = map.get(p.brandId) || { id: p.brandId, name: p.brandName, count: 0 };
+      prev.count += 1;
+      map.set(p.brandId, prev);
+    } else {
+      unbranded += 1;
+    }
+  }
+  const brands = [...map.values()].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), 'ru')
+  );
+  if (unbranded > 0) {
+    brands.push({ id: 'none', name: 'Без бренда', count: unbranded });
+  }
+  return brands;
 }
 
 async function attachCategoryImages(profileId, categories) {
@@ -635,20 +664,24 @@ async function catalogRowsForStore(store) {
     const ids = [...linkById.keys()];
     if (!ids.length) return [];
     sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
-                  p.images, p.quantity, p.user_category_id, uc.name AS category_name,
+                  p.images, p.quantity, p.user_category_id, p.brand_id, uc.name AS category_name,
+                  b.name AS brand_name,
                   p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+           LEFT JOIN brands b ON b.id = p.brand_id
            WHERE p.profile_id = $1 AND p.id = ANY($2::bigint[])
              AND COALESCE(p.is_archived, false) = false`;
     params = [store.profileId, ids];
   } else {
     // Товары и комплекты — на витрине продаются оба типа (раньше комплекты отфильтровывались).
     sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
-                  p.images, p.quantity, p.user_category_id, uc.name AS category_name,
+                  p.images, p.quantity, p.user_category_id, p.brand_id, uc.name AS category_name,
+                  b.name AS brand_name,
                   p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+           LEFT JOIN brands b ON b.id = p.brand_id
            WHERE p.profile_id = $1
              AND COALESCE(p.is_archived, false) = false
            ORDER BY COALESCE(uc.name, 'ЯЯЯ') ASC, p.name ASC
@@ -707,7 +740,10 @@ export async function getPublicStoreByHost(hostRaw) {
   };
 }
 
-export async function listPublicProducts(slug, { q = '', categoryId = '' } = {}) {
+export async function listPublicProducts(
+  slug,
+  { q = '', categoryId = '', brandId = '' } = {}
+) {
   const store = await storesRepo.findPublishedBySlug(slug);
   if (!store) err('Магазин не найден или не опубликован', 404);
   const allProducts = await catalogRowsForStore(store);
@@ -715,6 +751,7 @@ export async function listPublicProducts(slug, { q = '', categoryId = '' } = {})
     store.profileId,
     buildPublicCategories(allProducts)
   );
+  const brands = buildPublicBrands(allProducts);
   let products = allProducts;
   const needle = String(q || '').trim().toLowerCase();
   if (needle) {
@@ -724,6 +761,9 @@ export async function listPublicProducts(slug, { q = '', categoryId = '' } = {})
           .toLowerCase()
           .includes(needle) ||
         String(p.sku || '')
+          .toLowerCase()
+          .includes(needle) ||
+        String(p.brandName || '')
           .toLowerCase()
           .includes(needle)
     );
@@ -735,10 +775,18 @@ export async function listPublicProducts(slug, { q = '', categoryId = '' } = {})
     const cid = Number(catRaw);
     products = products.filter((p) => p.categoryId === cid);
   }
+  const brandRaw = String(brandId || '').trim();
+  if (brandRaw === 'none') {
+    products = products.filter((p) => p.brandId == null);
+  } else if (brandRaw && /^\d+$/.test(brandRaw)) {
+    const bid = Number(brandRaw);
+    products = products.filter((p) => p.brandId === bid);
+  }
   return {
     store: publicStorePayload(store),
     products,
     categories,
+    brands,
   };
 }
 
