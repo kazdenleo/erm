@@ -18,12 +18,6 @@ import {
 import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets';
 import { SupplierSettlementsSettings, SupplierSettlementsWidget } from './SupplierSettlementsWidget';
 import { LowStockSettings, LowStockWidget } from './LowStockWidget';
-import {
-  MarketplaceNewsWidget,
-  MarketplaceNewsWidgetSettings,
-  NotificationsWidget,
-  NotificationsWidgetSettings,
-} from './FeedWidgets';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
 function SalesDynamicsWidget({ profileId }) {
@@ -198,22 +192,6 @@ export const WIDGETS = {
     defaultSize: 'md',
     Component: QuickLinksWidget,
     SettingsComponent: QuickLinksSettings,
-  },
-  marketplace_news: {
-    title: 'Новости маркетплейсов',
-    description: 'Тарифы и условия работы Ozon, WB и Яндекс Маркета',
-    group: 'other',
-    defaultSize: 'md',
-    Component: MarketplaceNewsWidget,
-    SettingsComponent: MarketplaceNewsWidgetSettings,
-  },
-  notifications: {
-    title: 'Уведомления',
-    description: 'События по интеграциям и системе',
-    group: 'other',
-    defaultSize: 'md',
-    Component: NotificationsWidget,
-    SettingsComponent: NotificationsWidgetSettings,
   },
   note: {
     title: 'Заметка',
