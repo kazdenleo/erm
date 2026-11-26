@@ -7,6 +7,8 @@ import { useAuth } from '../../../context/AuthContext.jsx';
 import { usersApi } from '../../../services/users.api.js';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
+import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
+import { detectAnalyticsPeriodPreset } from '../shared/analyticsPeriod';
 
 const WEEKDAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
@@ -68,26 +70,22 @@ function isWorkingIso(iso) {
   return dow >= 1 && dow <= 5;
 }
 
-function periodPresets() {
+function payrollQuickRanges() {
   const now = new Date();
   const today = toIsoLocal(now);
-  const thisMonth = monthBounds(currentYearMonth());
-  const prevMonth = monthBounds(shiftYearMonth(currentYearMonth(), -1));
-
-  const dow = (now.getDay() + 6) % 7;
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - dow);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6);
-
-  const last7Start = new Date(now);
-  last7Start.setDate(now.getDate() - 6);
-
+  const ym = currentYearMonth();
+  const thisMonth = monthBounds(ym);
+  const prevYm = shiftYearMonth(ym, -1);
+  const prevMonth = monthBounds(prevYm);
+  const mid = `${ym}-15`;
+  const from25 = `${prevYm}-25`;
+  const to10 = `${ym}-10`;
   return [
     { id: 'this-month', label: 'Этот месяц', ...thisMonth },
     { id: 'prev-month', label: 'Прошлый месяц', ...prevMonth },
-    { id: 'this-week', label: 'Эта неделя', dateFrom: toIsoLocal(weekStart), dateTo: toIsoLocal(weekEnd) },
-    { id: 'last-7', label: '7 дней', dateFrom: toIsoLocal(last7Start), dateTo: today },
+    { id: '1-15', label: '1–15', dateFrom: thisMonth.dateFrom, dateTo: mid },
+    { id: '16-end', label: '16 — конец', dateFrom: `${ym}-16`, dateTo: thisMonth.dateTo },
+    { id: '25-10', label: '25 → 10', dateFrom: from25, dateTo: to10 },
     { id: 'month-to-date', label: 'С начала месяца', dateFrom: thisMonth.dateFrom, dateTo: today },
   ];
 }
@@ -120,6 +118,7 @@ export function EmployeePayrollTab() {
   const initial = useMemo(() => defaultPeriod(), []);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
   const [dateTo, setDateTo] = useState(initial.dateTo);
+  const [periodPreset, setPeriodPreset] = useState('custom');
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -134,7 +133,7 @@ export function EmployeePayrollTab() {
   const [salarySaving, setSalarySaving] = useState(false);
 
   const period = useMemo(() => ({ dateFrom, dateTo }), [dateFrom, dateTo]);
-  const presets = useMemo(() => periodPresets(), []);
+  const quickRanges = useMemo(() => payrollQuickRanges(), []);
 
   const load = useCallback(async () => {
     if (!isTenantAccountAdmin) {
@@ -184,10 +183,24 @@ export function EmployeePayrollTab() {
     [profileId]
   );
 
-  const applyPreset = (p) => {
+  const applyRange = (p) => {
+    setPeriodPreset('custom');
     setDateFrom(p.dateFrom);
     setDateTo(p.dateTo);
     setCalMonth(String(p.dateFrom).slice(0, 7));
+  };
+
+  const onDateFromChange = (value) => {
+    const next = String(value || '').slice(0, 10);
+    setDateFrom(next);
+    setPeriodPreset(detectAnalyticsPeriodPreset(next, dateTo));
+    if (next) setCalMonth(next.slice(0, 7));
+  };
+
+  const onDateToChange = (value) => {
+    const next = String(value || '').slice(0, 10);
+    setDateTo(next);
+    setPeriodPreset(detectAnalyticsPeriodPreset(dateFrom, next));
   };
 
   const openEmployee = async (row) => {
@@ -279,56 +292,51 @@ export function EmployeePayrollTab() {
   return (
     <div className="employee-payroll">
       <p className="employee-payroll__hint">
-        Зарплата за период: по каждому месяцу оклад × отработанные дни периода / рабочие дни полного
-        месяца (пн–пт). Пропуски вычитаются из отработанных.
+        Укажите любые даты «С» / «По» — зарплата считается только за рабочие дни (пн–пт) внутри
+        периода, пропуски вычитаются. Формула по каждому месяцу: оклад × отработанные дни периода /
+        рабочие дни полного месяца.
       </p>
 
-      <div className="employee-payroll__toolbar">
-        <div className="employee-payroll__period">
-          <label className="employee-payroll__period-field">
-            С
-            <input
-              type="date"
-              className="login-input employee-payroll__date-input"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
-          </label>
-          <label className="employee-payroll__period-field">
-            По
-            <input
-              type="date"
-              className="login-input employee-payroll__date-input"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
-          </label>
-          <div className="employee-payroll__presets">
-            {presets.map((p) => (
+      <div className="sales-analytics__filters erp-filter-bar employee-payroll__filters">
+        <AnalyticsPeriodFilters
+          periodPreset={periodPreset}
+          onPeriodPresetChange={setPeriodPreset}
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onDateFromChange={onDateFromChange}
+          onDateToChange={onDateToChange}
+        />
+        <div className="employee-payroll__presets" role="group" aria-label="Быстрый период">
+          {quickRanges.map((p) => {
+            const active = dateFrom === p.dateFrom && dateTo === p.dateTo;
+            return (
               <Button
                 key={p.id}
                 type="button"
-                variant="secondary"
+                variant={active ? 'primary' : 'secondary'}
                 size="small"
-                onClick={() => applyPreset(p)}
+                onClick={() => applyRange(p)}
               >
                 {p.label}
               </Button>
-            ))}
-          </div>
+            );
+          })}
         </div>
-        {summary?.totals ? (
-          <div className="employee-payroll__totals">
-            {formatDateRu(summary.dateFrom)} — {formatDateRu(summary.dateTo)}
-            {' · '}
-            Рабочих дней: <strong>{summary.workingDaysCount}</strong>
-            {' · '}
-            С окладом: <strong>{summary.totals.withSalary}</strong>
-            {' · '}
-            Итого к выплате: <strong>{formatMoney(summary.totals.salary)}</strong>
-          </div>
-        ) : null}
       </div>
+
+      {summary?.totals ? (
+        <div className="employee-payroll__totals">
+          Расчёт: <strong>{formatDateRu(summary.dateFrom)}</strong>
+          {' — '}
+          <strong>{formatDateRu(summary.dateTo)}</strong>
+          {' · '}
+          Рабочих дней: <strong>{summary.workingDaysCount}</strong>
+          {' · '}
+          С окладом: <strong>{summary.totals.withSalary}</strong>
+          {' · '}
+          Итого к выплате: <strong>{formatMoney(summary.totals.salary)}</strong>
+        </div>
+      ) : null}
 
       {loading && <div className="sales-analytics__empty">Загрузка...</div>}
       {error && <div className="sales-analytics__error">{error}</div>}
