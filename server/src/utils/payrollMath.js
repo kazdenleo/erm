@@ -43,18 +43,66 @@ export function currentYearMonth(now = new Date()) {
   return `${y}-${m}`;
 }
 
+export function parseIsoDate(value) {
+  return toDateOnly(value);
+}
+
+export function formatIsoDate(value) {
+  const d = toDateOnly(value);
+  return d ? formatDateUtc(d) : null;
+}
+
+/** Границы месяца YYYY-MM → { dateFrom, dateTo }. */
+export function monthBounds(yearMonth) {
+  const parsed = parseYearMonth(yearMonth);
+  if (!parsed) return null;
+  const { year, month } = parsed;
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    dateFrom: `${yearMonth}-01`,
+    dateTo: `${yearMonth}-${String(last).padStart(2, '0')}`,
+  };
+}
+
 /** Список рабочих дней месяца (YYYY-MM-DD). */
 export function listWorkingDaysInMonth(yearMonth) {
-  const parsed = parseYearMonth(yearMonth);
-  if (!parsed) return [];
-  const { year, month } = parsed;
+  const bounds = monthBounds(yearMonth);
+  if (!bounds) return [];
+  return listWorkingDaysInRange(bounds.dateFrom, bounds.dateTo);
+}
+
+/** Рабочие дни в диапазоне включительно. */
+export function listWorkingDaysInRange(dateFrom, dateTo) {
+  const from = toDateOnly(dateFrom);
+  const to = toDateOnly(dateTo);
+  if (!from || !to || from.getTime() > to.getTime()) return [];
   const days = [];
-  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  for (let day = 1; day <= last; day += 1) {
-    const d = new Date(Date.UTC(year, month - 1, day));
+  for (let t = from.getTime(); t <= to.getTime(); t += 24 * 60 * 60 * 1000) {
+    const d = new Date(t);
     if (isWorkingDay(d)) days.push(formatDateUtc(d));
   }
   return days;
+}
+
+/** Месяцы, пересекающие диапазон (YYYY-MM). */
+export function listYearMonthsInRange(dateFrom, dateTo) {
+  const from = toDateOnly(dateFrom);
+  const to = toDateOnly(dateTo);
+  if (!from || !to || from.getTime() > to.getTime()) return [];
+  const out = [];
+  let y = from.getUTCFullYear();
+  let m = from.getUTCMonth();
+  const endY = to.getUTCFullYear();
+  const endM = to.getUTCMonth();
+  while (y < endY || (y === endY && m <= endM)) {
+    out.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+    m += 1;
+    if (m > 11) {
+      m = 0;
+      y += 1;
+    }
+  }
+  return out;
 }
 
 export function parseMoney(value) {
@@ -65,34 +113,113 @@ export function parseMoney(value) {
 }
 
 /**
+ * Зарплата за период.
+ * По каждому месяцу: оклад × отработанные_дни_периода_в_месяце / рабочие_дни_полного_месяца.
+ * Так дневная ставка всегда от оклада текущего месяца.
+ *
+ * @param {{ baseSalary: number|null, dateFrom: string, dateTo: string, absenceDates?: string[] }} input
+ */
+export function calculatePeriodSalary(input) {
+  const dateFrom = formatIsoDate(input?.dateFrom);
+  const dateTo = formatIsoDate(input?.dateTo);
+  const baseSalary = parseMoney(input?.baseSalary);
+  const absenceAll = new Set(
+    (input?.absenceDates || []).map((d) => String(d || '').slice(0, 10)).filter(Boolean)
+  );
+
+  if (!dateFrom || !dateTo) {
+    return {
+      dateFrom: dateFrom || null,
+      dateTo: dateTo || null,
+      yearMonth: null,
+      baseSalary,
+      workingDaysCount: 0,
+      monthWorkingDaysCount: 0,
+      missedDays: 0,
+      workedDays: 0,
+      salary: baseSalary == null ? null : 0,
+      workingDays: [],
+      absenceDates: [],
+      months: [],
+    };
+  }
+
+  const months = [];
+  let salarySum = 0;
+  let workingDays = [];
+  let missedDays = 0;
+  let workedDays = 0;
+  let monthWorkingDaysCount = 0;
+
+  for (const ym of listYearMonthsInRange(dateFrom, dateTo)) {
+    const bounds = monthBounds(ym);
+    const monthWorking = listWorkingDaysInMonth(ym);
+    const fromCmp = dateFrom > bounds.dateFrom ? dateFrom : bounds.dateFrom;
+    const toCmp = dateTo < bounds.dateTo ? dateTo : bounds.dateTo;
+    const periodWorking = listWorkingDaysInRange(fromCmp, toCmp);
+    const missed = periodWorking.filter((d) => absenceAll.has(d));
+    const worked = periodWorking.length - missed.length;
+    const monthDenom = monthWorking.length;
+    let monthSalary = null;
+    if (baseSalary != null && monthDenom > 0) {
+      monthSalary = Math.round(((baseSalary * worked) / monthDenom) * 100) / 100;
+      salarySum += monthSalary;
+    } else if (baseSalary != null) {
+      monthSalary = 0;
+    }
+
+    months.push({
+      yearMonth: ym,
+      workingDaysCount: periodWorking.length,
+      monthWorkingDaysCount: monthDenom,
+      missedDays: missed.length,
+      workedDays: worked,
+      salary: monthSalary,
+    });
+
+    workingDays = workingDays.concat(periodWorking);
+    missedDays += missed.length;
+    workedDays += worked;
+    monthWorkingDaysCount += monthDenom;
+  }
+
+  const absenceDates = workingDays.filter((d) => absenceAll.has(d)).sort();
+
+  return {
+    dateFrom,
+    dateTo,
+    yearMonth: months.length === 1 ? months[0].yearMonth : null,
+    baseSalary,
+    workingDaysCount: workingDays.length,
+    monthWorkingDaysCount,
+    missedDays,
+    workedDays,
+    salary: baseSalary == null ? null : Math.round(salarySum * 100) / 100,
+    workingDays,
+    absenceDates,
+    months,
+  };
+}
+
+/**
  * @param {{ baseSalary: number|null, yearMonth: string, absenceDates?: string[] }} input
  */
 export function calculateMonthlySalary(input) {
   const yearMonth = String(input?.yearMonth || '').trim();
-  const workingDays = listWorkingDaysInMonth(yearMonth);
-  const workingDaysCount = workingDays.length;
-  const absenceSet = new Set(
-    (input?.absenceDates || [])
-      .map((d) => String(d || '').slice(0, 10))
-      .filter((d) => workingDays.includes(d))
-  );
-  const missedDays = absenceSet.size;
-  const workedDays = Math.max(0, workingDaysCount - missedDays);
-  const baseSalary = parseMoney(input?.baseSalary);
-  let salary = null;
-  if (baseSalary != null && workingDaysCount > 0) {
-    salary = Math.round(((baseSalary * workedDays) / workingDaysCount) * 100) / 100;
-  } else if (baseSalary != null && workingDaysCount === 0) {
-    salary = 0;
+  const bounds = monthBounds(yearMonth);
+  if (!bounds) {
+    return calculatePeriodSalary({
+      baseSalary: input?.baseSalary,
+      dateFrom: null,
+      dateTo: null,
+      absenceDates: input?.absenceDates,
+    });
   }
-  return {
-    yearMonth,
-    baseSalary,
-    workingDaysCount,
-    missedDays,
-    workedDays,
-    salary,
-    workingDays,
-    absenceDates: [...absenceSet].sort(),
-  };
+  const calc = calculatePeriodSalary({
+    baseSalary: input?.baseSalary,
+    dateFrom: bounds.dateFrom,
+    dateTo: bounds.dateTo,
+    absenceDates: input?.absenceDates,
+  });
+  return { ...calc, yearMonth };
 }

@@ -67,33 +67,52 @@ export const usersApi = {
     return response.data;
   },
 
-  /** Сводка зарплат сотрудников за месяц (YYYY-MM). */
-  async getPayroll(yearMonth, profileId) {
+  /**
+   * Сводка зарплат за период.
+   * @param {{ dateFrom?: string, dateTo?: string, yearMonth?: string }|string} period
+   */
+  async getPayroll(period, profileId) {
     const params = {};
-    if (yearMonth) params.yearMonth = yearMonth;
+    if (typeof period === 'string') {
+      params.yearMonth = period;
+    } else if (period && typeof period === 'object') {
+      if (period.dateFrom) params.dateFrom = period.dateFrom;
+      if (period.dateTo) params.dateTo = period.dateTo;
+      if (period.yearMonth) params.yearMonth = period.yearMonth;
+    }
     if (profileId != null) params.profile_id = profileId;
     const response = await api.get('/users/payroll', { params });
     return response.data;
   },
 
-  async getUserPayroll(id, yearMonth, profileId) {
+  async getUserPayroll(id, period, profileId) {
     const params = {};
-    if (yearMonth) params.yearMonth = yearMonth;
+    if (typeof period === 'string') {
+      params.yearMonth = period;
+    } else if (period && typeof period === 'object') {
+      if (period.dateFrom) params.dateFrom = period.dateFrom;
+      if (period.dateTo) params.dateTo = period.dateTo;
+      if (period.yearMonth) params.yearMonth = period.yearMonth;
+    }
     if (profileId != null) params.profile_id = profileId;
     const response = await api.get(`/users/${id}/payroll`, { params });
     return response.data;
   },
 
-  async replaceUserAbsences(id, { yearMonth, dates }, profileId) {
+  async replaceUserAbsences(id, { yearMonth, dates, dateFrom, dateTo }, profileId) {
     const body = { yearMonth, dates };
+    if (dateFrom) body.dateFrom = dateFrom;
+    if (dateTo) body.dateTo = dateTo;
     if (profileId != null) body.profileId = profileId;
     const response = await api.put(`/users/${id}/absences`, body);
     return response.data;
   },
 
-  async toggleUserAbsence(id, { date, present }, profileId) {
+  async toggleUserAbsence(id, { date, present, dateFrom, dateTo }, profileId) {
     const body = { date };
     if (present !== undefined) body.present = present;
+    if (dateFrom) body.dateFrom = dateFrom;
+    if (dateTo) body.dateTo = dateTo;
     if (profileId != null) body.profileId = profileId;
     const response = await api.post(`/users/${id}/absences/toggle`, body);
     return response.data;

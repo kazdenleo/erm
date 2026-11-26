@@ -5,9 +5,11 @@
 import repositoryFactory from '../config/repository-factory.js';
 import absencesRepo from '../repositories/employeeAbsences.repository.pg.js';
 import {
-  calculateMonthlySalary,
+  calculatePeriodSalary,
   currentYearMonth,
+  formatIsoDate,
   isWorkingDay,
+  monthBounds,
   parseMoney,
   parseYearMonth,
 } from '../utils/payrollMath.js';
@@ -22,20 +24,52 @@ function displayName(user) {
   return String(user?.full_name || user?.phone || user?.email || `Пользователь #${user?.id || ''}`).trim();
 }
 
-function normalizeYearMonth(yearMonth) {
+/**
+ * Принимает dateFrom/dateTo или yearMonth (целиком месяц).
+ * @returns {{ dateFrom: string, dateTo: string }}
+ */
+export function normalizePayrollPeriod({ dateFrom, dateTo, yearMonth } = {}) {
+  const from = formatIsoDate(dateFrom);
+  const to = formatIsoDate(dateTo);
+  if (from && to) {
+    if (from > to) {
+      const err = new Error('Дата «с» не может быть позже даты «по»');
+      err.status = 400;
+      throw err;
+    }
+    return { dateFrom: from, dateTo: to };
+  }
   const ym = String(yearMonth || '').trim() || currentYearMonth();
   if (!parseYearMonth(ym)) {
-    const err = new Error('Укажите месяц в формате YYYY-MM');
+    const err = new Error('Укажите период (dateFrom/dateTo) или месяц YYYY-MM');
     err.status = 400;
     throw err;
   }
-  return ym;
+  const bounds = monthBounds(ym);
+  return { dateFrom: bounds.dateFrom, dateTo: bounds.dateTo };
 }
 
-export async function getPayrollSummary({ profileId, yearMonth }) {
-  const ym = normalizeYearMonth(yearMonth);
+function mapEmployeeRow(u, calc) {
+  return {
+    userId: Number(u.id),
+    name: displayName(u),
+    phone: u.phone || null,
+    email: u.email || null,
+    accountRole: u.account_role || null,
+    baseSalary: calc.baseSalary,
+    missedDays: calc.missedDays,
+    workedDays: calc.workedDays,
+    workingDaysCount: calc.workingDaysCount,
+    monthWorkingDaysCount: calc.monthWorkingDaysCount,
+    salary: calc.salary,
+    absenceDates: calc.absenceDates,
+  };
+}
+
+export async function getPayrollSummary({ profileId, dateFrom, dateTo, yearMonth }) {
+  const period = normalizePayrollPeriod({ dateFrom, dateTo, yearMonth });
   const users = await usersRepo.findAll({ profileId });
-  const absences = await absencesRepo.listForProfileMonth(profileId, ym);
+  const absences = await absencesRepo.listForProfileRange(profileId, period.dateFrom, period.dateTo);
   const byUser = new Map();
   for (const row of absences) {
     const uid = Number(row.user_id);
@@ -44,33 +78,30 @@ export async function getPayrollSummary({ profileId, yearMonth }) {
   }
 
   const employees = users.map((u) => {
-    const calc = calculateMonthlySalary({
+    const calc = calculatePeriodSalary({
       baseSalary: u.base_salary,
-      yearMonth: ym,
+      dateFrom: period.dateFrom,
+      dateTo: period.dateTo,
       absenceDates: byUser.get(Number(u.id)) || [],
     });
-    return {
-      userId: Number(u.id),
-      name: displayName(u),
-      phone: u.phone || null,
-      email: u.email || null,
-      accountRole: u.account_role || null,
-      baseSalary: calc.baseSalary,
-      missedDays: calc.missedDays,
-      workedDays: calc.workedDays,
-      workingDaysCount: calc.workingDaysCount,
-      salary: calc.salary,
-      absenceDates: calc.absenceDates,
-    };
+    return mapEmployeeRow(u, calc);
   });
 
   employees.sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'));
 
   const totalSalary = employees.reduce((sum, e) => sum + (e.salary != null ? Number(e.salary) : 0), 0);
+  const emptyCalc = calculatePeriodSalary({
+    baseSalary: null,
+    dateFrom: period.dateFrom,
+    dateTo: period.dateTo,
+  });
 
   return {
-    yearMonth: ym,
-    workingDaysCount: employees[0]?.workingDaysCount ?? calculateMonthlySalary({ yearMonth: ym }).workingDaysCount,
+    dateFrom: period.dateFrom,
+    dateTo: period.dateTo,
+    yearMonth: emptyCalc.yearMonth,
+    workingDaysCount: emptyCalc.workingDaysCount,
+    monthWorkingDaysCount: emptyCalc.monthWorkingDaysCount,
     employees,
     totals: {
       employees: employees.length,
@@ -80,18 +111,19 @@ export async function getPayrollSummary({ profileId, yearMonth }) {
   };
 }
 
-export async function getUserPayrollMonth({ profileId, userId, yearMonth }) {
-  const ym = normalizeYearMonth(yearMonth);
+export async function getUserPayrollPeriod({ profileId, userId, dateFrom, dateTo, yearMonth }) {
+  const period = normalizePayrollPeriod({ dateFrom, dateTo, yearMonth });
   const user = await usersRepo.findById(userId);
   if (!user || Number(user.profile_id) !== Number(profileId) || user.role === 'admin') {
     const err = new Error('Пользователь не найден');
     err.status = 404;
     throw err;
   }
-  const absences = await absencesRepo.listForUserMonth(userId, ym);
-  const calc = calculateMonthlySalary({
+  const absences = await absencesRepo.listForUserRange(userId, period.dateFrom, period.dateTo);
+  const calc = calculatePeriodSalary({
     baseSalary: user.base_salary,
-    yearMonth: ym,
+    dateFrom: period.dateFrom,
+    dateTo: period.dateTo,
     absenceDates: absences.map((a) => a.absence_date),
   });
   return {
@@ -101,14 +133,26 @@ export async function getUserPayrollMonth({ profileId, userId, yearMonth }) {
   };
 }
 
+/** @deprecated alias */
+export async function getUserPayrollMonth(args) {
+  return getUserPayrollPeriod(args);
+}
+
 export async function setUserAbsencesMonth({
   profileId,
   userId,
   yearMonth,
   dates,
   createdByUserId = null,
+  dateFrom = null,
+  dateTo = null,
 }) {
-  const ym = normalizeYearMonth(yearMonth);
+  const ym = String(yearMonth || '').trim() || (dateFrom ? String(dateFrom).slice(0, 7) : currentYearMonth());
+  if (!parseYearMonth(ym)) {
+    const err = new Error('Укажите месяц в формате YYYY-MM');
+    err.status = 400;
+    throw err;
+  }
   const user = await usersRepo.findById(userId);
   if (!user || Number(user.profile_id) !== Number(profileId) || user.role === 'admin') {
     const err = new Error('Пользователь не найден');
@@ -127,7 +171,13 @@ export async function setUserAbsencesMonth({
     createdByUserId,
   });
 
-  return getUserPayrollMonth({ profileId, userId, yearMonth: ym });
+  return getUserPayrollPeriod({
+    profileId,
+    userId,
+    dateFrom,
+    dateTo,
+    yearMonth: dateFrom && dateTo ? undefined : ym,
+  });
 }
 
 export async function toggleUserAbsenceDay({
@@ -136,6 +186,8 @@ export async function toggleUserAbsenceDay({
   date,
   present = null,
   createdByUserId = null,
+  dateFrom = null,
+  dateTo = null,
 }) {
   const day = String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
@@ -171,7 +223,16 @@ export async function toggleUserAbsenceDay({
     await absencesRepo.removeDay(userId, day);
   }
 
-  return getUserPayrollMonth({ profileId, userId, yearMonth: ym });
+  const period =
+    dateFrom && dateTo
+      ? { dateFrom, dateTo }
+      : normalizePayrollPeriod({ yearMonth: ym });
+
+  return getUserPayrollPeriod({
+    profileId,
+    userId,
+    ...period,
+  });
 }
 
 export function parseBaseSalaryInput(value) {

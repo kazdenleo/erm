@@ -8,6 +8,7 @@ import { Button } from '../../../components/common/Button/Button';
 import {
   NAV_SECTION_GROUPS,
   NAV_SECTION_LABELS,
+  NAV_SECTION_REPORTS,
   CONFIGURABLE_ACCOUNT_ROLES,
   ACCOUNT_ROLE_LABELS,
   ROLE_NAV_PRESETS,
@@ -85,6 +86,21 @@ export function UsersRolesTab() {
 
   const setNavSection = (key, enabled) => {
     setNavSections((prev) => ({ ...prev, [key]: enabled }));
+  };
+
+  const setNavGroup = (keys, enabled) => {
+    setNavSections((prev) => {
+      const next = { ...prev };
+      for (const key of keys) next[key] = enabled;
+      return next;
+    });
+  };
+
+  const groupToggleState = (keys) => {
+    const enabledCount = keys.filter((k) => navSections[k] !== false).length;
+    if (enabledCount === 0) return { checked: false, indeterminate: false };
+    if (enabledCount === keys.length) return { checked: true, indeterminate: false };
+    return { checked: false, indeterminate: true };
   };
 
   const applyDefaultPreset = () => {
@@ -342,28 +358,62 @@ export function UsersRolesTab() {
         </div>
 
         <p className="text-muted small settings-users-nav-hint">
-          Выключенный раздел скрывается в меню и недоступен по прямой ссылке.
+          Можно включить весь блок сразу или отдельно каждый подпункт. Выключенный раздел
+          скрывается в меню и недоступен по прямой ссылке. В «Аналитике» под переключателями
+          перечислены отчёты.
         </p>
-        {NAV_SECTION_GROUPS.map((group) => (
-          <div key={group.title} className="settings-users-nav-group">
-            <div className="settings-users-nav-group-title">{group.title}</div>
-            <div className="settings-users-nav-toggles">
-              {group.keys.map((key) => (
-                <label key={key} className="settings-users-nav-toggle form-check form-switch">
-                  <input
-                    className="form-check-input"
-                    type="checkbox"
-                    role="switch"
-                    checked={navSections[key] !== false}
-                    onChange={(e) => setNavSection(key, e.target.checked)}
-                    disabled={saving}
-                  />
-                  <span className="form-check-label">{NAV_SECTION_LABELS[key] || key}</span>
-                </label>
-              ))}
+        {NAV_SECTION_GROUPS.map((group) => {
+          const groupState = groupToggleState(group.keys);
+          return (
+            <div key={group.title} className="settings-users-nav-group">
+              <label className="settings-users-nav-group-head form-check form-switch">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  checked={groupState.checked}
+                  ref={(el) => {
+                    if (el) el.indeterminate = groupState.indeterminate;
+                  }}
+                  onChange={(e) => setNavGroup(group.keys, e.target.checked)}
+                  disabled={saving}
+                  aria-label={`Весь блок: ${group.title}`}
+                />
+                <span className="settings-users-nav-group-title">{group.title}</span>
+                <span className="settings-users-nav-group-meta">
+                  {group.keys.filter((k) => navSections[k] !== false).length}/{group.keys.length}
+                </span>
+              </label>
+              <div className="settings-users-nav-toggles">
+                {group.keys.map((key) => {
+                  const reports = NAV_SECTION_REPORTS[key];
+                  return (
+                    <label key={key} className="settings-users-nav-toggle form-check form-switch">
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        role="switch"
+                        checked={navSections[key] !== false}
+                        onChange={(e) => setNavSection(key, e.target.checked)}
+                        disabled={saving}
+                      />
+                      <span className="form-check-label">
+                        <span className="settings-users-nav-toggle-title">
+                          {NAV_SECTION_LABELS[key] || key}
+                        </span>
+                        {reports?.length ? (
+                          <span className="settings-users-nav-toggle-reports">
+                            {reports.join(' · ')}
+                          </span>
+                        ) : null}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="settings-users-footer">

@@ -49,6 +49,44 @@ class EmployeeAbsencesRepositoryPG {
     }));
   }
 
+  async listForUserRange(userId, dateFrom, dateTo) {
+    const from = String(dateFrom || '').slice(0, 10);
+    const to = String(dateTo || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
+    const result = await query(
+      `SELECT id, profile_id, user_id, absence_date::text AS absence_date, note, created_by_user_id, created_at
+       FROM employee_absence_days
+       WHERE user_id = $1
+         AND absence_date >= $2::date
+         AND absence_date <= $3::date
+       ORDER BY absence_date ASC`,
+      [userId, from, to]
+    );
+    return (result.rows || []).map((row) => ({
+      ...row,
+      absence_date: dateText(row.absence_date),
+    }));
+  }
+
+  async listForProfileRange(profileId, dateFrom, dateTo) {
+    const from = String(dateFrom || '').slice(0, 10);
+    const to = String(dateTo || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
+    const result = await query(
+      `SELECT id, profile_id, user_id, absence_date::text AS absence_date, note, created_by_user_id, created_at
+       FROM employee_absence_days
+       WHERE profile_id = $1
+         AND absence_date >= $2::date
+         AND absence_date <= $3::date
+       ORDER BY user_id ASC, absence_date ASC`,
+      [profileId, from, to]
+    );
+    return (result.rows || []).map((row) => ({
+      ...row,
+      absence_date: dateText(row.absence_date),
+    }));
+  }
+
   async addDay({ profileId, userId, absenceDate, note = null, createdByUserId = null }) {
     const result = await query(
       `INSERT INTO employee_absence_days (profile_id, user_id, absence_date, note, created_by_user_id)

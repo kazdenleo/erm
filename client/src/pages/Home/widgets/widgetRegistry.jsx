@@ -18,6 +18,12 @@ import {
 import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets';
 import { SupplierSettlementsSettings, SupplierSettlementsWidget } from './SupplierSettlementsWidget';
 import { LowStockSettings, LowStockWidget } from './LowStockWidget';
+import {
+  MarketplaceNewsWidget,
+  MarketplaceNewsWidgetSettings,
+  NotificationsWidget,
+  NotificationsWidgetSettings,
+} from './FeedWidgets';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
 function SalesDynamicsWidget({ profileId }) {
@@ -127,7 +133,7 @@ export const WIDGETS = {
     description: 'Выручка, удержания, себестоимость, чистая прибыль и маржа',
     group: 'analytics',
     defaultSize: 'md',
-    adminOnly: true,
+    sectionKey: 'analytics_finance',
     periods: MONTH_PERIODS,
     defaultPeriod: 'month',
     multiple: true,
@@ -138,7 +144,7 @@ export const WIDGETS = {
     description: 'Потери из-за отсутствия товара и топ товаров по потерям',
     group: 'analytics',
     defaultSize: 'md',
-    sectionKey: 'analytics_sales',
+    sectionKey: 'analytics_assortment',
     periods: DAY_PERIODS,
     defaultPeriod: '30d',
     multiple: true,
@@ -149,7 +155,7 @@ export const WIDGETS = {
     description: 'Процент возвратов, отмен и обратная логистика',
     group: 'analytics',
     defaultSize: 'md',
-    sectionKey: 'analytics_sales',
+    sectionKey: 'analytics_losses',
     periods: DAY_PERIODS,
     defaultPeriod: '30d',
     multiple: true,
@@ -160,7 +166,7 @@ export const WIDGETS = {
     description: 'Замороженные в остатках деньги и хранение FBO',
     group: 'analytics',
     defaultSize: 'md',
-    sectionKey: 'analytics_sales',
+    sectionKey: 'analytics_assortment',
     Component: DeadStockWidget,
   },
   penalties: {
@@ -168,7 +174,7 @@ export const WIDGETS = {
     description: 'Штрафы, компенсации, недоплаты маркетплейсов',
     group: 'analytics',
     defaultSize: 'md',
-    sectionKey: 'analytics_sales',
+    sectionKey: 'analytics_losses',
     periods: DAY_PERIODS,
     defaultPeriod: '30d',
     multiple: true,
@@ -179,7 +185,7 @@ export const WIDGETS = {
     description: 'Сборка, упаковка, приёмка и время в работе по сотрудникам',
     group: 'analytics',
     defaultSize: 'lg',
-    adminOnly: true,
+    sectionKey: 'analytics_employees',
     periods: DAY_PERIODS,
     defaultPeriod: 'today',
     multiple: true,
@@ -192,6 +198,22 @@ export const WIDGETS = {
     defaultSize: 'md',
     Component: QuickLinksWidget,
     SettingsComponent: QuickLinksSettings,
+  },
+  marketplace_news: {
+    title: 'Новости маркетплейсов',
+    description: 'Тарифы и условия работы Ozon, WB и Яндекс Маркета',
+    group: 'other',
+    defaultSize: 'md',
+    Component: MarketplaceNewsWidget,
+    SettingsComponent: MarketplaceNewsWidgetSettings,
+  },
+  notifications: {
+    title: 'Уведомления',
+    description: 'События по интеграциям и системе',
+    group: 'other',
+    defaultSize: 'md',
+    Component: NotificationsWidget,
+    SettingsComponent: NotificationsWidgetSettings,
   },
   note: {
     title: 'Заметка',

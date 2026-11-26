@@ -13,6 +13,10 @@ import {
   isProfileProductionEnabled,
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
+import {
+  analyticsGroupsToSidebarChildren,
+  filterAnalyticsGroups,
+} from '../../../pages/Analytics/analyticsNav.js';
 import { BrandLogo } from '../../brand/BrandLogo.jsx';
 import { useChestnyZnakEnabled } from '../../../hooks/useChestnyZnakEnabled.js';
 import { questionsApi } from '../../../services/questions.api';
@@ -95,41 +99,27 @@ const stockWarehouseChildren = [
   },
 ];
 
-const analyticsChildren = [
-  {
-    path: '/analytics/sales',
-    label: 'Продажи FBS',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-  },
-  {
-    path: '/analytics/fbo-sales',
-    label: 'Продажи FBO',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-    requiresFbo: true,
-  },
-  {
-    path: '/analytics/unit-economics',
-    label: 'Юнит-экономика',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_unit_economics',
-  },
-];
-
 const menuItems = [
   { path: '/', label: 'Главная', iconClass: 'pe-7s-home', sectionKey: 'analytics', tourId: 'nav-home' },
   {
-    path: '/analytics/sales',
+    path: '/analytics',
     label: 'Аналитика',
     iconClass: 'pe-7s-graph2',
     tourId: 'nav-analytics',
-    children: analyticsChildren,
+    children: [], // заполняется в visibleMenu из каталога отчётов
+    analyticsMenu: true,
   },
   { path: '/card-work', label: 'Работа с карточками', iconClass: 'pe-7s-note2', sectionKey: 'card_work' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products', tourId: 'nav-products' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders', tourId: 'nav-orders' },
   { path: '/customers', label: 'Клиенты', iconClass: 'pe-7s-users', sectionKey: 'customers', requiresPrivateOrders: true },
+  {
+    path: '/online-store',
+    label: 'Интернет-магазин',
+    iconClass: 'pe-7s-shopbag',
+    sectionKey: 'customers',
+    requiresPrivateOrders: true,
+  },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo', tourId: 'nav-fbo' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions', tourId: 'nav-questions' },
@@ -451,6 +441,27 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
   }, []);
 
   const visibleMenu = useMemo(() => {
+    const analyticsChildren = analyticsGroupsToSidebarChildren(
+      filterAnalyticsGroups({
+        features,
+        isAccountAdmin,
+        isAdmin,
+        fboEnabled: fboMenuEnabled,
+        isNavFeatureEnabled,
+      })
+    );
+
+    const withAnalytics = menuItems.map((item) =>
+      item.analyticsMenu ? { ...item, children: analyticsChildren } : item
+    );
+
+    const sectionAllowed = (sub) => {
+      if (Array.isArray(sub.sectionKeys) && sub.sectionKeys.length) {
+        return sub.sectionKeys.some((k) => navAllowed(k));
+      }
+      return navAllowed(sub.sectionKey);
+    };
+
     const filterChildren = (item) => {
       if (!item.children) return item;
       const children = item.children.filter((sub) => {
@@ -461,12 +472,12 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
         if (sub.requiresFbo && !fboMenuEnabled) return false;
         if (sub.requiresChestnyZnak && !chestnyZnakMenuEnabled) return false;
         if (sub.requiresPlanFeature && !planFeatureAllowed(sub.requiresPlanFeature)) return false;
-        if (!navAllowed(sub.sectionKey)) return false;
+        if (!sectionAllowed(sub)) return false;
         return true;
       });
       return { ...item, children };
     };
-    return menuItems
+    return withAnalytics
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .filter((i) => !i.requiresFbo || fboMenuEnabled)
       .filter((i) => !i.requiresPrivateOrders || privateOrdersMenuEnabled)
@@ -477,7 +488,21 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
       .map(filterChildren)
       // Группа без доступных подпунктов (напр. «Аналитика» у сборщика) не показываем.
       .filter((i) => !Array.isArray(i.children) || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, privateOrdersMenuEnabled, chestnyZnakMenuEnabled, navAllowed, planFeatureAllowed]);
+  }, [
+    canManageUsers,
+    isProfileAdmin,
+    isAdmin,
+    isAccountAdmin,
+    isTenantAccountAdmin,
+    user?.profileId,
+    productionMenuEnabled,
+    fboMenuEnabled,
+    privateOrdersMenuEnabled,
+    chestnyZnakMenuEnabled,
+    navAllowed,
+    planFeatureAllowed,
+    features,
+  ]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 
@@ -494,8 +519,6 @@ export function Sidebar({ onNavigate, isSidebarClosed = false }) {
       <div className="scrollbar-sidebar">
         <div className="app-sidebar__inner">
           <ul className="vertical-nav-menu">
-            <li className="app-sidebar__heading">MySell</li>
-
             {visibleMenu.map((item) => {
               const hasChildren = Array.isArray(item.children) && item.children.length > 0;
               const active = hasChildren

@@ -17,7 +17,7 @@ import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js'
 import { normalizeAccountRoleKey } from '../utils/userNavSections.js';
 import {
   getPayrollSummary,
-  getUserPayrollMonth,
+  getUserPayrollPeriod,
   parseBaseSalaryInput,
   setUserAbsencesMonth,
   toggleUserAbsenceDay,
@@ -605,7 +605,7 @@ export const usersController = {
     }
   },
 
-  /** Сводка зарплат сотрудников за месяц */
+  /** Сводка зарплат сотрудников за период (dateFrom/dateTo или yearMonth) */
   async getPayroll(req, res, next) {
     try {
       if (!isAccountAdmin(req.user)) {
@@ -617,6 +617,8 @@ export const usersController = {
       }
       const data = await getPayrollSummary({
         profileId,
+        dateFrom: req.query?.dateFrom ?? req.query?.from,
+        dateTo: req.query?.dateTo ?? req.query?.to,
         yearMonth: req.query?.yearMonth ?? req.query?.month,
       });
       res.json({ ok: true, data });
@@ -637,9 +639,11 @@ export const usersController = {
       if (!profileId) {
         return res.status(400).json({ ok: false, message: 'Укажите профиль' });
       }
-      const data = await getUserPayrollMonth({
+      const data = await getUserPayrollPeriod({
         profileId,
         userId: req.params.id,
+        dateFrom: req.query?.dateFrom ?? req.query?.from,
+        dateTo: req.query?.dateTo ?? req.query?.to,
         yearMonth: req.query?.yearMonth ?? req.query?.month,
       });
       res.json({ ok: true, data });
@@ -666,6 +670,8 @@ export const usersController = {
         yearMonth: req.body?.yearMonth ?? req.body?.month,
         dates: req.body?.dates ?? req.body?.absenceDates ?? [],
         createdByUserId: req.user.id,
+        dateFrom: req.body?.dateFrom ?? req.body?.from,
+        dateTo: req.body?.dateTo ?? req.body?.to,
       });
       res.json({ ok: true, data });
     } catch (error) {
@@ -691,6 +697,8 @@ export const usersController = {
         date: req.body?.date ?? req.body?.absenceDate,
         present: req.body?.present,
         createdByUserId: req.user.id,
+        dateFrom: req.body?.dateFrom ?? req.body?.from,
+        dateTo: req.body?.dateTo ?? req.body?.to,
       });
       res.json({ ok: true, data });
     } catch (error) {

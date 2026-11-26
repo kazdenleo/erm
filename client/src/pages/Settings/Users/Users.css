@@ -303,31 +303,73 @@
 }
 .settings-users-nav-title { font-weight: 600; font-size: 0.9rem; }
 .settings-users-nav-hint { margin: 0 0 0.75rem; line-height: 1.35; }
-.settings-users-nav-group { margin-top: 0.75rem; }
+.settings-users-nav-group { margin-top: 0.85rem; }
+.settings-users-nav-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.4rem;
+  cursor: pointer;
+  user-select: none;
+}
+.settings-users-nav-group-head .form-check-input {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
 .settings-users-nav-group-title {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--muted);
-  margin-bottom: 0.35rem;
+  margin: 0;
+}
+.settings-users-nav-group-meta {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
 }
 .settings-users-nav-toggles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 0.35rem 1rem;
+  padding-left: 1.65rem;
+  border-left: 2px solid rgba(148, 163, 184, 0.35);
+  margin-left: 0.35rem;
 }
 .settings-users-nav-toggle {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   margin: 0;
   font-size: 0.8125rem;
   font-weight: 400;
   cursor: pointer;
+  padding: 0.2rem 0;
 }
-.settings-users-nav-toggle .form-check-input { margin: 0; flex-shrink: 0; cursor: pointer; }
-.settings-users-nav-toggle .form-check-label { cursor: pointer; line-height: 1.3; }
+.settings-users-nav-toggle .form-check-input {
+  margin: 0.15rem 0 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.settings-users-nav-toggle .form-check-label {
+  cursor: pointer;
+  line-height: 1.3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-users-nav-toggle-title {
+  font-weight: 500;
+}
+.settings-users-nav-toggle-reports {
+  font-size: 0.72rem;
+  color: var(--muted, #64748b);
+  line-height: 1.35;
+}
 
 .settings-roles-tabs {
   display: flex;

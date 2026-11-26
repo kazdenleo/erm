@@ -3,10 +3,24 @@
  * В БД profiles.role_nav_sections: { "picker": { "products": false } } — скрыть; по умолчанию всё видно.
  */
 
+/** Ключи отчётов аналитики (раньше часть из них жила под analytics_sales). */
+export const ANALYTICS_REPORT_SECTION_KEYS = [
+  'analytics_sales',
+  'analytics_assortment',
+  'analytics_losses',
+  'analytics_unit_economics',
+  'analytics_finance',
+  'analytics_employees',
+];
+
 export const NAV_SECTION_KEYS = [
   'analytics',
   'analytics_sales',
+  'analytics_assortment',
+  'analytics_losses',
   'analytics_unit_economics',
+  'analytics_finance',
+  'analytics_employees',
   'card_work',
   'products',
   'orders',
@@ -47,8 +61,12 @@ export const NAV_SECTION_KEYS = [
 
 export const NAV_SECTION_LABELS = {
   analytics: 'Главная',
-  analytics_sales: 'Аналитика — продажи',
-  analytics_unit_economics: 'Аналитика — юнит-экономика',
+  analytics_sales: 'Продажи',
+  analytics_assortment: 'Ассортимент',
+  analytics_losses: 'Потери',
+  analytics_unit_economics: 'Юнит-экономика',
+  analytics_finance: 'Финансы',
+  analytics_employees: 'Сотрудники',
   card_work: 'Работа с карточками',
   products: 'Товары',
   orders: 'Заказы',
@@ -87,13 +105,28 @@ export const NAV_SECTION_LABELS = {
   tasks: 'Задачи (оставлять и выполнять)',
 };
 
+/** Подписи отчётов под переключателем в настройках ролей. */
+export const NAV_SECTION_REPORTS = {
+  analytics_sales: [
+    'Продажи FBS',
+    'Продажи FBO',
+    'По категориям',
+    'ABC',
+    'Динамика',
+    'РНП',
+  ],
+  analytics_assortment: ['Оборачиваемость', 'Неликвиды', 'Упущенная выручка'],
+  analytics_losses: ['Возвраты', 'Штрафы'],
+  analytics_unit_economics: ['Юнит-экономика'],
+  analytics_finance: ['ОПиУ', 'Сверка'],
+  analytics_employees: ['Сотрудники', 'Зарплата'],
+};
+
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
     keys: [
       'analytics',
-      'analytics_sales',
-      'analytics_unit_economics',
       'card_work',
       'products',
       'orders',
@@ -104,6 +137,10 @@ export const NAV_SECTION_GROUPS = [
       'ads',
       'tasks',
     ],
+  },
+  {
+    title: 'Аналитика',
+    keys: [...ANALYTICS_REPORT_SECTION_KEYS],
   },
   {
     title: 'Маркетплейс',
@@ -150,7 +187,11 @@ export const ROLE_NAV_PRESETS = {
     customers: false,
     analytics: false,
     analytics_sales: false,
+    analytics_assortment: false,
+    analytics_losses: false,
     analytics_unit_economics: false,
+    analytics_finance: false,
+    analytics_employees: false,
     card_work: false,
     products: false,
     prices: false,
@@ -183,7 +224,11 @@ export const ROLE_NAV_PRESETS = {
   warehouse_manager: {
     analytics: false,
     analytics_sales: false,
+    analytics_assortment: false,
+    analytics_losses: false,
     analytics_unit_economics: false,
+    analytics_finance: false,
+    analytics_employees: false,
     card_work: false,
     products: false,
     prices: false,
@@ -210,6 +255,9 @@ export const ROLE_NAV_PRESETS = {
     settings_users: false,
     settings_roles: false,
     tasks: false,
+    // Финансы и сотрудники — по умолчанию только админу аккаунта / явным включением
+    analytics_finance: false,
+    analytics_employees: false,
   },
   admin: {},
 };
@@ -337,6 +385,14 @@ export function resolveNavSectionsForAccountRole(roleNavSections, accountRole) {
   ) {
     sections = { ...sections, card_work: false };
   }
+  // Новые группы аналитики раньше входили в analytics_sales
+  if (sections.analytics_sales === false) {
+    const legacy = {};
+    for (const key of ['analytics_assortment', 'analytics_losses']) {
+      if (!Object.prototype.hasOwnProperty.call(sections, key)) legacy[key] = false;
+    }
+    if (Object.keys(legacy).length) sections = { ...sections, ...legacy };
+  }
   return sections;
 }
 
@@ -420,6 +476,20 @@ export function navSectionKeyForPath(pathname, search = '') {
   // Гипотезы — часть «Работы с карточками», не общей аналитики продаж.
   if (path.startsWith('/analytics/hypotheses')) return 'card_work';
   if (path.startsWith('/analytics/unit-economics')) return 'analytics_unit_economics';
+  if (
+    path.startsWith('/analytics/turnover') ||
+    path.startsWith('/analytics/dead-stock') ||
+    path.startsWith('/analytics/lost-revenue')
+  ) {
+    return 'analytics_assortment';
+  }
+  if (path.startsWith('/analytics/returns') || path.startsWith('/analytics/penalties')) {
+    return 'analytics_losses';
+  }
+  if (path.startsWith('/analytics/pnl') || path.startsWith('/analytics/reconciliation')) {
+    return 'analytics_finance';
+  }
+  if (path.startsWith('/analytics/employees')) return 'analytics_employees';
   if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';

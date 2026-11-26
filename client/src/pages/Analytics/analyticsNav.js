@@ -57,19 +57,19 @@ export const ANALYTICS_GROUPS = [
         to: '/analytics/turnover',
         label: 'Оборачиваемость',
         description: 'Скорость продаж относительно остатка',
-        sectionKey: 'analytics_sales',
+        sectionKey: 'analytics_assortment',
       },
       {
         to: '/analytics/dead-stock',
         label: 'Неликвиды',
         description: 'Товары без продаж и замороженные деньги',
-        sectionKey: 'analytics_sales',
+        sectionKey: 'analytics_assortment',
       },
       {
         to: '/analytics/lost-revenue',
         label: 'Упущенная выручка',
         description: 'Потери из‑за отсутствия товара',
-        sectionKey: 'analytics_sales',
+        sectionKey: 'analytics_assortment',
       },
     ],
   },
@@ -82,13 +82,13 @@ export const ANALYTICS_GROUPS = [
         to: '/analytics/returns',
         label: 'Возвраты',
         description: 'Доля и стоимость возвратов по товарам',
-        sectionKey: 'analytics_sales',
+        sectionKey: 'analytics_losses',
       },
       {
         to: '/analytics/penalties',
         label: 'Штрафы',
         description: 'Штрафы и спорные удержания',
-        sectionKey: 'analytics_sales',
+        sectionKey: 'analytics_losses',
       },
     ],
   },
@@ -107,15 +107,13 @@ export const ANALYTICS_GROUPS = [
         to: '/analytics/pnl',
         label: 'ОПиУ',
         description: 'Прибыли и убытки компании',
-        sectionKey: 'analytics_sales',
-        adminOnly: true,
+        sectionKey: 'analytics_finance',
       },
       {
         to: '/analytics/reconciliation',
         label: 'Сверка',
         description: 'Сверка начислений маркетплейсов',
-        sectionKey: 'analytics_sales',
-        adminOnly: true,
+        sectionKey: 'analytics_finance',
       },
     ],
   },
@@ -127,9 +125,8 @@ export const ANALYTICS_GROUPS = [
       {
         to: '/analytics/employees',
         label: 'Сотрудники',
-        description: 'Скорость, ошибки и объём работы',
-        sectionKey: 'analytics_sales',
-        adminOnly: true,
+        description: 'Скорость, ошибки, объём работы и зарплата',
+        sectionKey: 'analytics_employees',
       },
     ],
   },
@@ -163,7 +160,6 @@ export function filterAnalyticsGroups({
     ...group,
     reports: (group.reports || []).filter((report) => {
       if (report.requiresFbo && !fboEnabled) return false;
-      if (report.adminOnly && !canAdmin) return false;
       return featureOk(report.sectionKey);
     }),
   })).filter((group) => group.reports.length > 0);
@@ -186,11 +182,14 @@ export function analyticsGroupsToSidebarChildren(groups) {
   return (groups || []).map((group) => {
     const paths = (group.reports || []).map((r) => r.to);
     const first = paths[0] || '/analytics';
+    // Для фильтрации пункта: доступен, если доступен хотя бы один отчёт группы
+    const sectionKeys = [...new Set((group.reports || []).map((r) => r.sectionKey).filter(Boolean))];
     return {
       path: first,
       label: group.label,
       iconClass: 'pe-7s-angle-right',
-      sectionKey: group.reports?.[0]?.sectionKey || 'analytics_sales',
+      sectionKey: sectionKeys[0] || 'analytics_sales',
+      sectionKeys,
       matchPaths: paths,
     };
   });
