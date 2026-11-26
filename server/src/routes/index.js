@@ -10,6 +10,7 @@ import { optionalAuth } from '../middleware/auth.js';
 import { enforceSubscriptionAccess } from '../middleware/subscriptionAccess.js';
 import authRoutes from './auth.routes.js';
 import demoRoutes from './demo.routes.js';
+import onlineStoreRoutes from './onlineStore.routes.js';
 import billingRoutes from './billing.routes.js';
 import profilesRoutes from './profiles.routes.js';
 import usersRoutes from './users.routes.js';
@@ -259,6 +260,8 @@ router.use('/auth', authRoutes);
 
 // Публичная автовыдача демо-кабинета
 router.use('/demo', demoRoutes);
+// Интернет-магазин: публичная витрина + настройки (auth внутри роутов /me)
+router.use('/online-store', onlineStoreRoutes);
 
 // Пробный период / тариф: мутации при past_due и доступ при suspended
 router.use(enforceSubscriptionAccess);

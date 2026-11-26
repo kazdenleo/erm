@@ -69,6 +69,8 @@ export const SUBSCRIPTION_PLANS = Object.freeze({
       analyticsExtended: false,
       ai: false,
       mobileApp: true,
+      storeEditor: false,
+      storeCustomDomain: false,
     },
     featureLabels: [
       '7 дней доступа',
@@ -102,6 +104,8 @@ export const SUBSCRIPTION_PLANS = Object.freeze({
       analyticsExtended: false,
       ai: false,
       mobileApp: false,
+      storeEditor: false,
+      storeCustomDomain: false,
     },
     featureLabels: [
       '2 пользователя',
@@ -137,6 +141,8 @@ export const SUBSCRIPTION_PLANS = Object.freeze({
       analyticsExtended: false,
       ai: false,
       mobileApp: true,
+      storeEditor: false,
+      storeCustomDomain: false,
     },
     featureLabels: [
       '5 пользователей',
@@ -174,6 +180,8 @@ export const SUBSCRIPTION_PLANS = Object.freeze({
       analyticsExtended: true,
       ai: true,
       mobileApp: true,
+      storeEditor: true,
+      storeCustomDomain: true,
     },
     featureLabels: [
       '15 пользователей',
@@ -183,6 +191,8 @@ export const SUBSCRIPTION_PLANS = Object.freeze({
       'Все модули продукта',
       'Производство и AI-помощник',
       'Расширенная аналитика',
+      'Редактор витрины интернет-магазина',
+      'Свой домен для витрины',
       'Приоритет + созвон',
     ],
   },

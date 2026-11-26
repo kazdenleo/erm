@@ -633,6 +633,15 @@ export const profilesController = {
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
+      // Интернет-магазин зависит от частных заказов: без них витрину снимаем с публикации.
+      if (safePayload.allow_private_orders === false) {
+        try {
+          const storesRepo = await import('../repositories/onlineStores.repository.pg.js');
+          await storesRepo.unpublishByProfileId(id);
+        } catch (e) {
+          console.warn('[OnlineStore] unpublish after private orders off:', e?.message || e);
+        }
+      }
       clearProfileFeatureFlagsCache(id);
       const quality = parseCardQualitySettings(item.card_quality_settings ?? payload.card_quality_settings);
       if (quality.showInCardWork) {
@@ -797,6 +806,14 @@ export const profilesController = {
           });
         } catch (e) {
           console.warn('[profiles] subscription audit failed:', e?.message || e);
+        }
+      }
+      if (body.allow_private_orders === false) {
+        try {
+          const storesRepo = await import('../repositories/onlineStores.repository.pg.js');
+          await storesRepo.unpublishByProfileId(id);
+        } catch (e) {
+          console.warn('[OnlineStore] unpublish after private orders off:', e?.message || e);
         }
       }
       clearProfileFeatureFlagsCache(id);

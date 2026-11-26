@@ -21,6 +21,8 @@ import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
 import { Landing } from './pages/Landing/Landing.jsx';
 import { DemoRequest } from './pages/Demo/DemoRequest.jsx';
+import { OnlineStoreAdmin } from './pages/OnlineStore/OnlineStoreAdmin.jsx';
+import { Storefront, StorefrontByHost } from './pages/Storefront/Storefront.jsx';
 import { OfferPage, PrivacyPage } from './pages/Legal/LegalDocument.jsx';
 import { Pricing } from './pages/Billing/Pricing.jsx';
 import { Onboarding } from './pages/Onboarding/Onboarding.jsx';
@@ -210,13 +212,28 @@ function RedirectVideoCover() {
   return <Navigate to={`/settings/content/video-cover${search}${hash}`} replace />;
 }
 
+/** Хосты платформы ERP (не витрина на своём домене). */
+function isPlatformHostname(hostname = typeof window !== 'undefined' ? window.location.hostname : '') {
+  const h = String(hostname || '').toLowerCase();
+  if (!h || h === 'localhost' || h === '127.0.0.1') return true;
+  return /(^|\.)mysell\.su$|(^|\.)dttrade\.ru$/.test(h);
+}
+
 function App() {
+  const customStoreHost =
+    typeof window !== 'undefined' && !isPlatformHostname(window.location.hostname);
+
   return (
     <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <ErrorBoundary>
         <AuthProvider>
           <DemoUxProvider>
           <TrainingTourProvider>
+          {customStoreHost ? (
+          <Routes>
+            <Route path="/*" element={<StorefrontByHost />} />
+          </Routes>
+          ) : (
           <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/platform-login" element={<Login mode="platform" />} />
@@ -224,6 +241,7 @@ function App() {
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/register" element={<PublicRegister />} />
           <Route path="/demo" element={<DemoRequest />} />
+          <Route path="/s/:slug/*" element={<Storefront />} />
           <Route path="/offer" element={<OfferPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route
@@ -333,6 +351,7 @@ function App() {
           <Route path="/suppliers/:supplierId/settlements" element={<ProtectedRoute><Layout><SupplierSettlements /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
           <Route path="/customers" element={<ProtectedRoute><PrivateOrdersRoute><Customers /></PrivateOrdersRoute></ProtectedRoute>} />
+          <Route path="/online-store" element={<ProtectedRoute><PrivateOrdersRoute><OnlineStoreAdmin /></PrivateOrdersRoute></ProtectedRoute>} />
           <Route path="/customers/:customerId" element={<ProtectedRoute><PrivateOrdersRoute><CustomerDetail /></PrivateOrdersRoute></ProtectedRoute>} />
           <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
@@ -396,6 +415,7 @@ function App() {
           <Route path="/settings/roles" element={<Navigate to="/settings/users?tab=roles" replace />} />
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />
         </Routes>
+          )}
           </TrainingTourProvider>
           </DemoUxProvider>
       </AuthProvider>
