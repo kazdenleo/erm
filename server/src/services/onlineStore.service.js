@@ -183,7 +183,7 @@ function mapPublicProduct(product, link, stock) {
     id: Number(product.id),
     sku: product.sku || null,
     name: product.name || '',
-    description: product.description || '',
+    description: pickPublicDescription(product),
     price,
     inStock: stock > 0,
     stock: stock > 0 ? stock : 0,
@@ -485,7 +485,8 @@ async function catalogRowsForStore(store) {
     const ids = [...linkById.keys()];
     if (!ids.length) return [];
     sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
-                  p.images, p.quantity, p.user_category_id, uc.name AS category_name
+                  p.images, p.quantity, p.user_category_id, uc.name AS category_name,
+                  p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1 AND p.id = ANY($2::bigint[])
@@ -493,7 +494,8 @@ async function catalogRowsForStore(store) {
     params = [store.profileId, ids];
   } else {
     sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
-                  p.images, p.quantity, p.user_category_id, uc.name AS category_name
+                  p.images, p.quantity, p.user_category_id, uc.name AS category_name,
+                  p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1
@@ -581,13 +583,167 @@ export async function listPublicProducts(slug, { q = '', categoryId = '' } = {})
   };
 }
 
+function pickPublicDescription(row) {
+  const candidates = [
+    row.description,
+    row.mp_ozon_description,
+    row.mp_wb_description,
+    row.mp_ym_description,
+  ];
+  for (const c of candidates) {
+    const s = String(c || '').trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+function formatCertDocType(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (v === 'declaration') return 'Декларация';
+  if (v === 'registration') return 'Свидетельство о регистрации';
+  return 'Сертификат';
+}
+
+async function loadPublicAttributes(productId) {
+  const r = await query(
+    `SELECT pa.id, pa.name, pav.value
+     FROM product_attribute_values pav
+     JOIN product_attributes pa ON pa.id = pav.attribute_id
+     WHERE pav.product_id = $1
+       AND pav.value IS NOT NULL
+       AND btrim(pav.value::text) <> ''
+     ORDER BY pa.name ASC`,
+    [productId]
+  );
+  return (r.rows || [])
+    .map((row) => ({
+      id: Number(row.id),
+      name: String(row.name || '').trim(),
+      value: String(row.value || '').trim(),
+    }))
+    .filter((a) => a.name && a.value);
+}
+
+async function loadPublicCertificates(profileId, productId) {
+  const r = await query(
+    `SELECT c.id, c.certificate_number, c.document_type, c.valid_from, c.valid_to, c.photo_url
+     FROM certificates c
+     WHERE c.profile_id = $1
+       AND (
+         EXISTS (
+           SELECT 1 FROM certificate_products cp
+           WHERE cp.certificate_id = c.id AND cp.product_id = $2
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM products p
+           JOIN certificate_user_categories cuc
+             ON cuc.certificate_id = c.id AND cuc.user_category_id = p.user_category_id
+           WHERE p.id = $2
+             AND p.profile_id = $1
+             AND (c.brand_id IS NULL OR c.brand_id = p.brand_id)
+         )
+       )
+     ORDER BY c.valid_to NULLS LAST, c.certificate_number`,
+    [profileId, productId]
+  );
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return (r.rows || [])
+    .map((row) => {
+      const validTo = row.valid_to ? new Date(row.valid_to) : null;
+      const expired = validTo ? validTo < today : false;
+      let fileUrl = row.photo_url ? String(row.photo_url).trim() : '';
+      if (fileUrl && !/^https?:\/\//i.test(fileUrl) && !fileUrl.startsWith('/')) {
+        fileUrl = `/${fileUrl}`;
+      }
+      return {
+        id: Number(row.id),
+        number: row.certificate_number || '',
+        documentType: formatCertDocType(row.document_type),
+        validFrom: row.valid_from || null,
+        validTo: row.valid_to || null,
+        expired,
+        fileUrl: fileUrl || null,
+      };
+    })
+    .filter((c) => c.number || c.fileUrl);
+}
+
+function buildPublicSpecs(row) {
+  const specs = [];
+  const push = (name, value) => {
+    if (value == null || value === '') return;
+    specs.push({ name, value: String(value) });
+  };
+  if (row.sku) push('Артикул', row.sku);
+  if (row.category_name) push('Категория', row.category_name);
+  if (row.brand_name) push('Бренд', row.brand_name);
+  if (row.country_of_origin) push('Страна', row.country_of_origin);
+  if (row.unit) push('Ед. изм.', row.unit);
+  const w = row.weight != null && row.weight !== '' ? Number(row.weight) : NaN;
+  if (Number.isFinite(w) && w > 0) push('Вес', `${w} кг`);
+  const L = row.length != null ? Number(row.length) : NaN;
+  const W = row.width != null ? Number(row.width) : NaN;
+  const H = row.height != null ? Number(row.height) : NaN;
+  if ([L, W, H].some((n) => Number.isFinite(n) && n > 0)) {
+    const dims = [L, W, H]
+      .map((n) => (Number.isFinite(n) && n > 0 ? String(n) : '—'))
+      .join(' × ');
+    push('Габариты (Д×Ш×В), мм', dims);
+  }
+  return specs;
+}
+
 export async function getPublicProduct(slug, productId) {
   const store = await storesRepo.findPublishedBySlug(slug);
   if (!store) err('Магазин не найден или не опубликован', 404);
-  const products = await catalogRowsForStore(store);
-  const product = products.find((p) => p.id === Number(productId));
-  if (!product) err('Товар не найден в магазине', 404);
-  return { store: publicStorePayload(store), product };
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) err('Товар не найден в магазине', 404);
+
+  // Доступность на витрине (режим selected / kit)
+  const listed = await catalogRowsForStore(store);
+  const listedHit = listed.find((p) => p.id === pid);
+  if (!listedHit) err('Товар не найден в магазине', 404);
+
+  const r = await query(
+    `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
+            p.images, p.quantity, p.user_category_id, p.brand_id, p.unit, p.weight,
+            p.length, p.width, p.height, p.country_of_origin,
+            p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description,
+            uc.name AS category_name, b.name AS brand_name
+     FROM products p
+     LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+     LEFT JOIN brands b ON b.id = p.brand_id
+     WHERE p.id = $1 AND p.profile_id = $2
+     LIMIT 1`,
+    [pid, store.profileId]
+  );
+  const row = r.rows?.[0];
+  if (!row) err('Товар не найден в магазине', 404);
+
+  const links =
+    store.productMode === 'selected' ? await storesRepo.listStoreProductLinks(store.id) : [];
+  const link = links.find((l) => l.productId === pid && l.published) || null;
+  const warehouseId = await resolveWarehouseId(store.profileId);
+  const stock = await stockForProduct(pid, warehouseId);
+  const base = mapPublicProduct(row, link, stock);
+  const [attributes, certificates] = await Promise.all([
+    loadPublicAttributes(pid),
+    loadPublicCertificates(store.profileId, pid),
+  ]);
+
+  return {
+    store: publicStorePayload(store),
+    product: {
+      ...base,
+      ...listedHit,
+      description: pickPublicDescription(row),
+      specs: buildPublicSpecs(row),
+      attributes,
+      certificates,
+    },
+  };
 }
 
 export async function checkout(slug, body = {}) {

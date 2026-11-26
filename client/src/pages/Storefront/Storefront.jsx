@@ -147,6 +147,13 @@ function CatalogView({ store, slug, base, onCartChange }) {
   );
 }
 
+function formatDateRu(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString('ru-RU');
+}
+
 function ProductView({ slug, base, onCartChange }) {
   const { productId } = useParams();
   const navigate = useNavigate();
@@ -166,52 +173,119 @@ function ProductView({ slug, base, onCartChange }) {
   }, [slug, productId]);
 
   const p = data?.product;
+  const specs = Array.isArray(p?.specs) ? p.specs : [];
+  const attributes = Array.isArray(p?.attributes) ? p.attributes : [];
+  const certificates = Array.isArray(p?.certificates) ? p.certificates : [];
+
   return (
     <div className="sf-panel">
       {error ? <div className="sf-error">{error}</div> : null}
       {!p && !error ? <div className="sf-muted">Загрузка…</div> : null}
       {p ? (
-        <div className="sf-pdp">
-          <div className="sf-pdp-media">
-            <ProductImage src={p.imageUrl} className="sf-pdp-img" />
-          </div>
-          <div>
-            <h1 style={{ marginTop: 0 }}>{p.name}</h1>
-            {p.sku ? <div className="sf-muted">Артикул: {p.sku}</div> : null}
-            <div className="sf-card-price" style={{ fontSize: '1.4rem', margin: '0.6rem 0' }}>
-              {money(p.price)}
+        <>
+          <div className="sf-pdp">
+            <div className="sf-pdp-media">
+              <ProductImage src={p.imageUrl} className="sf-pdp-img" />
             </div>
-            <span className={`sf-badge${p.inStock ? '' : ' out'}`}>
-              {p.inStock ? `В наличии: ${p.stock}` : 'Нет в наличии'}
-            </span>
-            {p.description ? (
-              <p className="sf-muted" style={{ marginTop: '1rem', whiteSpace: 'pre-wrap' }}>
-                {p.description}
-              </p>
-            ) : null}
-            <div style={{ display: 'flex', gap: 8, marginTop: 16, alignItems: 'center' }}>
-              <input
-                className="sf-qty"
-                type="number"
-                min={1}
-                max={Math.max(1, p.stock || 1)}
-                value={qty}
-                onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))}
-              />
-              <button
-                type="button"
-                className="sf-btn sf-btn-primary"
-                disabled={!p.inStock}
-                onClick={() => {
-                  onCartChange(addToCart(slug, p, qty));
-                  navigate(sfPath(base, 'cart'));
-                }}
-              >
-                В корзину
-              </button>
+            <div>
+              {p.categoryName ? <div className="sf-pdp-cat">{p.categoryName}</div> : null}
+              <h1 className="sf-pdp-title">{p.name}</h1>
+              {p.sku ? <div className="sf-muted">Артикул: {p.sku}</div> : null}
+              <div className="sf-card-price sf-pdp-price">{money(p.price)}</div>
+              <span className={`sf-badge${p.inStock ? '' : ' out'}`}>
+                {p.inStock ? `В наличии: ${p.stock}` : 'Нет в наличии'}
+              </span>
+              <div className="sf-pdp-buy">
+                <input
+                  className="sf-qty"
+                  type="number"
+                  min={1}
+                  max={Math.max(1, p.stock || 1)}
+                  value={qty}
+                  onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))}
+                />
+                <button
+                  type="button"
+                  className="sf-btn sf-btn-primary"
+                  disabled={!p.inStock}
+                  onClick={() => {
+                    onCartChange(addToCart(slug, p, qty));
+                    navigate(sfPath(base, 'cart'));
+                  }}
+                >
+                  В корзину
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+
+          {p.description ? (
+            <section className="sf-pdp-block">
+              <h2 className="sf-pdp-h">Описание</h2>
+              <p className="sf-pdp-text">{p.description}</p>
+            </section>
+          ) : null}
+
+          {specs.length ? (
+            <section className="sf-pdp-block">
+              <h2 className="sf-pdp-h">Основные характеристики</h2>
+              <dl className="sf-specs">
+                {specs.map((s) => (
+                  <div key={s.name} className="sf-specs-row">
+                    <dt>{s.name}</dt>
+                    <dd>{s.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+
+          {attributes.length ? (
+            <section className="sf-pdp-block">
+              <h2 className="sf-pdp-h">Атрибуты</h2>
+              <dl className="sf-specs">
+                {attributes.map((a) => (
+                  <div key={a.id || a.name} className="sf-specs-row">
+                    <dt>{a.name}</dt>
+                    <dd>{a.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+
+          {certificates.length ? (
+            <section className="sf-pdp-block">
+              <h2 className="sf-pdp-h">Сертификаты</h2>
+              <ul className="sf-certs">
+                {certificates.map((c) => (
+                  <li key={c.id} className={`sf-cert${c.expired ? ' is-expired' : ''}`}>
+                    <div className="sf-cert-main">
+                      <strong>
+                        {c.documentType}
+                        {c.number ? ` № ${c.number}` : ''}
+                      </strong>
+                      <div className="sf-muted">
+                        {[
+                          c.validFrom ? `с ${formatDateRu(c.validFrom)}` : null,
+                          c.validTo ? `по ${formatDateRu(c.validTo)}` : null,
+                          c.expired ? 'срок истёк' : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    </div>
+                    {c.fileUrl ? (
+                      <a className="sf-btn" href={c.fileUrl} target="_blank" rel="noreferrer">
+                        Открыть
+                      </a>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
