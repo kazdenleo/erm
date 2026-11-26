@@ -45,6 +45,8 @@ import chestnyZnakOps from './chestnyZnakOps.service.js';
 /** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
 const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(NULLIF(TRIM(w.name), ''), w.address, w.wb_warehouse_name, '')), '')`;
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
+/** Один документ приёмки на закупку для всех сканов экспресса FBO (purchase_receipts.note). */
+const EXPRESS_FBO_RECEIPT_NOTE = 'Экспресс FBO';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2896,7 +2898,7 @@ class PurchasesService {
     try {
       receipts = await query(
         `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
-                r.warehouse_receipt_id,
+                r.warehouse_receipt_id, r.note,
                 p.warehouse_id,
                 ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
                 (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count,
@@ -2966,10 +2968,11 @@ class PurchasesService {
     try {
       receipts2 = await query(
         `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
-                r.warehouse_receipt_id,
+                r.warehouse_receipt_id, r.note,
                 p.warehouse_id,
                 ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
-                (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
+                (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count,
+                (SELECT COALESCE(SUM(ri.scanned_quantity), 0)::int FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS scanned_total
          FROM purchase_receipts r
          JOIN purchases p ON p.id = r.purchase_id
          LEFT JOIN warehouses w ON w.id = p.warehouse_id
@@ -4294,25 +4297,51 @@ class PurchasesService {
       const scanningRows = existing.rows || [];
       const todayKey = receiptCalendarDayKey(new Date());
 
+      const draftsWithScan = [];
+      for (const row of scanningRows) {
+        if (!row?.id) continue;
+        const sumR = await client.query(
+          `SELECT COALESCE(SUM(scanned_quantity), 0)::int AS scanned
+           FROM purchase_receipt_items WHERE receipt_id = $1`,
+          [row.id]
+        );
+        draftsWithScan.push({
+          row,
+          scanned: Math.max(0, Number(sumR.rows?.[0]?.scanned) || 0),
+        });
+      }
+
       if (forceNew === true || forceNew === 'true' || forceNew === '1') {
-        for (const row of scanningRows) {
-          if (row?.id) await deleteScanningPurchaseReceiptInTx(client, row.id);
+        for (const { row } of draftsWithScan) {
+          await deleteScanningPurchaseReceiptInTx(client, row.id);
         }
       } else {
-        const todayDraft = scanningRows.find((row) => {
+        // Сначала черновик за сегодня, иначе любой с отсканированным товаром
+        // (после dailyLogout / смены дня нельзя терять приёмку).
+        const todayDraft = draftsWithScan.find(({ row }) => {
           const dayKey = receiptCalendarDayKey(row?.started_at || row?.created_at);
           return dayKey && dayKey === todayKey;
         });
-        if (todayDraft?.id) {
+        if (todayDraft?.row?.id) {
           return {
-            id: todayDraft.id,
+            id: todayDraft.row.id,
             reused: true,
             sameDay: true,
-            warehouseReceiptId: todayDraft.warehouse_receipt_id ?? null,
+            warehouseReceiptId: todayDraft.row.warehouse_receipt_id ?? null,
           };
         }
-        for (const row of scanningRows) {
-          if (!row?.id) continue;
+        const withItems = draftsWithScan.find((d) => d.scanned > 0);
+        if (withItems?.row?.id) {
+          return {
+            id: withItems.row.id,
+            reused: true,
+            sameDay: false,
+            warehouseReceiptId: withItems.row.warehouse_receipt_id ?? null,
+          };
+        }
+        // Пустые чужие дни — можно убрать; с товаром не трогаем.
+        for (const { row, scanned } of draftsWithScan) {
+          if (scanned > 0) continue;
           const dayKey = receiptCalendarDayKey(row.started_at || row.created_at);
           if (dayKey && dayKey !== todayKey) {
             await deleteScanningPurchaseReceiptInTx(client, row.id);
@@ -5014,16 +5043,10 @@ class PurchasesService {
         err.statusCode = 400;
         throw err;
       }
-      const creatorId =
-        receipt.created_by_user_id != null && receipt.created_by_user_id !== ''
-          ? Number(receipt.created_by_user_id)
-          : null;
-      const uid = userId != null && userId !== '' ? Number(userId) : null;
-      if (creatorId != null && Number.isFinite(creatorId) && uid != null && Number.isFinite(uid) && uid !== creatorId) {
-        const err = new Error('Завершить приёмку может только создатель');
-        err.statusCode = 403;
-        throw err;
-      }
+      // Раньше завершать мог только создатель — после dailyLogout / повторного входа
+      // коллега или тот же сотрудник не мог закрыть черновик. Достаточно доступа к профилю.
+      void receipt.created_by_user_id;
+      void userId;
 
       const purchaseId = Number(receipt.purchase_id);
       await assertPurchaseInProfile(client, purchaseId, pid);
@@ -5837,8 +5860,10 @@ class PurchasesService {
   }
 
   /**
-   * Экспресс FBO: принять 1 шт. с «в пути» по FIFO открытой закупке на указанный склад.
-   * Создаёт отдельную приёмку (не трогает чужой черновик scanning) и сразу завершает её.
+   * Экспресс FBO: принять 1 шт. с «в пути» по открытой закупке на указанный склад.
+   * Если передан purchaseId — только из этой закупки; иначе FIFO по открытым.
+   * Все сканы экспресса по одной закупке пишутся в один документ приёмки «Экспресс FBO»
+   * (не трогает обычный черновик scanning) и сразу отражаются в складском ПТ-…
    * @returns {Promise<{ ok: boolean, purchaseId: number, receiptId: number, warehouseId: number|null }|null>}
    */
   async receiveOneUnitFromOpenPurchase({
@@ -5847,10 +5872,13 @@ class PurchasesService {
     profileId,
     userId = null,
     meta = null,
+    purchaseId: purchaseIdRaw = null,
   } = {}) {
     const pid = normalizeProfileId(profileId);
     const productIdNum = Number(productId);
     const whId = Number(warehouseId);
+    const preferredPurchaseId =
+      purchaseIdRaw != null && purchaseIdRaw !== '' ? Number(purchaseIdRaw) : null;
     if (pid == null) {
       const err = new Error('Профиль не определён');
       err.statusCode = 403;
@@ -5867,26 +5895,74 @@ class PurchasesService {
       throw err;
     }
 
-    const fifo = await query(
-      `SELECT p.id AS purchase_id,
-              pi.expected_quantity::int AS expected,
-              COALESCE(pi.received_quantity, 0)::int AS received
-       FROM purchase_items pi
-       JOIN purchases p ON p.id = pi.purchase_id
-       WHERE pi.product_id = $1
-         AND p.profile_id = $2
-         AND p.warehouse_id = $3
-         AND p.status = 'open'
-         AND pi.expected_quantity > COALESCE(pi.received_quantity, 0)
-       ORDER BY p.id ASC
-       LIMIT 1`,
-      [productIdNum, pid, whId]
-    );
-    const row = fifo.rows?.[0];
+    let row = null;
+    if (Number.isFinite(preferredPurchaseId) && preferredPurchaseId > 0) {
+      const preferred = await query(
+        `SELECT p.id AS purchase_id,
+                pi.expected_quantity::int AS expected,
+                COALESCE(pi.received_quantity, 0)::int AS received
+         FROM purchases p
+         LEFT JOIN purchase_items pi
+           ON pi.purchase_id = p.id AND pi.product_id = $1
+         WHERE p.id = $2
+           AND p.profile_id = $3
+           AND p.warehouse_id = $4
+           AND p.status = 'open'
+         LIMIT 1`,
+        [productIdNum, preferredPurchaseId, pid, whId]
+      );
+      const pref = preferred.rows?.[0];
+      if (!pref) {
+        const err = new Error(
+          `Закупка №${preferredPurchaseId} не найдена, закрыта или склад не совпадает со складом поставки`
+        );
+        err.statusCode = 409;
+        err.code = 'EXPRESS_PURCHASE_INVALID';
+        throw err;
+      }
+      if (pref.expected == null) {
+        const err = new Error(
+          `В закупке №${preferredPurchaseId} нет этого товара — выберите другую закупку`
+        );
+        err.statusCode = 409;
+        err.code = 'EXPRESS_PURCHASE_NO_PRODUCT';
+        throw err;
+      }
+      if (Number(pref.received) >= Number(pref.expected)) {
+        const err = new Error(
+          `В закупке №${preferredPurchaseId} товар уже принят полностью (${pref.received}/${pref.expected})`
+        );
+        err.statusCode = 409;
+        err.code = 'EXPRESS_PURCHASE_FULL';
+        throw err;
+      }
+      row = pref;
+    } else {
+      const fifo = await query(
+        `SELECT p.id AS purchase_id,
+                pi.expected_quantity::int AS expected,
+                COALESCE(pi.received_quantity, 0)::int AS received
+         FROM purchase_items pi
+         JOIN purchases p ON p.id = pi.purchase_id
+         WHERE pi.product_id = $1
+           AND p.profile_id = $2
+           AND p.warehouse_id = $3
+           AND p.status = 'open'
+           AND pi.expected_quantity > COALESCE(pi.received_quantity, 0)
+         ORDER BY p.id ASC
+         LIMIT 1`,
+        [productIdNum, pid, whId]
+      );
+      row = fifo.rows?.[0] || null;
+    }
     if (!row) return null;
 
     const purchaseId = Number(row.purchase_id);
     const uid = userId != null && userId !== '' ? Number(userId) : null;
+    const scanMetaJson = JSON.stringify({
+      express_fbo: true,
+      ...(meta && typeof meta === 'object' ? meta : {}),
+    });
 
     const result = await transaction(async (client) => {
       await assertPurchaseInProfile(client, purchaseId, pid);
@@ -5904,25 +5980,38 @@ class PurchasesService {
         return null;
       }
 
-      const ins = await client.query(
-        `INSERT INTO purchase_receipts (purchase_id, status, started_at, created_by_user_id)
-         VALUES ($1, 'scanning', CURRENT_TIMESTAMP, $2)
-         RETURNING id`,
-        [purchaseId, Number.isFinite(uid) && uid > 0 ? uid : null]
+      // Один документ на закупку: ищем существующую приёмку «Экспресс FBO».
+      const existing = await client.query(
+        `SELECT id, warehouse_receipt_id
+         FROM purchase_receipts
+         WHERE purchase_id = $1
+           AND status = 'completed'
+           AND note = $2
+         ORDER BY id ASC
+         LIMIT 1
+         FOR UPDATE`,
+        [purchaseId, EXPRESS_FBO_RECEIPT_NOTE]
       );
-      const receiptId = Number(ins.rows[0].id);
+
+      let receiptId = existing.rows?.[0]?.id != null ? Number(existing.rows[0].id) : null;
+      if (!Number.isFinite(receiptId) || receiptId < 1) {
+        const ins = await client.query(
+          `INSERT INTO purchase_receipts (purchase_id, status, started_at, created_by_user_id, note)
+           VALUES ($1, 'scanning', CURRENT_TIMESTAMP, $2, $3)
+           RETURNING id`,
+          [purchaseId, Number.isFinite(uid) && uid > 0 ? uid : null, EXPRESS_FBO_RECEIPT_NOTE]
+        );
+        receiptId = Number(ins.rows[0].id);
+      }
 
       await client.query(
         `INSERT INTO purchase_receipt_items (receipt_id, product_id, scanned_quantity, scan_meta)
-         VALUES ($1, $2, 1, $3::jsonb)`,
-        [
-          receiptId,
-          productIdNum,
-          JSON.stringify({
-            express_fbo: true,
-            ...(meta && typeof meta === 'object' ? meta : {}),
-          }),
-        ]
+         VALUES ($1, $2, 1, $3::jsonb)
+         ON CONFLICT (receipt_id, product_id) DO UPDATE
+         SET scanned_quantity = purchase_receipt_items.scanned_quantity + 1,
+             scan_meta = EXCLUDED.scan_meta,
+             updated_at = CURRENT_TIMESTAMP`,
+        [receiptId, productIdNum, scanMetaJson]
       );
 
       const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whId, pid);
@@ -5943,16 +6032,31 @@ class PurchasesService {
          SET status = 'completed',
              completed_at = CURRENT_TIMESTAMP,
              updated_at = CURRENT_TIMESTAMP,
-             extras_resolved = true
+             extras_resolved = true,
+             note = COALESCE(NULLIF(TRIM(note), ''), $2)
          WHERE id = $1`,
-        [receiptId]
+        [receiptId, EXPRESS_FBO_RECEIPT_NOTE]
       );
+
+      // Сразу складской документ ПТ-… со всеми строками этой экспресс-приёмки.
+      const warehouseReceiptId = await ensureWarehouseReceiptForPurchaseReceiptInTx(client, {
+        purchaseId,
+        purchaseReceiptId: receiptId,
+      });
+      if (warehouseReceiptId) {
+        await backfillWarehouseReceiptLinesFromPurchaseReceiptInTx(client, {
+          purchaseId,
+          purchaseReceiptId: receiptId,
+          warehouseReceiptId,
+        });
+      }
 
       return {
         ok: true,
         purchaseId,
         receiptId,
         warehouseId: receiptWarehouseId,
+        warehouseReceiptId: warehouseReceiptId || null,
         purchaseStatus,
         applied: deltas,
       };

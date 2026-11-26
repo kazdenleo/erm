@@ -886,18 +886,17 @@ export function PurchaseCargoReceive({
               <span className="muted" style={{ fontSize: 13 }}>
                 Принято товара: {receipt.scannedTotal} шт
               </span>
-              {isReceiptOwner ? (
-                <Button
-                  disabled={!editable || completeBusy || receipt.scannedTotal <= 0}
-                  onClick={completeReceipt}
-                >
-                  {completeBusy ? 'Оформляю…' : 'Оформить приёмку'}
-                </Button>
-              ) : (
+              <Button
+                disabled={!editable || completeBusy || receipt.scannedTotal <= 0}
+                onClick={completeReceipt}
+              >
+                {completeBusy ? 'Оформляю…' : 'Оформить приёмку'}
+              </Button>
+              {!isReceiptOwner ? (
                 <span className="muted" style={{ fontSize: 13 }}>
-                  Оформить приёмку может только сотрудник, который её начал.
+                  Черновик начал другой сотрудник — оформить можно и вам (после повторного входа тоже).
                 </span>
-              )}
+              ) : null}
             </div>
           ) : null}
         </>

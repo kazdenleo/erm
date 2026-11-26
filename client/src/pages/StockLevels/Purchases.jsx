@@ -496,6 +496,7 @@ export function Purchases() {
     return raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
   }, [receipt?.receipt?.created_by_user_id, receipt?.receipt?.createdByUserId]);
 
+  // Подсказка «приглашённый»; завершать может любой с доступом к закупке (после повторного входа тоже).
   const isReceiptGuest = useMemo(() => {
     if (receiptOwnerUserId == null || currentUserId == null) return false;
     return Number(receiptOwnerUserId) !== Number(currentUserId);
@@ -2205,11 +2206,13 @@ export function Purchases() {
                       }
                     }
                     const scanningDraft = findScanningDraftReceipt(detail?.receipts);
-                    if (scanningDraft?.id && isReceiptSameCalendarDay(scanningDraft)) {
+                    // Любой незакрытый черновик (в т.ч. со вчера после dailyLogout) — предложить продолжить.
+                    if (scanningDraft?.id) {
                       setReceiptDraftChoice({
                         purchaseId: detail.purchase.id,
                         existingReceiptId: scanningDraft.id,
                         draftDate: scanningDraft.started_at || scanningDraft.created_at,
+                        sameDay: isReceiptSameCalendarDay(scanningDraft),
                       });
                       return;
                     }
@@ -2641,10 +2644,18 @@ export function Purchases() {
                       const isScanning = String(r.status) === 'scanning';
                       const isExpected = String(r.status) === 'expected';
                       const isCancelled = String(r.status) === 'cancelled';
+                      const receiptNote = r.note != null && String(r.note).trim() !== '' ? String(r.note).trim() : '';
                       return (
                         <tr key={r.id}>
                           <td>{fmtDt(r.cancelled_at || r.started_at || r.created_at)}</td>
-                          <td>№{r.id}</td>
+                          <td>
+                            №{r.id}
+                            {receiptNote ? (
+                              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                                {receiptNote}
+                              </div>
+                            ) : null}
+                          </td>
                           <td>{r.warehouse_name || warehouseDisplayLabel(null, r.warehouse_id) || '—'}</td>
                           <td>{receiptStatusLabel(r.status)}</td>
                           <td>{r.items_count ?? '—'}</td>
@@ -2746,10 +2757,6 @@ export function Purchases() {
                       ) : null}
                       {isReceiptScanning ? (
                         <Button
-                          disabled={isReceiptGuest}
-                          title={
-                            isReceiptGuest ? 'Завершить может только создатель приёмки' : undefined
-                          }
                           onClick={async () => {
                             const completedReceiptId = receipt.receipt.id;
                             const completedPurchaseId =
@@ -2927,7 +2934,7 @@ export function Purchases() {
             </div>
             {isReceiptGuest ? (
               <p className="warehouse-ops-hint" style={{ marginBottom: 10 }}>
-                Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
+                Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить может любой сотрудник с доступом к закупке.
               </p>
             ) : null}
             <div className="purchase-receipt-tabs" role="tablist" aria-label="Разделы приёмки">
@@ -3247,19 +3254,21 @@ export function Purchases() {
       <Modal
         isOpen={!!receiptDraftChoice}
         onClose={() => setReceiptDraftChoice(null)}
-        title="Приёмка за сегодня"
+        title="Незавершённая приёмка"
         size="md"
       >
         {receiptDraftChoice ? (
           <>
             <p className="warehouse-ops-hint">
-              У закупки №{receiptDraftChoice.purchaseId} сегодня уже есть незавершённая приёмка №
+              У закупки №{receiptDraftChoice.purchaseId} есть незавершённая приёмка №
               {receiptDraftChoice.existingReceiptId}
-              {receiptDraftChoice.draftDate ? ` (от ${fmtDt(receiptDraftChoice.draftDate)})` : ''}. Продолжить её или
-              начать новую?
+              {receiptDraftChoice.draftDate ? ` (от ${fmtDt(receiptDraftChoice.draftDate)})` : ''}.
+              {receiptDraftChoice.sameDay === false
+                ? ' Черновик с прошлого дня — после повторного входа его можно продолжить и завершить.'
+                : ' Продолжить её или начать новую?'}
             </p>
             <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-              Черновик с другого дня не предлагается — для новой даты создаётся отдельная приёмка.
+              «Начать новую» удалит этот черновик вместе с уже отсканированным товаром.
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               <Button
@@ -3276,6 +3285,13 @@ export function Purchases() {
                 variant="secondary"
                 disabled={createReceiptBusy}
                 onClick={async () => {
+                  if (
+                    !window.confirm(
+                      'Удалить черновик со всеми отсканированными позициями и начать новую приёмку?'
+                    )
+                  ) {
+                    return;
+                  }
                   setReceiptDraftChoice(null);
                   await startPurchaseReceipt({ forceNew: true });
                 }}
