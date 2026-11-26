@@ -351,8 +351,8 @@ function App() {
           <Route path="/suppliers/:supplierId/settlements" element={<ProtectedRoute><Layout><SupplierSettlements /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
           <Route path="/customers" element={<ProtectedRoute><PrivateOrdersRoute><Customers /></PrivateOrdersRoute></ProtectedRoute>} />
-          <Route path="/online-store" element={<ProtectedRoute><PrivateOrdersRoute><OnlineStoreAdmin /></PrivateOrdersRoute></ProtectedRoute>} />
           <Route path="/customers/:customerId" element={<ProtectedRoute><PrivateOrdersRoute><CustomerDetail /></PrivateOrdersRoute></ProtectedRoute>} />
+          <Route path="/online-store" element={<Navigate to="/settings/online-store" replace />} />
           <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
           <Route path="/returns" element={<Navigate to="/stock-levels/warehouse?op=return_customer" replace />} />
@@ -391,6 +391,16 @@ function App() {
           <Route path="/integrations" element={<ProtectedRoute><Layout><Integrations /></Layout></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
+          <Route
+            path="/settings/online-store"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <OnlineStoreAdmin />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
           <Route path="/settings/certificates" element={<ProtectedRoute><Layout><Certificates /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
