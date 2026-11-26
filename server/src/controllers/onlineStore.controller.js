@@ -42,6 +42,7 @@ export async function publicGetStoreByHost(req, res) {
 export async function publicListProducts(req, res) {
   const data = await onlineStoreService.listPublicProducts(req.params.slug, {
     q: req.query?.q || '',
+    categoryId: req.query?.categoryId || req.query?.category_id || '',
   });
   return res.json({ ok: true, data });
 }

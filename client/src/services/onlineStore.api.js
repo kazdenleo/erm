@@ -24,9 +24,12 @@ export const onlineStoreApi = {
     });
     return r.data?.data ?? r.data;
   },
-  publicProducts: async (slug, q = '') => {
+  publicProducts: async (slug, { q = '', categoryId = '' } = {}) => {
+    const params = {};
+    if (q) params.q = q;
+    if (categoryId) params.categoryId = categoryId;
     const r = await api.get(`/online-store/public/${encodeURIComponent(slug)}/products`, {
-      params: q ? { q } : undefined,
+      params: Object.keys(params).length ? params : undefined,
     });
     return r.data?.data ?? r.data;
   },

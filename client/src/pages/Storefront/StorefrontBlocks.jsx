@@ -84,13 +84,152 @@ function HeroBlock({ store, title, subtitle, showCta, ctaLabel, ctaHref, compact
   );
 }
 
+function CategoryNav({ categories, categoryId, onCategory }) {
+  if (!categories?.length || !onCategory) return null;
+  const total = categories.reduce((s, c) => s + (c.count || 0), 0);
+  return (
+    <div className="sf-cats" role="tablist" aria-label="Категории">
+      <button
+        type="button"
+        role="tab"
+        className={`sf-cat${categoryId ? '' : ' is-active'}`}
+        aria-selected={!categoryId}
+        onClick={() => onCategory('')}
+      >
+        Все <span>{total}</span>
+      </button>
+      {categories.map((c) => {
+        const id = String(c.id);
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            className={`sf-cat${categoryId === id ? ' is-active' : ''}`}
+            aria-selected={categoryId === id}
+            onClick={() => onCategory(id)}
+          >
+            {c.name} <span>{c.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function groupProductsByCategory(products) {
+  const groups = new Map();
+  for (const p of products || []) {
+    const key =
+      p.categoryId != null
+        ? `c:${p.categoryId}`
+        : 'none';
+    const title = p.categoryName || (key === 'none' ? 'Без категории' : 'Категория');
+    if (!groups.has(key)) groups.set(key, { key, title, items: [] });
+    groups.get(key).items.push(p);
+  }
+  return [...groups.values()];
+}
+
+function CatalogProducts({
+  products,
+  categories,
+  categoryId,
+  slug,
+  base,
+  onCartChange,
+  compact,
+  groupWhenAll = true,
+}) {
+  const list = products || [];
+  if (!list.length) return <div className="sf-empty">Пока нет товаров</div>;
+
+  const shouldGroup = groupWhenAll && !categoryId && (categories || []).length > 1;
+  if (!shouldGroup) {
+    return (
+      <div className={`sf-grid${compact ? ' is-compact' : ''}`}>
+        {list.map((p) => (
+          <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="sf-cat-groups">
+      {groupProductsByCategory(list).map((g) => (
+        <section key={g.key} className="sf-cat-group">
+          <div className="sf-cat-group-head">
+            <h3 className="sf-cat-group-title">{g.title}</h3>
+            <span className="sf-section-meta">{g.items.length} тов.</span>
+          </div>
+          <div className={`sf-grid${compact ? ' is-compact' : ''}`}>
+            {g.items.map((p) => (
+              <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function CatalogBlock({
+  title,
+  anchor,
+  products,
+  categories,
+  categoryId,
+  q,
+  onSearch,
+  onCategory,
+  slug,
+  base,
+  onCartChange,
+  loading,
+  countLabel,
+  compact,
+}) {
+  return (
+    <section className="sf-section" id={anchor || 'catalog'}>
+      <div className="sf-section-head">
+        <h2 className="sf-section-title">{title || 'Каталог'}</h2>
+        <div className="sf-section-meta">{countLabel}</div>
+      </div>
+      <CategoryNav categories={categories} categoryId={categoryId} onCategory={onCategory} />
+      <div className="sf-toolbar">
+        <input
+          value={q}
+          placeholder="Поиск по названию или артикулу"
+          onChange={(e) => onSearch(e.target.value)}
+        />
+      </div>
+      {loading ? <div className="sf-muted">Загрузка…</div> : null}
+      {!loading ? (
+        <CatalogProducts
+          products={products}
+          categories={categories}
+          categoryId={categoryId}
+          slug={slug}
+          base={base}
+          onCartChange={onCartChange}
+          compact={compact}
+        />
+      ) : null}
+    </section>
+  );
+}
+
 export function StorefrontBlocks({
   store,
   slug,
   base,
   products,
+  categories = [],
+  categoryId = '',
   q,
   onSearch,
+  onCategory,
   onCartChange,
   loading,
 }) {
@@ -103,29 +242,20 @@ export function StorefrontBlocks({
     return (
       <>
         <HeroBlock store={store} title={store?.name} subtitle={store?.tagline} />
-        <section className="sf-section" id="catalog">
-          <div className="sf-section-head">
-            <h2 className="sf-section-title">Каталог</h2>
-            <div className="sf-section-meta">{countLabel}</div>
-          </div>
-          <div className="sf-toolbar">
-            <input
-              value={q}
-              placeholder="Поиск по названию или артикулу"
-              onChange={(e) => onSearch(e.target.value)}
-            />
-          </div>
-          {loading ? <div className="sf-muted">Загрузка…</div> : null}
-          {!loading && !(products || []).length ? (
-            <div className="sf-empty">Пока нет товаров для показа</div>
-          ) : (
-            <div className="sf-grid">
-              {(products || []).map((p) => (
-                <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
-              ))}
-            </div>
-          )}
-        </section>
+        <CatalogBlock
+          title="Каталог"
+          products={products}
+          categories={categories}
+          categoryId={categoryId}
+          q={q}
+          onSearch={onSearch}
+          onCategory={onCategory}
+          slug={slug}
+          base={base}
+          onCartChange={onCartChange}
+          loading={loading}
+          countLabel={countLabel}
+        />
       </>
     );
   }
@@ -182,26 +312,23 @@ export function StorefrontBlocks({
           let list = products || [];
           if (Number.isFinite(limit) && limit > 0) list = list.slice(0, limit);
           return (
-            <section key={b.id} className="sf-section" id={props.anchor || 'catalog'}>
-              <div className="sf-section-head">
-                <h2 className="sf-section-title">{props.title || 'Каталог'}</h2>
-                <div className="sf-section-meta">{countLabel}</div>
-              </div>
-              <div className="sf-toolbar">
-                <input
-                  value={q}
-                  placeholder="Поиск по названию или артикулу"
-                  onChange={(e) => onSearch(e.target.value)}
-                />
-              </div>
-              {loading ? <div className="sf-muted">Загрузка…</div> : null}
-              {!loading && !list.length ? <div className="sf-empty">Пока нет товаров</div> : null}
-              <div className={`sf-grid${compact ? ' is-compact' : ''}`}>
-                {list.map((p) => (
-                  <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
-                ))}
-              </div>
-            </section>
+            <CatalogBlock
+              key={b.id}
+              title={props.title || 'Каталог'}
+              anchor={props.anchor || 'catalog'}
+              products={list}
+              categories={categories}
+              categoryId={categoryId}
+              q={q}
+              onSearch={onSearch}
+              onCategory={onCategory}
+              slug={slug}
+              base={base}
+              onCartChange={onCartChange}
+              loading={loading}
+              countLabel={countLabel}
+              compact={compact}
+            />
           );
         }
         if (b.type === 'rich_text' && (props.title || props.body)) {

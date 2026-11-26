@@ -89,6 +89,7 @@ function Shell({ store, slug, base, cartItems, children }) {
 function CatalogView({ store, slug, base, onCartChange }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const q = searchParams.get('q') || '';
+  const categoryId = searchParams.get('categoryId') || '';
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -97,7 +98,7 @@ function CatalogView({ store, slug, base, onCartChange }) {
     let alive = true;
     setLoading(true);
     onlineStoreApi
-      .publicProducts(slug, q)
+      .publicProducts(slug, { q, categoryId })
       .then((d) => {
         if (alive) {
           setData(d);
@@ -111,10 +112,20 @@ function CatalogView({ store, slug, base, onCartChange }) {
     return () => {
       alive = false;
     };
-  }, [slug, q]);
+  }, [slug, q, categoryId]);
 
   const products = data?.products || [];
+  const categories = data?.categories || [];
   const storeView = data?.store || store;
+
+  const patchParams = (patch) => {
+    const next = new URLSearchParams(searchParams);
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value == null || value === '') next.delete(key);
+      else next.set(key, String(value));
+    });
+    setSearchParams(next);
+  };
 
   return (
     <>
@@ -124,10 +135,13 @@ function CatalogView({ store, slug, base, onCartChange }) {
         slug={slug}
         base={base}
         products={products}
+        categories={categories}
+        categoryId={categoryId}
         q={q}
         loading={loading}
         onCartChange={onCartChange}
-        onSearch={(v) => setSearchParams(v ? { q: v } : {})}
+        onSearch={(v) => patchParams({ q: v })}
+        onCategory={(id) => patchParams({ categoryId: id })}
       />
     </>
   );

@@ -173,6 +173,12 @@ function publicStorePayload(store) {
 
 function mapPublicProduct(product, link, stock) {
   const price = resolveSellPrice(product, link);
+  const categoryId =
+    product.user_category_id != null && product.user_category_id !== ''
+      ? Number(product.user_category_id)
+      : product.categoryId != null
+        ? Number(product.categoryId)
+        : null;
   return {
     id: Number(product.id),
     sku: product.sku || null,
@@ -182,7 +188,30 @@ function mapPublicProduct(product, link, stock) {
     inStock: stock > 0,
     stock: stock > 0 ? stock : 0,
     imageUrl: primaryImageUrl(product.images),
+    categoryId: Number.isFinite(categoryId) && categoryId > 0 ? categoryId : null,
+    categoryName: product.category_name || product.categoryName || null,
   };
+}
+
+function buildPublicCategories(products) {
+  const map = new Map();
+  let uncategorized = 0;
+  for (const p of products || []) {
+    if (p.categoryId != null && p.categoryName) {
+      const prev = map.get(p.categoryId) || { id: p.categoryId, name: p.categoryName, count: 0 };
+      prev.count += 1;
+      map.set(p.categoryId, prev);
+    } else {
+      uncategorized += 1;
+    }
+  }
+  const categories = [...map.values()].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), 'ru')
+  );
+  if (uncategorized > 0) {
+    categories.push({ id: 'none', name: 'Без категории', count: uncategorized });
+  }
+  return categories;
 }
 
 export function listTemplates() {
@@ -455,17 +484,21 @@ async function catalogRowsForStore(store) {
   if (store.productMode === 'selected') {
     const ids = [...linkById.keys()];
     if (!ids.length) return [];
-    sql = `SELECT id, sku, name, description, price, cost, additional_expenses, min_price, images, quantity
-           FROM products
-           WHERE profile_id = $1 AND id = ANY($2::bigint[])
-             AND LOWER(TRIM(COALESCE(product_type::text, 'product'))) <> 'kit'`;
+    sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
+                  p.images, p.quantity, p.user_category_id, uc.name AS category_name
+           FROM products p
+           LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+           WHERE p.profile_id = $1 AND p.id = ANY($2::bigint[])
+             AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'`;
     params = [store.profileId, ids];
   } else {
-    sql = `SELECT id, sku, name, description, price, cost, additional_expenses, min_price, images, quantity
-           FROM products
-           WHERE profile_id = $1
-             AND LOWER(TRIM(COALESCE(product_type::text, 'product'))) <> 'kit'
-           ORDER BY name ASC
+    sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
+                  p.images, p.quantity, p.user_category_id, uc.name AS category_name
+           FROM products p
+           LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+           WHERE p.profile_id = $1
+             AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'
+           ORDER BY COALESCE(uc.name, 'ЯЯЯ') ASC, p.name ASC
            LIMIT 500`;
     params = [store.profileId];
   }
@@ -516,10 +549,12 @@ export async function getPublicStoreByHost(hostRaw) {
   };
 }
 
-export async function listPublicProducts(slug, { q = '' } = {}) {
+export async function listPublicProducts(slug, { q = '', categoryId = '' } = {}) {
   const store = await storesRepo.findPublishedBySlug(slug);
   if (!store) err('Магазин не найден или не опубликован', 404);
-  let products = await catalogRowsForStore(store);
+  const allProducts = await catalogRowsForStore(store);
+  const categories = buildPublicCategories(allProducts);
+  let products = allProducts;
   const needle = String(q || '').trim().toLowerCase();
   if (needle) {
     products = products.filter(
@@ -532,7 +567,18 @@ export async function listPublicProducts(slug, { q = '' } = {}) {
           .includes(needle)
     );
   }
-  return { store: publicStorePayload(store), products };
+  const catRaw = String(categoryId || '').trim();
+  if (catRaw === 'none') {
+    products = products.filter((p) => p.categoryId == null);
+  } else if (catRaw && /^\d+$/.test(catRaw)) {
+    const cid = Number(catRaw);
+    products = products.filter((p) => p.categoryId === cid);
+  }
+  return {
+    store: publicStorePayload(store),
+    products,
+    categories,
+  };
 }
 
 export async function getPublicProduct(slug, productId) {
