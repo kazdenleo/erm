@@ -18,6 +18,7 @@ import { parseBirthDate } from '../utils/userBirthDate.js';
 import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
 import { sendPasswordResetEmail } from '../services/mail.service.js';
 import logger from '../utils/logger.js';
+import { resolveClientKind } from '../utils/clientKind.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 
@@ -279,10 +280,11 @@ export const authController = {
       if (!match) {
         return res.status(401).json({ ok: false, message: 'Неверный логин или пароль' });
       }
-      // Новый вход сбрасывает сессии на других устройствах.
-      const sessionVersion = await usersRepo.bumpSessionVersion(user.id);
+      // Новый вход сбрасывает только сессии того же канала (web / mobile).
+      const channel = resolveClientKind(req);
+      const sessionVersion = await usersRepo.bumpSessionVersion(user.id, channel);
       const token = jwt.sign(
-        { userId: user.id, sv: sessionVersion },
+        { userId: user.id, sv: sessionVersion, ch: channel },
         config.jwt.secret,
         { expiresIn: config.jwt.expiresIn }
       );
@@ -335,9 +337,11 @@ export const authController = {
       }
       const password_hash = await bcrypt.hash(np, 10);
       await usersRepo.update(row.id, { password_hash, must_change_password: false });
-      const sessionVersion = await usersRepo.bumpSessionVersion(row.id);
+      // Смена пароля — сброс всех каналов; новый токен для текущего устройства.
+      const channel = resolveClientKind(req);
+      const sessionVersion = await usersRepo.bumpSessionVersion(row.id, 'all');
       const token = jwt.sign(
-        { userId: row.id, sv: sessionVersion },
+        { userId: row.id, sv: sessionVersion, ch: channel },
         config.jwt.secret,
         { expiresIn: config.jwt.expiresIn }
       );
@@ -438,7 +442,21 @@ export const authController = {
           `UPDATE users SET
              password_hash = $1,
              must_change_password = false,
-             session_version = COALESCE(session_version, 0) + 1,
+             session_version = GREATEST(
+               COALESCE(session_version, 0),
+               COALESCE(session_version_web, 0),
+               COALESCE(session_version_mobile, 0)
+             ) + 1,
+             session_version_web = GREATEST(
+               COALESCE(session_version, 0),
+               COALESCE(session_version_web, 0),
+               COALESCE(session_version_mobile, 0)
+             ) + 1,
+             session_version_mobile = GREATEST(
+               COALESCE(session_version, 0),
+               COALESCE(session_version_web, 0),
+               COALESCE(session_version_mobile, 0)
+             ) + 1,
              updated_at = CURRENT_TIMESTAMP
            WHERE id = $2`,
           [password_hash, row.user_id]

@@ -242,14 +242,46 @@ class UsersRepositoryPG {
   }
 
   /**
-   * Инвалидирует все ранее выданные JWT пользователя (новая сессия).
-   * @returns {Promise<number>} актуальный session_version
+   * Инвалидирует JWT в канале web|mobile (или во всех при channel='all'/без аргумента).
+   * session_version (legacy) всегда растёт вместе с каналом.
+   * @param {number|string} id
+   * @param {'web'|'mobile'|'all'|null|undefined} [channel]
+   * @returns {Promise<number>} актуальный sv для JWT (канальный или legacy)
    */
-  async bumpSessionVersion(id) {
+  async bumpSessionVersion(id, channel) {
+    const ch = String(channel || 'all').trim().toLowerCase();
+    if (ch === 'web' || ch === 'mobile') {
+      const col = ch === 'mobile' ? 'session_version_mobile' : 'session_version_web';
+      const result = await query(
+        `UPDATE users
+         SET ${col} = COALESCE(${col}, session_version, 0) + 1,
+             session_version = COALESCE(session_version, 0) + 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+         RETURNING COALESCE(${col}, 0) AS session_version`,
+        [id]
+      );
+      return Number(result.rows[0]?.session_version ?? 0);
+    }
     const result = await query(
       `UPDATE users
-       SET session_version = COALESCE(session_version, 0) + 1,
-           updated_at = CURRENT_TIMESTAMP
+       SET
+         session_version = GREATEST(
+           COALESCE(session_version, 0),
+           COALESCE(session_version_web, 0),
+           COALESCE(session_version_mobile, 0)
+         ) + 1,
+         session_version_web = GREATEST(
+           COALESCE(session_version, 0),
+           COALESCE(session_version_web, 0),
+           COALESCE(session_version_mobile, 0)
+         ) + 1,
+         session_version_mobile = GREATEST(
+           COALESCE(session_version, 0),
+           COALESCE(session_version_web, 0),
+           COALESCE(session_version_mobile, 0)
+         ) + 1,
+         updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
        RETURNING COALESCE(session_version, 0) AS session_version`,
       [id]
