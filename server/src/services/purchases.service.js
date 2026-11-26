@@ -5043,10 +5043,7 @@ class PurchasesService {
         err.statusCode = 400;
         throw err;
       }
-      // Раньше завершать мог только создатель — после dailyLogout / повторного входа
-      // коллега или тот же сотрудник не мог закрыть черновик. Достаточно доступа к профилю.
-      void receipt.created_by_user_id;
-      void userId;
+      // Завершать может любой с доступом к профилю/закупке (после dailyLogout и повторного входа тоже).
 
       const purchaseId = Number(receipt.purchase_id);
       await assertPurchaseInProfile(client, purchaseId, pid);
