@@ -64,14 +64,24 @@ function parseImages(raw) {
 
 function primaryImageUrl(images) {
   const list = parseImages(images);
-  const withUrl = (img) => {
+  const localUrl = (img) => {
     if (!img || typeof img !== 'object') return '';
     const u = img.url ?? img.src ?? img.link ?? '';
     return typeof u === 'string' ? u.trim() : '';
   };
-  const primary = list.find((img) => (img.primary === true || img.is_main === true) && withUrl(img));
-  const chosen = primary || list.find((img) => withUrl(img));
-  const raw = chosen ? withUrl(chosen) : '';
+  const remoteUrl = (img) => {
+    if (!img || typeof img !== 'object') return '';
+    const u = img.source_url ?? img.sourceUrl ?? img.cdn_url ?? img.cdnUrl ?? '';
+    return typeof u === 'string' ? u.trim() : '';
+  };
+  const hasAny = (img) => Boolean(localUrl(img) || remoteUrl(img));
+  const primary = list.find((img) => (img.primary === true || img.is_main === true) && hasAny(img));
+  const chosen = primary || list.find((img) => hasAny(img));
+  if (!chosen) return null;
+  // Публичная витрина: сначала CDN/source — локальные /uploads часто отсутствуют на диске.
+  const remote = remoteUrl(chosen);
+  if (/^https?:\/\//i.test(remote)) return remote;
+  const raw = localUrl(chosen);
   if (!raw) return null;
   if (/^https?:\/\//i.test(raw) || raw.startsWith('/')) return raw;
   return `/${raw.replace(/^\//, '')}`;

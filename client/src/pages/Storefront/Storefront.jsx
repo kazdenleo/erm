@@ -12,7 +12,7 @@ import {
   readCart,
   setCartQty,
 } from './storefrontCart.js';
-import { StorefrontBlocks } from './StorefrontBlocks.jsx';
+import { ProductImage, StorefrontBlocks } from './StorefrontBlocks.jsx';
 import './Storefront.css';
 
 function money(n) {
@@ -37,10 +37,13 @@ function sfPath(base, ...parts) {
 function Shell({ store, slug, base, cartItems, children }) {
   const count = cartCount(cartItems);
   const theme = store?.theme || {};
+  const logo = theme.logoUrl || store?.logoUrl;
+  const initial = String(store?.name || 'М').trim().charAt(0).toUpperCase() || 'М';
   return (
     <div
       className="sf-root"
       data-template={store?.templateCode || 'minimal'}
+      data-font-heading={theme.fontHeading || 'system'}
       style={{
         '--sf-brand': theme.brandColor || store?.brandColor || '#0f766e',
         '--sf-accent': theme.accentColor || theme.brandColor || store?.brandColor || '#0f766e',
@@ -54,18 +57,29 @@ function Shell({ store, slug, base, cartItems, children }) {
       <div className="sf-shell">
         <header className="sf-header">
           <Link to={sfPath(base)} className="sf-brand">
-            <span className="sf-brand-name">{store?.name || 'Магазин'}</span>
-            {store?.tagline ? <span className="sf-brand-tag">{store.tagline}</span> : null}
+            <span className="sf-brand-mark">
+              {logo ? <img src={logo} alt="" /> : initial}
+            </span>
+            <span className="sf-brand-text">
+              <span className="sf-brand-name">{store?.name || 'Магазин'}</span>
+              {store?.tagline ? <span className="sf-brand-tag">{store.tagline}</span> : null}
+            </span>
           </Link>
           <nav className="sf-nav">
             <Link to={sfPath(base)}>Каталог</Link>
-            <Link to={sfPath(base, 'cart')}>Корзина{count ? ` · ${count}` : ''}</Link>
+            <Link to={sfPath(base, 'cart')}>
+              Корзина
+              {count ? <span className="sf-cart-count">{count}</span> : null}
+            </Link>
           </nav>
         </header>
         {children}
         <footer className="sf-footer">
-          {[store?.phone, store?.email, store?.address].filter(Boolean).join(' · ') ||
-            'Заказы обрабатываются продавцом'}
+          <span>
+            {[store?.phone, store?.email, store?.address].filter(Boolean).join(' · ') ||
+              'Заказы обрабатываются продавцом'}
+          </span>
+          <span>{store?.name || 'Магазин'}</span>
         </footer>
       </div>
     </div>
@@ -144,11 +158,9 @@ function ProductView({ slug, base, onCartChange }) {
       {!p && !error ? <div className="sf-muted">Загрузка…</div> : null}
       {p ? (
         <div className="sf-pdp">
-          {p.imageUrl ? (
-            <img className="sf-pdp-img" src={p.imageUrl} alt="" />
-          ) : (
-            <div className="sf-pdp-img" />
-          )}
+          <div className="sf-pdp-media">
+            <ProductImage src={p.imageUrl} className="sf-pdp-img" />
+          </div>
           <div>
             <h1 style={{ marginTop: 0 }}>{p.name}</h1>
             {p.sku ? <div className="sf-muted">Артикул: {p.sku}</div> : null}

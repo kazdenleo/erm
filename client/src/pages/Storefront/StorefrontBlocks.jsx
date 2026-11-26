@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { addToCart } from './storefrontCart.js';
 
@@ -12,20 +12,50 @@ function productPath(base, slug, productId) {
   return `/p/${productId}`;
 }
 
-function ProductCard({ p, slug, base, density, onCartChange }) {
+function ImagePlaceholder({ label = 'Нет фото' }) {
   return (
-    <Link to={productPath(base, slug, p.id)} className={`sf-card${density === 'list' ? ' is-list' : ''}`}>
-      {p.imageUrl ? <img className="sf-card-img" src={p.imageUrl} alt="" /> : <div className="sf-card-img" />}
+    <div className="sf-card-ph" aria-hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <circle cx="9" cy="10" r="1.6" />
+        <path d="M4.5 16.5 9 12l3 2.5 3.5-4 4 6" />
+      </svg>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function ProductImage({ src, className = 'sf-card-img' }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return <ImagePlaceholder />;
+  return (
+    <img
+      className={className}
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function ProductCard({ p, slug, base, onCartChange }) {
+  return (
+    <Link to={productPath(base, slug, p.id)} className="sf-card">
+      <div className="sf-card-media">
+        <ProductImage src={p.imageUrl} />
+      </div>
       <div className="sf-card-body">
         <div className="sf-card-name">{p.name}</div>
         <span className={`sf-badge${p.inStock ? '' : ' out'}`}>
           {p.inStock ? 'В наличии' : 'Нет в наличии'}
         </span>
-        <div className="sf-card-price">{money(p.price)}</div>
+        <div className="sf-card-price-row">
+          <div className="sf-card-price">{money(p.price)}</div>
+        </div>
         <button
           type="button"
           className="sf-btn sf-btn-primary"
-          style={{ marginTop: 8 }}
           disabled={!p.inStock}
           onClick={(e) => {
             e.preventDefault();
@@ -36,6 +66,21 @@ function ProductCard({ p, slug, base, density, onCartChange }) {
         </button>
       </div>
     </Link>
+  );
+}
+
+function HeroBlock({ store, title, subtitle, showCta, ctaLabel, ctaHref, compact }) {
+  return (
+    <section className={`sf-hero${compact ? ' is-compact' : ''}`}>
+      {!compact ? <div className="sf-hero-kicker">Интернет-магазин</div> : null}
+      <h1>{title || store?.name || 'Каталог'}</h1>
+      {(subtitle || store?.tagline) ? <p>{subtitle || store?.tagline}</p> : null}
+      {showCta !== false ? (
+        <a className="sf-btn" href={ctaHref || '#catalog'}>
+          {ctaLabel || 'Смотреть каталог'}
+        </a>
+      ) : null}
+    </section>
   );
 }
 
@@ -51,25 +96,36 @@ export function StorefrontBlocks({
 }) {
   const layout = store?.layout;
   const blocks = Array.isArray(layout?.blocks) ? layout.blocks.filter((b) => b?.enabled !== false) : [];
-
   const byId = new Map((products || []).map((p) => [p.id, p]));
+  const countLabel = loading ? '…' : `${(products || []).length} тов.`;
 
   if (!blocks.length) {
     return (
       <>
-        <section className="sf-hero">
-          <h1>{store?.name || 'Каталог'}</h1>
-          <p>{store?.tagline || 'Товары в наличии'}</p>
+        <HeroBlock store={store} title={store?.name} subtitle={store?.tagline} />
+        <section className="sf-section" id="catalog">
+          <div className="sf-section-head">
+            <h2 className="sf-section-title">Каталог</h2>
+            <div className="sf-section-meta">{countLabel}</div>
+          </div>
+          <div className="sf-toolbar">
+            <input
+              value={q}
+              placeholder="Поиск по названию или артикулу"
+              onChange={(e) => onSearch(e.target.value)}
+            />
+          </div>
+          {loading ? <div className="sf-muted">Загрузка…</div> : null}
+          {!loading && !(products || []).length ? (
+            <div className="sf-empty">Пока нет товаров для показа</div>
+          ) : (
+            <div className="sf-grid">
+              {(products || []).map((p) => (
+                <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
+              ))}
+            </div>
+          )}
         </section>
-        <div className="sf-toolbar">
-          <input value={q} placeholder="Поиск" onChange={(e) => onSearch(e.target.value)} />
-        </div>
-        {loading ? <div className="sf-muted">Загрузка…</div> : null}
-        <div className="sf-grid">
-          {(products || []).map((p) => (
-            <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
-          ))}
-        </div>
       </>
     );
   }
@@ -79,27 +135,20 @@ export function StorefrontBlocks({
       {blocks.map((b) => {
         const props = b.props || {};
         if (b.type === 'hero') {
-          const title = props.title || store?.name || 'Каталог';
-          const subtitle = props.subtitle || store?.tagline || '';
           return (
-            <section
+            <HeroBlock
               key={b.id}
-              className={`sf-hero${props.compact ? ' is-compact' : ''}`}
-            >
-              <h1>{title}</h1>
-              {subtitle ? <p>{subtitle}</p> : null}
-              {props.showCta !== false ? (
-                <a className="sf-btn sf-btn-primary" href={props.ctaHref || '#catalog'} style={{ marginTop: 12 }}>
-                  {props.ctaLabel || 'Смотреть каталог'}
-                </a>
-              ) : null}
-            </section>
+              store={store}
+              title={props.title}
+              subtitle={props.subtitle || store?.tagline}
+              showCta={props.showCta !== false}
+              ctaLabel={props.ctaLabel || 'Смотреть каталог'}
+              ctaHref={props.ctaHref || '#catalog'}
+            />
           );
         }
         if (b.type === 'banner' && props.imageUrl) {
-          const inner = (
-            <img src={props.imageUrl} alt={props.alt || ''} className="sf-banner-img" />
-          );
+          const inner = <img src={props.imageUrl} alt={props.alt || ''} className="sf-banner-img" />;
           return (
             <div key={b.id} className="sf-banner">
               {props.href ? (
@@ -128,28 +177,28 @@ export function StorefrontBlocks({
           );
         }
         if (b.type === 'catalog') {
-          const density = props.density === 'list' ? 'list' : 'grid';
+          const compact = props.density === 'list';
           const limit = props.limit != null ? Number(props.limit) : null;
           let list = products || [];
           if (Number.isFinite(limit) && limit > 0) list = list.slice(0, limit);
           return (
             <section key={b.id} className="sf-section" id={props.anchor || 'catalog'}>
-              {props.title ? <h2 className="sf-section-title">{props.title}</h2> : null}
+              <div className="sf-section-head">
+                <h2 className="sf-section-title">{props.title || 'Каталог'}</h2>
+                <div className="sf-section-meta">{countLabel}</div>
+              </div>
               <div className="sf-toolbar">
-                <input value={q} placeholder="Поиск" onChange={(e) => onSearch(e.target.value)} />
+                <input
+                  value={q}
+                  placeholder="Поиск по названию или артикулу"
+                  onChange={(e) => onSearch(e.target.value)}
+                />
               </div>
               {loading ? <div className="sf-muted">Загрузка…</div> : null}
-              {!loading && !list.length ? <div className="sf-muted">Пока нет товаров</div> : null}
-              <div className={`sf-grid${density === 'list' ? ' is-list' : ''}`}>
+              {!loading && !list.length ? <div className="sf-empty">Пока нет товаров</div> : null}
+              <div className={`sf-grid${compact ? ' is-compact' : ''}`}>
                 {list.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    p={p}
-                    slug={slug}
-                    base={base}
-                    density={density}
-                    onCartChange={onCartChange}
-                  />
+                  <ProductCard key={p.id} p={p} slug={slug} base={base} onCartChange={onCartChange} />
                 ))}
               </div>
             </section>
@@ -184,3 +233,5 @@ export function StorefrontBlocks({
     </>
   );
 }
+
+export { ProductImage, ImagePlaceholder };

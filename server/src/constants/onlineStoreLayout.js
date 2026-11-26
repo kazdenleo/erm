@@ -75,8 +75,13 @@ export function defaultLayoutForTemplate(templateCode) {
     return {
       version: STORE_LAYOUT_VERSION,
       blocks: [
-        block('hero', { showCta: false, compact: true }),
-        block('catalog', { title: 'Каталог', density: 'list', anchor: 'catalog' }),
+        block('hero', {
+          showCta: true,
+          compact: false,
+          ctaLabel: 'К товарам',
+          ctaHref: '#catalog',
+        }),
+        block('catalog', { title: 'Каталог', density: 'grid', anchor: 'catalog' }),
         block('contacts', {}),
       ],
     };
@@ -84,8 +89,12 @@ export function defaultLayoutForTemplate(templateCode) {
   return {
     version: STORE_LAYOUT_VERSION,
     blocks: [
-      block('hero', { showCta: false }),
-      block('catalog', { title: '', anchor: 'catalog' }),
+      block('hero', {
+        showCta: true,
+        ctaLabel: 'Смотреть каталог',
+        ctaHref: '#catalog',
+      }),
+      block('catalog', { title: 'Каталог', density: 'grid', anchor: 'catalog' }),
       block('contacts', {}),
     ],
   };
