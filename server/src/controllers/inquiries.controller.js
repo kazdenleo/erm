@@ -17,6 +17,13 @@ const inquiriesRepo = repositoryFactory.getInquiriesRepository();
 const usersRepo = repositoryFactory.getUsersRepository();
 
 const STATUSES = new Set(['new', 'in_progress', 'completed']);
+const KINDS = new Set(['support', 'idea']);
+
+function normalizeInquiryKind(raw) {
+  const k = String(raw ?? 'support').trim().toLowerCase();
+  if (k === 'idea' || k === 'идея' || k === 'suggestion') return 'idea';
+  return 'support';
+}
 
 function canViewInquiry(req, row) {
   if (!row) return false;
@@ -87,6 +94,10 @@ export const inquiriesController = {
       if (!bodyText && !(req.files?.length > 0)) {
         return res.status(400).json({ ok: false, message: 'Укажите текст или прикрепите файл' });
       }
+      const kind = normalizeInquiryKind(req.body?.kind ?? req.body?.type);
+      if (!KINDS.has(kind)) {
+        return res.status(400).json({ ok: false, message: 'Некорректный тип обращения' });
+      }
       const userRow = await usersRepo.findById(req.user.id);
       const profileId = await resolveEffectiveProfileId(req, userRow);
       if (profileId == null) {
@@ -101,6 +112,7 @@ export const inquiriesController = {
         profileId,
         authorUserId,
         bodyText,
+        kind,
         status: 'new',
       });
       await movePendingFilesToInquiry(created.id, pendingDirId, req.files || []);

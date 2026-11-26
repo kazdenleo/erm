@@ -15,6 +15,7 @@ class InquiriesRepositoryPG {
         si.profile_id,
         si.author_user_id,
         si.body_text,
+        si.kind,
         si.status,
         si.admin_reply,
         si.admin_replied_at,
@@ -59,12 +60,13 @@ class InquiriesRepositoryPG {
     return result.rows[0] || null;
   }
 
-  async create({ profileId, authorUserId, bodyText, status = 'new' }) {
+  async create({ profileId, authorUserId, bodyText, kind = 'support', status = 'new' }) {
+    const k = kind === 'idea' ? 'idea' : 'support';
     const result = await query(
-      `INSERT INTO support_inquiries (profile_id, author_user_id, body_text, status)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, profile_id, author_user_id, body_text, status, created_at, updated_at`,
-      [profileId, authorUserId, bodyText || '', status]
+      `INSERT INTO support_inquiries (profile_id, author_user_id, body_text, kind, status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, profile_id, author_user_id, body_text, kind, status, created_at, updated_at`,
+      [profileId, authorUserId, bodyText || '', k, status]
     );
     return result.rows[0];
   }

@@ -1,5 +1,5 @@
 /**
- * Обращения в поддержку (пользователь аккаунта)
+ * Обращения в поддержку и идеи (пользователь аккаунта)
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -12,6 +12,7 @@ import './Support.css';
 
 export function Support() {
   const { profileId, loading: authLoading, isAdmin, refreshUser } = useAuth();
+  const [kind, setKind] = useState('support');
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
   const [sending, setSending] = useState(false);
@@ -49,6 +50,7 @@ export function Support() {
     try {
       const fd = new FormData();
       fd.append('body', t);
+      fd.append('kind', kind === 'idea' ? 'idea' : 'support');
       for (const f of files) {
         fd.append('files', f);
       }
@@ -56,6 +58,7 @@ export function Support() {
       if (res?.ok) {
         setText('');
         setFiles([]);
+        setKind('support');
         await load();
       }
     } catch (err) {
@@ -68,7 +71,7 @@ export function Support() {
   if (authLoading) {
     return (
       <div className="card">
-        <PageTitle title="Обращение в техподдержку" />
+        <PageTitle title="Поддержка и идеи" />
         <p className="text-muted">Загрузка…</p>
       </div>
     );
@@ -79,7 +82,7 @@ export function Support() {
   if (!hasProfile) {
     return (
       <div className="card">
-        <PageTitle title="Обращение в техподдержку" />
+        <PageTitle title="Поддержка и идеи" />
         <p className="text-muted">
           Не удалось определить ваш аккаунт (профиль) для обращений: в учётной записи нет привязки к профилю в базе,
           не выбрана организация в приложении или не совпадают данные. Выберите организацию в шапке/настройках, если
@@ -101,23 +104,57 @@ export function Support() {
     );
   }
 
+  const isIdea = kind === 'idea';
+
   return (
     <div>
-      <PageTitle title="Обращение в техподдержку" />
+      <PageTitle title="Поддержка и идеи" />
       <p className="support-lead text-muted">
-        Опишите вопрос и при необходимости прикрепите фото или видео. Ответ администратора продукта появится здесь же в
-        карточке обращения.
+        Задайте вопрос по работе системы или предложите идею. Ответ администратора продукта появится здесь же в карточке
+        обращения.
       </p>
 
       <form className="card support-form" onSubmit={submit}>
-        <label className="w-100">
-          Текст
+        <fieldset className="support-kind">
+          <legend className="support-kind-legend">Тип обращения</legend>
+          <div className="support-kind-options" role="radiogroup" aria-label="Тип обращения">
+            <label className={`support-kind-option${kind === 'support' ? ' is-active' : ''}`}>
+              <input
+                type="radio"
+                name="inquiry-kind"
+                value="support"
+                checked={kind === 'support'}
+                onChange={() => setKind('support')}
+              />
+              <span className="support-kind-title">Вопрос / проблема</span>
+              <span className="support-kind-hint">Не работает, непонятно, нужна помощь</span>
+            </label>
+            <label className={`support-kind-option${kind === 'idea' ? ' is-active' : ''}`}>
+              <input
+                type="radio"
+                name="inquiry-kind"
+                value="idea"
+                checked={kind === 'idea'}
+                onChange={() => setKind('idea')}
+              />
+              <span className="support-kind-title">Предложить идею</span>
+              <span className="support-kind-hint">Новая функция, улучшение, пожелание</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <label className="w-100 mt-3">
+          {isIdea ? 'Описание идеи' : 'Текст'}
           <textarea
             className="form-control mt-1"
             rows={5}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Опишите проблему или вопрос"
+            placeholder={
+              isIdea
+                ? 'Кратко опишите идею: что хотите добавить или изменить и зачем это нужно'
+                : 'Опишите проблему или вопрос'
+            }
           />
         </label>
         <label className="w-100 mt-2">
@@ -136,7 +173,7 @@ export function Support() {
         {error && <p className="text-danger mt-2 mb-0">{error}</p>}
         <div className="mt-3">
           <Button type="submit" variant="primary" disabled={sending}>
-            {sending ? 'Отправка…' : 'Отправить обращение'}
+            {sending ? 'Отправка…' : isIdea ? 'Отправить идею' : 'Отправить обращение'}
           </Button>
         </div>
       </form>
@@ -148,7 +185,12 @@ export function Support() {
         {list.map((row) => (
           <li key={row.id} className="card support-card mb-2">
             <div className="support-card-head">
-              <span className="support-status">{statusRu(row.status)}</span>
+              <div className="support-card-tags">
+                <span className={`support-kind-badge${row.kind === 'idea' ? ' support-kind-badge--idea' : ''}`}>
+                  {kindRu(row.kind)}
+                </span>
+                <span className="support-status">{statusRu(row.status)}</span>
+              </div>
               <span className="text-muted small">{formatDate(row.created_at)}</span>
             </div>
             <p className="support-body-text mb-0">{row.body_text || '—'}</p>
@@ -168,6 +210,10 @@ export function Support() {
       </ul>
     </div>
   );
+}
+
+function kindRu(k) {
+  return k === 'idea' ? 'Идея' : 'Вопрос';
 }
 
 function statusRu(s) {

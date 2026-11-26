@@ -19,6 +19,10 @@ function statusLabel(v) {
   return STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v;
 }
 
+function kindLabel(v) {
+  return v === 'idea' ? 'Идея' : 'Вопрос';
+}
+
 function formatDate(iso) {
   if (!iso) return '';
   try {
@@ -155,7 +159,7 @@ export function PlatformInquiries() {
     <div className="platform-page card">
       <h1 className="title">Обращения</h1>
       <p className="platform-muted" style={{ marginBottom: '1rem' }}>
-        Все обращения пользователей по аккаунтам. Можно ответить в карточке обращения и сменить статус.
+        Вопросы и идеи пользователей по аккаунтам. Можно ответить в карточке обращения и сменить статус.
       </p>
 
       {error && <p className="text-danger">{error}</p>}
@@ -174,6 +178,7 @@ export function PlatformInquiries() {
             <thead>
               <tr>
                 <th>Дата</th>
+                <th>Тип</th>
                 <th>Аккаунт</th>
                 <th>Автор</th>
                 <th>Текст</th>
@@ -186,6 +191,9 @@ export function PlatformInquiries() {
               {list.map((row) => (
                 <tr key={row.id}>
                   <td className="text-nowrap small">{formatDate(row.created_at)}</td>
+                  <td>
+                    <span className={row.kind === 'idea' ? 'text-success' : undefined}>{kindLabel(row.kind)}</span>
+                  </td>
                   <td>{row.profile_name || `— (#${row.profile_id})`}</td>
                   <td className="small">
                     {row.author_email}
@@ -237,15 +245,19 @@ export function PlatformInquiries() {
       <Modal
         isOpen={!!detail || detailLoading}
         onClose={closeDetail}
-        title={detail ? `Обращение #${detail.id}` : 'Загрузка…'}
+        title={
+          detail
+            ? `${detail.kind === 'idea' ? 'Идея' : 'Обращение'} #${detail.id}`
+            : 'Загрузка…'
+        }
         size="large"
       >
         {detailLoading && <p>Загрузка…</p>}
         {detail && (
           <div className="platform-inq-detail">
             <p className="small text-muted mb-2">
-              {formatDate(detail.created_at)} · {detail.profile_name || `Профиль #${detail.profile_id}`} ·{' '}
-              {detail.author_email}
+              {kindLabel(detail.kind)} · {formatDate(detail.created_at)} ·{' '}
+              {detail.profile_name || `Профиль #${detail.profile_id}`} · {detail.author_email}
             </p>
             <p className="mb-3" style={{ whiteSpace: 'pre-wrap' }}>
               {detail.body_text || '—'}

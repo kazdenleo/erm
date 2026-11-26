@@ -12,11 +12,91 @@
   padding: 1rem;
 }
 
+.support-kind {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.support-kind-legend {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.support-kind-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+@media (max-width: 560px) {
+  .support-kind-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.support-kind-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border, #dee2e6);
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.support-kind-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.support-kind-option.is-active {
+  border-color: var(--primary, #3f6ad8);
+  background: color-mix(in srgb, var(--primary, #3f6ad8) 8%, transparent);
+}
+
+.support-kind-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.support-kind-hint {
+  font-size: 0.78rem;
+  color: var(--muted, #6c757d);
+  line-height: 1.3;
+}
+
 .support-card-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
+  gap: 0.75rem;
+}
+
+.support-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.support-kind-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary, #3f6ad8) 12%, transparent);
+  color: var(--primary, #3f6ad8);
+}
+
+.support-kind-badge--idea {
+  background: color-mix(in srgb, #0d9488 14%, transparent);
+  color: #0f766e;
 }
 
 .support-status {

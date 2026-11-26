@@ -127,8 +127,8 @@ export function Header({
           <Link
             to="/support"
             className={`header-quick-action${onSupport ? ' header-quick-action--active' : ''}`}
-            title="Техподдержка"
-            aria-label="Техподдержка"
+            title="Поддержка и идеи"
+            aria-label="Поддержка и идеи"
             onClick={onCloseMobileSidebar}
           >
             <i className="pe-7s-mail" aria-hidden />

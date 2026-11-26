@@ -75,6 +75,10 @@ function inquiryStatusRu(s) {
   return 'Новый';
 }
 
+function inquiryKindRu(k) {
+  return k === 'idea' ? 'Идея' : 'Вопрос';
+}
+
 function billingRequestStatusRu(s) {
   if (s === 'pending') return 'Ожидает';
   if (s === 'approved') return 'Одобрена';
@@ -1167,6 +1171,7 @@ export function Admin() {
                   <thead>
                     <tr>
                       <th>Дата</th>
+                      <th>Тип</th>
                       <th>Статус</th>
                       <th>Автор</th>
                       <th>Текст</th>
@@ -1177,6 +1182,7 @@ export function Admin() {
                     {cabinetBundle.inquiries.map((q) => (
                       <tr key={q.id}>
                         <td className="text-nowrap small">{formatDt(q.created_at)}</td>
+                        <td>{inquiryKindRu(q.kind)}</td>
                         <td>{inquiryStatusRu(q.status)}</td>
                         <td className="small">
                           {q.author_email}
