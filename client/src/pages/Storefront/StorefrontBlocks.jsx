@@ -233,8 +233,8 @@ function CatalogBlock({
           onChange={(e) => onSearch(e.target.value)}
         />
       </div>
-      {loading ? <div className="sf-muted">Загрузка…</div> : null}
-      {!loading ? (
+      {loading ? <div className="sf-muted">Загрузка каталога…</div> : null}
+      {!loading && products?.length ? (
         <CatalogProducts
           products={products}
           categories={categories}
@@ -245,6 +245,7 @@ function CatalogBlock({
           compact={compact}
         />
       ) : null}
+      {!loading && !products?.length ? <div className="sf-empty">Пока нет товаров</div> : null}
     </section>
   );
 }

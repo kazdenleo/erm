@@ -98,6 +98,9 @@ function CatalogView({ store, slug, base, onCartChange }) {
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setError('');
+    // Не оставляем товары прошлой категории, пока «Все» ещё грузится / упало по таймауту.
+    setData((prev) => (prev ? { ...prev, products: [] } : prev));
     onlineStoreApi
       .publicProducts(slug, { q, categoryId })
       .then((d) => {
@@ -107,7 +110,10 @@ function CatalogView({ store, slug, base, onCartChange }) {
         }
       })
       .catch((e) => {
-        if (alive) setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки');
+        if (alive) {
+          setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки');
+          setData((prev) => (prev ? { ...prev, products: [] } : prev));
+        }
       })
       .finally(() => alive && setLoading(false));
     return () => {

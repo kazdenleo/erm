@@ -192,22 +192,51 @@ function resolveSellPrice(product, link) {
 }
 
 async function stockForProduct(productId, warehouseId) {
+  const map = await stocksForProducts([productId], warehouseId);
+  return map.get(Number(productId)) || 0;
+}
+
+/** Остатки пачкой — иначе витрина на сотнях SKU упирается в N+1 и таймаут. */
+async function stocksForProducts(productIds, warehouseId) {
+  const map = new Map();
+  const ids = [
+    ...new Set(
+      (productIds || [])
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (!ids.length) return map;
+
   if (warehouseId) {
     try {
       const r = await query(
-        `SELECT quantity::int AS q FROM product_warehouse_stock
-         WHERE product_id = $1 AND warehouse_id = $2`,
-        [productId, warehouseId]
+        `SELECT product_id, quantity::int AS q
+         FROM product_warehouse_stock
+         WHERE warehouse_id = $1 AND product_id = ANY($2::bigint[])`,
+        [warehouseId, ids]
       );
-      if (r.rows?.[0]) return Math.max(0, Number(r.rows[0].q) || 0);
+      for (const row of r.rows || []) {
+        map.set(Number(row.product_id), Math.max(0, Number(row.q) || 0));
+      }
     } catch {
-      /* fall through */
+      /* fall through to products.quantity */
     }
   }
-  const r = await query(`SELECT COALESCE(quantity, 0)::int AS q FROM products WHERE id = $1`, [
-    productId,
-  ]);
-  return Math.max(0, Number(r.rows?.[0]?.q) || 0);
+
+  const missing = ids.filter((id) => !map.has(id));
+  if (missing.length) {
+    const r = await query(
+      `SELECT id, COALESCE(quantity, 0)::int AS q
+       FROM products
+       WHERE id = ANY($1::bigint[])`,
+      [missing]
+    );
+    for (const row of r.rows || []) {
+      map.set(Number(row.id), Math.max(0, Number(row.q) || 0));
+    }
+  }
+  return map;
 }
 
 async function loadProfile(profileId) {
@@ -611,6 +640,7 @@ async function catalogRowsForStore(store) {
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1 AND p.id = ANY($2::bigint[])
+             AND COALESCE(p.is_archived, false) = false
              AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'`;
     params = [store.profileId, ids];
   } else {
@@ -620,19 +650,25 @@ async function catalogRowsForStore(store) {
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1
+             AND COALESCE(p.is_archived, false) = false
              AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'
            ORDER BY COALESCE(uc.name, 'ЯЯЯ') ASC, p.name ASC
-           LIMIT 500`;
+           LIMIT 2000`;
     params = [store.profileId];
   }
 
   const r = await query(sql, params);
+  const rows = r.rows || [];
+  const stockMap = await stocksForProducts(
+    rows.map((row) => row.id),
+    warehouseId
+  );
   const out = [];
-  for (const row of r.rows || []) {
+  for (const row of rows) {
     const id = Number(row.id);
     const link = linkById.get(id) || null;
     if (store.productMode === 'selected' && !link) continue;
-    const stock = await stockForProduct(id, warehouseId);
+    const stock = stockMap.get(id) || 0;
     out.push(mapPublicProduct(row, link, stock));
   }
   if (store.productMode === 'selected') {
