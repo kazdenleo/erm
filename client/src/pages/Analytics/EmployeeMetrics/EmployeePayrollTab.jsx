@@ -203,23 +203,42 @@ export function EmployeePayrollTab() {
     setPeriodPreset(detectAnalyticsPeriodPreset(dateFrom, next));
   };
 
+  const loadEmployeeDetail = useCallback(
+    async (row, nextPeriod) => {
+      if (!row) return;
+      const from = nextPeriod?.dateFrom || dateFrom;
+      const to = nextPeriod?.dateTo || dateTo;
+      const ym = String(from).slice(0, 7) || currentYearMonth();
+      setDetailLoading(true);
+      try {
+        const res = await usersApi.getUserPayroll(row.userId, { dateFrom: from, dateTo: to }, profileId);
+        setDetail(res?.data || null);
+        setCalMonth(ym);
+        await loadCalMonthAbsences(row.userId, ym);
+      } catch (err) {
+        alert(err?.response?.data?.message || err?.message || 'Не удалось загрузить пропуски');
+        setSelected(null);
+        setDetail(null);
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [dateFrom, dateTo, profileId, loadCalMonthAbsences]
+  );
+
   const openEmployee = async (row) => {
     setSelected(row);
     setDetail(null);
-    const ym = String(dateFrom).slice(0, 7) || currentYearMonth();
-    setCalMonth(ym);
-    setDetailLoading(true);
-    try {
-      const res = await usersApi.getUserPayroll(row.userId, period, profileId);
-      setDetail(res?.data || null);
-      await loadCalMonthAbsences(row.userId, ym);
-    } catch (err) {
-      alert(err?.response?.data?.message || err?.message || 'Не удалось загрузить пропуски');
-      setSelected(null);
-    } finally {
-      setDetailLoading(false);
-    }
+    await loadEmployeeDetail(row, period);
   };
+
+  // Пересчёт в модалке при смене периода на странице / в самой модалке
+  useEffect(() => {
+    if (!selected) return;
+    if (!dateFrom || !dateTo || dateFrom > dateTo) return;
+    loadEmployeeDetail(selected, { dateFrom, dateTo });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- только при смене дат, не при смене selected
+  }, [dateFrom, dateTo]);
 
   const shiftCalMonth = async (delta) => {
     if (!selected) return;
@@ -445,25 +464,59 @@ export function EmployeePayrollTab() {
         title={selected ? `Пропуски — ${selected.name}` : 'Пропуски'}
         size="medium"
       >
-        {detailLoading || !detail ? (
+        {detailLoading && !detail ? (
           <div className="sales-analytics__empty">Загрузка...</div>
         ) : (
           <div>
+            <div className="employee-payroll__modal-period">
+              <label className="employee-payroll__modal-period-field">
+                <span>С</span>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => onDateFromChange(e.target.value)}
+                  disabled={saving || detailLoading}
+                />
+              </label>
+              <label className="employee-payroll__modal-period-field">
+                <span>По</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => onDateToChange(e.target.value)}
+                  disabled={saving || detailLoading}
+                />
+              </label>
+              <div className="employee-payroll__presets">
+                {quickRanges.slice(0, 5).map((p) => {
+                  const active = dateFrom === p.dateFrom && dateTo === p.dateTo;
+                  return (
+                    <Button
+                      key={p.id}
+                      type="button"
+                      variant={active ? 'primary' : 'secondary'}
+                      size="small"
+                      disabled={saving || detailLoading}
+                      onClick={() => applyRange(p)}
+                    >
+                      {p.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="employee-payroll__detail-summary">
               <div>
-                Период:{' '}
-                <strong>
-                  {formatDateRu(detail.dateFrom)} — {formatDateRu(detail.dateTo)}
-                </strong>
+                Оклад: <strong>{formatMoney(detail?.baseSalary)}</strong>
               </div>
               <div>
-                Оклад: <strong>{formatMoney(detail.baseSalary)}</strong>
+                Пропуски:{' '}
+                <strong>{detailLoading ? '…' : detail?.missedDays ?? '—'}</strong>
+                {!detailLoading && detail ? ` из ${detail.workingDaysCount}` : null}
               </div>
               <div>
-                Пропуски: <strong>{detail.missedDays}</strong> из {detail.workingDaysCount}
-              </div>
-              <div>
-                Зарплата: <strong>{formatMoney(detail.salary)}</strong>
+                Зарплата:{' '}
+                <strong>{detailLoading ? '…' : formatMoney(detail?.salary)}</strong>
               </div>
             </div>
             <div className="employee-payroll__month">
@@ -486,8 +539,8 @@ export function EmployeePayrollTab() {
               </Button>
             </div>
             <p className="employee-payroll__hint">
-              Клик по рабочему дню отмечает или снимает пропуск. Дни вне выбранного периода
-              затемнены.
+              Период задаётся датами выше (можно 1–15 или 25 → 10). Календарь — для отметок
+              пропусков; дни вне периода затемнены.
             </p>
             <div className="employee-payroll__cal">
               {WEEKDAY_LABELS.map((label) => (
