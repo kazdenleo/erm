@@ -608,9 +608,6 @@ export const usersController = {
   /** Сводка зарплат сотрудников за период (dateFrom/dateTo или yearMonth) */
   async getPayroll(req, res, next) {
     try {
-      if (!isAccountAdmin(req.user)) {
-        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
-      }
       const profileId = resolveTenantProfileId(req);
       if (!profileId) {
         return res.status(400).json({ ok: false, message: 'Укажите профиль' });
@@ -632,9 +629,6 @@ export const usersController = {
 
   async getUserPayroll(req, res, next) {
     try {
-      if (!isAccountAdmin(req.user)) {
-        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
-      }
       const profileId = resolveTenantProfileId(req);
       if (!profileId) {
         return res.status(400).json({ ok: false, message: 'Укажите профиль' });
@@ -657,9 +651,6 @@ export const usersController = {
 
   async replaceUserAbsences(req, res, next) {
     try {
-      if (!isAccountAdmin(req.user)) {
-        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
-      }
       const profileId = resolveTenantProfileId(req);
       if (!profileId) {
         return res.status(400).json({ ok: false, message: 'Укажите профиль' });
@@ -684,9 +675,6 @@ export const usersController = {
 
   async toggleUserAbsence(req, res, next) {
     try {
-      if (!isAccountAdmin(req.user)) {
-        return res.status(403).json({ ok: false, message: 'Доступно только администратору аккаунта' });
-      }
       const profileId = resolveTenantProfileId(req);
       if (!profileId) {
         return res.status(400).json({ ok: false, message: 'Укажите профиль' });

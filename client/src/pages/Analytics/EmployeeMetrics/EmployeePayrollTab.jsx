@@ -7,6 +7,7 @@ import { useAuth } from '../../../context/AuthContext.jsx';
 import { usersApi } from '../../../services/users.api.js';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
+import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { detectAnalyticsPeriodPreset } from '../shared/analyticsPeriod';
 
@@ -114,7 +115,10 @@ function buildMonthGrid(yearMonth, absenceDates, periodFrom, periodTo) {
 }
 
 export function EmployeePayrollTab() {
-  const { profileId, isTenantAccountAdmin } = useAuth();
+  const { profileId, isTenantAccountAdmin, isAdmin, features } = useAuth();
+  const canPayroll =
+    Boolean(isTenantAccountAdmin || isAdmin) || isNavFeatureEnabled(features, 'analytics_employees');
+  const canEditBaseSalary = Boolean(isTenantAccountAdmin || isAdmin);
   const initial = useMemo(() => defaultPeriod(), []);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
   const [dateTo, setDateTo] = useState(initial.dateTo);
@@ -136,9 +140,9 @@ export function EmployeePayrollTab() {
   const quickRanges = useMemo(() => payrollQuickRanges(), []);
 
   const load = useCallback(async () => {
-    if (!isTenantAccountAdmin) {
+    if (!canPayroll) {
       setLoading(false);
-      setError('Зарплата доступна только администратору аккаунта');
+      setError('Нет доступа к разделу «Сотрудники» в правах роли');
       setSummary(null);
       return;
     }
@@ -165,7 +169,7 @@ export function EmployeePayrollTab() {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, period, profileId, isTenantAccountAdmin]);
+  }, [dateFrom, dateTo, period, profileId, canPayroll]);
 
   useEffect(() => {
     load();
@@ -396,14 +400,16 @@ export function EmployeePayrollTab() {
                       <strong>{formatMoney(row.salary)}</strong>
                     </td>
                     <td className="employee-payroll__actions">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="small"
-                        onClick={() => openSalaryEdit(row)}
-                      >
-                        Оклад
-                      </Button>
+                      {canEditBaseSalary ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="small"
+                          onClick={() => openSalaryEdit(row)}
+                        >
+                          Оклад
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         variant="secondary"

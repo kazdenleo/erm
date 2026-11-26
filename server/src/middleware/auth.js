@@ -6,8 +6,16 @@
 import jwt from 'jsonwebtoken';
 import config from '../config/index.js';
 import { query } from '../config/database.js';
+import repositoryFactory from '../config/repository-factory.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
+import { clientKindFromToken } from '../utils/clientKind.js';
+import {
+  isNavSectionEnabled,
+  resolveNavSectionsForUser,
+} from '../utils/userNavSections.js';
+
+const profilesRepo = repositoryFactory.getProfilesRepository();
 
 function normalizeAccountRole(v) {
   const s = v == null ? '' : String(v).trim().toLowerCase();
@@ -90,7 +98,10 @@ export async function optionalAuth(req, res, next) {
     const result = await query(
       `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin, account_role,
               COALESCE(must_change_password, false) AS must_change_password,
-              COALESCE(session_version, 0) AS session_version, created_at
+              COALESCE(session_version, 0) AS session_version,
+              COALESCE(session_version_web, session_version, 0) AS session_version_web,
+              COALESCE(session_version_mobile, session_version, 0) AS session_version_mobile,
+              created_at
        FROM users WHERE id = $1`,
       [decoded.userId]
     );
@@ -99,14 +110,20 @@ export async function optionalAuth(req, res, next) {
       req.user = null;
       return next();
     }
-    // Одна активная сессия: sv в JWT должен совпадать с users.session_version.
+    // Две сессии: web и mobile. Старые JWT без ch считаем web.
+    const channel = clientKindFromToken(decoded);
     const tokenSv = Number(decoded.sv ?? decoded.sessionVersion ?? 0);
-    const userSv = Number(user.session_version ?? 0);
+    const userSv = Number(
+      channel === 'mobile' ? user.session_version_mobile : user.session_version_web
+    );
     if (!Number.isFinite(tokenSv) || tokenSv !== userSv) {
       req.user = null;
       req.authError = {
         code: 'SESSION_SUPERSEDED',
-        message: 'Вы вошли с другого устройства. Эта сессия завершена.',
+        message:
+          channel === 'mobile'
+            ? 'Вы вошли с другого мобильного устройства. Эта сессия завершена.'
+            : 'Вы вошли с другого компьютера. Эта сессия завершена.',
       };
       return next();
     }
@@ -196,4 +213,41 @@ export function requireProfileAdmin(req, res, next) {
     return res.status(403).json({ ok: false, message: 'Доступ только для администратора аккаунта' });
   }
   next();
+}
+
+/**
+ * Доступ по праву раздела из настроек роли (profiles.role_nav_sections).
+ * Админ аккаунта / системы всегда проходит.
+ */
+export function requireNavSection(sectionKey) {
+  return async (req, res, next) => {
+    if (config.auth?.disabled) return next();
+    if (!req.user) {
+      return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+    }
+    if (isAccountAdminUser(req.user)) return next();
+    try {
+      const profileId = req.user.profileId;
+      if (profileId == null || profileId === '') {
+        return res.status(403).json({ ok: false, message: 'Нет доступа к разделу' });
+      }
+      const profile = await profilesRepo.findById(profileId);
+      const sections = resolveNavSectionsForUser(
+        {
+          role: req.user.role,
+          is_profile_admin: req.user.isProfileAdmin,
+          isProfileAdmin: req.user.isProfileAdmin,
+          account_role: req.user.accountRole,
+          accountRole: req.user.accountRole,
+        },
+        profile
+      );
+      if (!isNavSectionEnabled(sections, sectionKey)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа к этому разделу' });
+      }
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  };
 }

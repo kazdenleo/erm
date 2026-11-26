@@ -7,7 +7,7 @@ import express from 'express';
 import { usersController } from '../controllers/users.controller.js';
 import { homeWidgetsController } from '../controllers/homeWidgets.controller.js';
 import * as demoUxController from '../controllers/demoUx.controller.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireNavSection } from '../middleware/auth.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 
 const router = express.Router();
@@ -26,10 +26,11 @@ router.post('/me/demo-extend', wrapAsync(demoUxController.extendDemo));
 // Список пользователей для выбора (приглашения, назначения и т.п.) — без прав администратора.
 router.get('/invite-candidates', wrapAsync(usersController.getInviteCandidates));
 
-router.get('/payroll', wrapAsync(usersController.getPayroll));
-router.get('/:id/payroll', wrapAsync(usersController.getUserPayroll));
-router.put('/:id/absences', wrapAsync(usersController.replaceUserAbsences));
-router.post('/:id/absences/toggle', wrapAsync(usersController.toggleUserAbsence));
+const requireEmployeesAnalytics = requireNavSection('analytics_employees');
+router.get('/payroll', requireEmployeesAnalytics, wrapAsync(usersController.getPayroll));
+router.get('/:id/payroll', requireEmployeesAnalytics, wrapAsync(usersController.getUserPayroll));
+router.put('/:id/absences', requireEmployeesAnalytics, wrapAsync(usersController.replaceUserAbsences));
+router.post('/:id/absences/toggle', requireEmployeesAnalytics, wrapAsync(usersController.toggleUserAbsence));
 
 router.get('/', wrapAsync(usersController.getAll));
 router.get('/:id', wrapAsync(usersController.getById));
