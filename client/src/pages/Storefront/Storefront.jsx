@@ -66,7 +66,7 @@ function Shell({ store, slug, base, cartItems, children }) {
             </span>
           </Link>
           <nav className="sf-nav">
-            <Link to={sfPath(base)}>Каталог</Link>
+            <a href="#catalog">Каталог</a>
             <Link to={sfPath(base, 'cart')}>
               Корзина
               {count ? <span className="sf-cart-count">{count}</span> : null}

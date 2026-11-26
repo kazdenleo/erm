@@ -38,9 +38,10 @@
 }
 
 .sf-shell {
-  max-width: 1180px;
+  width: 100%;
+  max-width: min(1560px, 100%);
   margin: 0 auto;
-  padding: 0 1.1rem 3.5rem;
+  padding: 0 clamp(0.85rem, 2.2vw, 1.75rem) 3.5rem;
 }
 
 .sf-header {
@@ -177,13 +178,13 @@
   position: relative;
   overflow: hidden;
   border-radius: calc(var(--sf-radius) + 6px);
-  padding: clamp(1.6rem, 4vw, 3rem);
-  margin-bottom: 1.6rem;
-  min-height: 220px;
+  padding: clamp(1.15rem, 2.4vw, 1.85rem) clamp(1.15rem, 2.8vw, 2rem);
+  margin-bottom: 1.25rem;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 0.7rem;
+  gap: 0.55rem;
   color: #fff;
   background:
     linear-gradient(120deg, color-mix(in srgb, var(--sf-brand) 92%, #000) 0%, color-mix(in srgb, var(--sf-brand) 55%, #0f172a) 55%, #0f172a 100%);
@@ -238,18 +239,18 @@
 
 .sf-hero h1 {
   margin: 0;
-  font-size: clamp(1.8rem, 4.4vw, 2.75rem);
+  font-size: clamp(1.55rem, 3.2vw, 2.2rem);
   letter-spacing: -0.04em;
-  line-height: 1.05;
-  max-width: 14ch;
+  line-height: 1.1;
+  max-width: min(18ch, 100%);
 }
 
 .sf-hero p {
   margin: 0;
   opacity: 0.92;
-  max-width: 34rem;
-  font-size: 1.02rem;
-  line-height: 1.45;
+  max-width: 40rem;
+  font-size: 0.98rem;
+  line-height: 1.4;
 }
 
 .sf-hero .sf-btn {
@@ -294,13 +295,17 @@
 
 .sf-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: clamp(0.75rem, 1.4vw, 1.15rem);
 }
 
 .sf-grid.is-compact {
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
   gap: 0.8rem;
+}
+
+#catalog {
+  scroll-margin-top: 5.5rem;
 }
 
 .sf-section {
@@ -473,6 +478,12 @@
   align-items: start;
 }
 
+@media (max-width: 1100px) {
+  .sf-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  }
+}
+
 @media (max-width: 760px) {
   .sf-pdp {
     grid-template-columns: 1fr;
@@ -480,6 +491,59 @@
 
   .sf-brand-tag {
     display: none;
+  }
+
+  .sf-shell {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+  }
+
+  .sf-header {
+    margin-bottom: 0.9rem;
+  }
+
+  .sf-nav a,
+  .sf-btn {
+    padding: 0.5rem 0.8rem;
+    font-size: 0.84rem;
+  }
+
+  .sf-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+
+  .sf-card-name {
+    font-size: 0.84rem;
+    min-height: 2.3em;
+  }
+
+  .sf-card .sf-btn {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  .sf-hero {
+    padding: 1.05rem 1.1rem;
+  }
+
+  .sf-section-title {
+    font-size: 1.15rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .sf-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sf-nav {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .sf-nav a {
+    flex: 1;
   }
 }
 
