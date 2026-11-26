@@ -154,6 +154,67 @@ function formatDateRu(value) {
   return d.toLocaleDateString('ru-RU');
 }
 
+function ProductGallery({ urls, fallback }) {
+  const list = (Array.isArray(urls) && urls.length
+    ? urls
+    : fallback
+      ? [fallback]
+      : []
+  ).filter(Boolean);
+  const [active, setActive] = useState(0);
+  const [failed, setFailed] = useState({});
+
+  useEffect(() => {
+    setActive(0);
+    setFailed({});
+  }, [list.join('|')]);
+
+  const visible = list.filter((u) => !failed[u]);
+  const idx = Math.min(active, Math.max(0, visible.length - 1));
+  const current = visible[idx] || null;
+
+  if (!current) {
+    return (
+      <div className="sf-pdp-gallery">
+        <div className="sf-pdp-media">
+          <ProductImage src={null} className="sf-pdp-img" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sf-pdp-gallery">
+      <div className="sf-pdp-media">
+        <img
+          key={current}
+          className="sf-pdp-img"
+          src={current}
+          alt=""
+          onError={() => setFailed((prev) => ({ ...prev, [current]: true }))}
+        />
+      </div>
+      {visible.length > 1 ? (
+        <div className="sf-pdp-thumbs" role="list">
+          {visible.map((url, i) => (
+            <button
+              key={url}
+              type="button"
+              role="listitem"
+              className={`sf-pdp-thumb${i === idx ? ' is-active' : ''}`}
+              aria-label={`Фото ${i + 1}`}
+              aria-current={i === idx ? 'true' : undefined}
+              onClick={() => setActive(i)}
+            >
+              <img src={url} alt="" loading="lazy" />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProductView({ slug, base, onCartChange }) {
   const { productId } = useParams();
   const navigate = useNavigate();
@@ -184,9 +245,7 @@ function ProductView({ slug, base, onCartChange }) {
       {p ? (
         <>
           <div className="sf-pdp">
-            <div className="sf-pdp-media">
-              <ProductImage src={p.imageUrl} className="sf-pdp-img" />
-            </div>
+            <ProductGallery urls={p.imageUrls} fallback={p.imageUrl} />
             <div>
               {p.categoryName ? <div className="sf-pdp-cat">{p.categoryName}</div> : null}
               <h1 className="sf-pdp-title">{p.name}</h1>

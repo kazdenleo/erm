@@ -48,6 +48,79 @@ function normalizeSlug(raw) {
     .slice(0, 64);
 }
 
+/** { byCategory: { "<categoryId>": [attributeId, ...] } } */
+export function sanitizeAttributeDisplay(raw) {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { byCategory: {} };
+  }
+  const src =
+    raw.byCategory && typeof raw.byCategory === 'object' && !Array.isArray(raw.byCategory)
+      ? raw.byCategory
+      : raw;
+  const byCategory = {};
+  for (const [key, val] of Object.entries(src)) {
+    const k = String(key);
+    if (k !== 'none' && !/^\d+$/.test(k)) continue;
+    if (!Array.isArray(val)) continue;
+    const ids = [
+      ...new Set(
+        val
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+    byCategory[k] = ids;
+  }
+  return { byCategory };
+}
+
+function resolveAllowedAttributeIds(display, categoryId) {
+  const by = display?.byCategory;
+  if (!by || typeof by !== 'object') return null;
+  const key =
+    categoryId != null && Number.isFinite(Number(categoryId))
+      ? String(Number(categoryId))
+      : 'none';
+  if (!Object.prototype.hasOwnProperty.call(by, key)) return null;
+  return new Set((by[key] || []).map(Number));
+}
+
+async function listCategoryAttributeOptions(profileId) {
+  const r = await query(
+    `SELECT uc.id AS category_id,
+            uc.name AS category_name,
+            pa.id AS attribute_id,
+            pa.name AS attribute_name
+     FROM user_categories uc
+     LEFT JOIN category_attributes ca ON ca.user_category_id = uc.id
+     LEFT JOIN product_attributes pa ON pa.id = ca.attribute_id
+     WHERE uc.profile_id = $1
+     ORDER BY uc.name ASC, pa.name ASC NULLS LAST`,
+    [Number(profileId)]
+  );
+  const map = new Map();
+  for (const row of r.rows || []) {
+    const cid = Number(row.category_id);
+    if (!map.has(cid)) {
+      map.set(cid, {
+        id: cid,
+        name: String(row.category_name || '').trim() || `Категория ${cid}`,
+        attributes: [],
+      });
+    }
+    if (row.attribute_id != null) {
+      const aid = Number(row.attribute_id);
+      const name = String(row.attribute_name || '').trim();
+      if (!Number.isFinite(aid) || !name) continue;
+      const bucket = map.get(cid).attributes;
+      if (!bucket.some((a) => a.id === aid)) {
+        bucket.push({ id: aid, name });
+      }
+    }
+  }
+  return [...map.values()];
+}
+
 function parseImages(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -62,29 +135,44 @@ function parseImages(raw) {
   return [];
 }
 
-function primaryImageUrl(images) {
-  const list = parseImages(images);
-  const localUrl = (img) => {
-    if (!img || typeof img !== 'object') return '';
-    const u = img.url ?? img.src ?? img.link ?? '';
-    return typeof u === 'string' ? u.trim() : '';
-  };
-  const remoteUrl = (img) => {
-    if (!img || typeof img !== 'object') return '';
-    const u = img.source_url ?? img.sourceUrl ?? img.cdn_url ?? img.cdnUrl ?? '';
-    return typeof u === 'string' ? u.trim() : '';
-  };
-  const hasAny = (img) => Boolean(localUrl(img) || remoteUrl(img));
-  const primary = list.find((img) => (img.primary === true || img.is_main === true) && hasAny(img));
-  const chosen = primary || list.find((img) => hasAny(img));
-  if (!chosen) return null;
+function resolvePublicImageUrl(img) {
+  if (!img || typeof img !== 'object') return null;
+  const localRaw = img.url ?? img.src ?? img.link ?? '';
+  const remoteRaw = img.source_url ?? img.sourceUrl ?? img.cdn_url ?? img.cdnUrl ?? '';
+  const local = typeof localRaw === 'string' ? localRaw.trim() : '';
+  const remote = typeof remoteRaw === 'string' ? remoteRaw.trim() : '';
   // Публичная витрина: сначала CDN/source — локальные /uploads часто отсутствуют на диске.
-  const remote = remoteUrl(chosen);
   if (/^https?:\/\//i.test(remote)) return remote;
-  const raw = localUrl(chosen);
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw) || raw.startsWith('/')) return raw;
-  return `/${raw.replace(/^\//, '')}`;
+  if (!local) return null;
+  if (/^https?:\/\//i.test(local) || local.startsWith('/')) return local;
+  return `/${local.replace(/^\//, '')}`;
+}
+
+function orderImagesForPublic(images) {
+  const list = parseImages(images).filter((img) => resolvePublicImageUrl(img));
+  if (!list.length) return [];
+  const primIdx = list.findIndex(
+    (img) => img && (img.primary === true || img.is_main === true)
+  );
+  if (primIdx <= 0) return list;
+  const primary = list[primIdx];
+  return [primary, ...list.slice(0, primIdx), ...list.slice(primIdx + 1)];
+}
+
+function allPublicImageUrls(images) {
+  const urls = [];
+  const seen = new Set();
+  for (const img of orderImagesForPublic(images)) {
+    const url = resolvePublicImageUrl(img);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+  return urls;
+}
+
+function primaryImageUrl(images) {
+  return allPublicImageUrls(images)[0] || null;
 }
 
 function resolveSellPrice(product, link) {
@@ -248,6 +336,7 @@ export async function getAdminStore(profileId) {
     customDomainFeature: STORE_CUSTOM_DOMAIN_FEATURE,
     cnameTarget: storeDomainCnameTarget(),
   };
+  const attributeCategories = await listCategoryAttributeOptions(profileId);
   if (!store) {
     return {
       store: null,
@@ -256,6 +345,7 @@ export async function getAdminStore(profileId) {
       blockTypes: STORE_BLOCK_TYPES,
       editorEnabled,
       editorFeature: STORE_EDITOR_FEATURE,
+      attributeCategories,
       ...domainMeta,
       publicPath: null,
     };
@@ -263,11 +353,13 @@ export async function getAdminStore(profileId) {
   const products = await storesRepo.listStoreProductLinks(store.id);
   const theme = resolveStoreTheme(store);
   const layout = resolveStoreLayout(store);
+  const attributeDisplay = sanitizeAttributeDisplay(store.attributeDisplay);
   return {
     store: {
       ...store,
       theme,
       layout,
+      attributeDisplay,
       ...domainPublicPayload(store),
       dns: store.customDomain ? domainDnsInstructions(store.customDomain) : null,
     },
@@ -276,6 +368,7 @@ export async function getAdminStore(profileId) {
     blockTypes: STORE_BLOCK_TYPES,
     editorEnabled,
     editorFeature: STORE_EDITOR_FEATURE,
+    attributeCategories,
     ...domainMeta,
     publicPath: `/s/${store.slug}`,
   };
@@ -443,6 +536,13 @@ export async function saveAdminStore(profileId, body = {}) {
     }
   }
 
+  let attributeDisplayJson;
+  if (body.attributeDisplay != null || body.attribute_display != null) {
+    attributeDisplayJson = sanitizeAttributeDisplay(
+      body.attributeDisplay ?? body.attribute_display
+    );
+  }
+
   const fields = {
     slug,
     name,
@@ -457,6 +557,7 @@ export async function saveAdminStore(profileId, body = {}) {
     productMode: productModeRaw || existing?.productMode || 'all',
     themeJson,
     layoutJson,
+    ...(attributeDisplayJson !== undefined ? { attributeDisplayJson } : {}),
     ...domainPatch,
   };
 
@@ -751,16 +852,26 @@ export async function getPublicProduct(slug, productId) {
   const warehouseId = await resolveWarehouseId(store.profileId);
   const stock = await stockForProduct(pid, warehouseId);
   const base = mapPublicProduct(row, link, stock);
-  const [attributes, certificates] = await Promise.all([
+  const imageUrls = allPublicImageUrls(row.images);
+  const allowedAttrIds = resolveAllowedAttributeIds(
+    sanitizeAttributeDisplay(store.attributeDisplay),
+    row.user_category_id
+  );
+  const [attributesRaw, certificates] = await Promise.all([
     loadPublicAttributes(pid),
     loadPublicCertificates(store.profileId, pid),
   ]);
+  const attributes = allowedAttrIds
+    ? attributesRaw.filter((a) => allowedAttrIds.has(a.id))
+    : attributesRaw;
 
   return {
     store: publicStorePayload(store),
     product: {
       ...base,
       ...listedHit,
+      imageUrl: imageUrls[0] || base.imageUrl || null,
+      imageUrls,
       description: pickPublicDescription(row),
       specs: buildPublicSpecs(row),
       attributes,

@@ -62,6 +62,9 @@ export function OnlineStoreAdmin() {
     error: '',
     dns: null,
   });
+  const [attributeCategories, setAttributeCategories] = useState([]);
+  const [attrByCategory, setAttrByCategory] = useState({});
+  const [attrOpenId, setAttrOpenId] = useState(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -82,6 +85,9 @@ export function OnlineStoreAdmin() {
       if (Array.isArray(mine?.templates) && mine.templates.length) setTemplates(mine.templates);
       setEditorEnabled(!!mine?.editorEnabled);
       setCustomDomainEnabled(!!mine?.customDomainEnabled);
+      setAttributeCategories(
+        Array.isArray(mine?.attributeCategories) ? mine.attributeCategories : []
+      );
       const s = mine?.store;
       if (s) {
         setForm({
@@ -104,6 +110,11 @@ export function OnlineStoreAdmin() {
           error: s.customDomainError || '',
           dns: s.dns || null,
         });
+        setAttrByCategory(
+          s.attributeDisplay?.byCategory && typeof s.attributeDisplay.byCategory === 'object'
+            ? { ...s.attributeDisplay.byCategory }
+            : {}
+        );
       } else {
         setForm((f) => ({
           ...f,
@@ -114,6 +125,7 @@ export function OnlineStoreAdmin() {
         setLayoutBlocks([]);
         setCustomDomain('');
         setDomainMeta({ status: 'none', error: '', dns: null });
+        setAttrByCategory({});
       }
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить');
@@ -155,6 +167,53 @@ export function OnlineStoreAdmin() {
     });
   };
 
+  const categoryAttrIds = (cat) => (cat?.attributes || []).map((a) => Number(a.id));
+
+  const isAttrChecked = (catId, attrId) => {
+    const key = String(catId);
+    const selected = attrByCategory[key];
+    if (selected == null) return true;
+    return selected.map(Number).includes(Number(attrId));
+  };
+
+  const isAttrConfigured = (catId) =>
+    Object.prototype.hasOwnProperty.call(attrByCategory, String(catId));
+
+  const toggleCategoryAttr = (cat, attrId) => {
+    const key = String(cat.id);
+    const allIds = categoryAttrIds(cat);
+    setAttrByCategory((prev) => {
+      const current = prev[key] != null ? prev[key].map(Number) : [...allIds];
+      const next = new Set(current);
+      const id = Number(attrId);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, [key]: [...next] };
+    });
+  };
+
+  const selectAllCategoryAttrs = (cat) => {
+    setAttrByCategory((prev) => ({
+      ...prev,
+      [String(cat.id)]: categoryAttrIds(cat),
+    }));
+  };
+
+  const clearCategoryAttrs = (cat) => {
+    setAttrByCategory((prev) => ({
+      ...prev,
+      [String(cat.id)]: [],
+    }));
+  };
+
+  const resetCategoryAttrs = (cat) => {
+    setAttrByCategory((prev) => {
+      const next = { ...prev };
+      delete next[String(cat.id)];
+      return next;
+    });
+  };
+
   const save = async ({ publish } = {}) => {
     setSaving(true);
     setError('');
@@ -168,6 +227,7 @@ export function OnlineStoreAdmin() {
           form.productMode === 'selected'
             ? [...selectedIds].map((productId, i) => ({ productId, sortOrder: i }))
             : undefined,
+        attributeDisplay: { byCategory: attrByCategory },
       };
       if (editorEnabled) {
         body.theme = { brandColor: form.brandColor };
@@ -179,6 +239,9 @@ export function OnlineStoreAdmin() {
       const data = await onlineStoreApi.saveMine(body);
       setEditorEnabled(!!data?.editorEnabled);
       setCustomDomainEnabled(!!data?.customDomainEnabled);
+      setAttributeCategories(
+        Array.isArray(data?.attributeCategories) ? data.attributeCategories : attributeCategories
+      );
       const s = data?.store;
       if (s) {
         setForm((f) => ({
@@ -202,6 +265,11 @@ export function OnlineStoreAdmin() {
           error: s.customDomainError || '',
           dns: s.dns || null,
         });
+        setAttrByCategory(
+          s.attributeDisplay?.byCategory && typeof s.attributeDisplay.byCategory === 'object'
+            ? { ...s.attributeDisplay.byCategory }
+            : {}
+        );
       }
       setOkMsg(publish === true ? 'Магазин опубликован' : publish === false ? 'Снят с публикации' : 'Сохранено');
     } catch (e) {
@@ -410,6 +478,105 @@ export function OnlineStoreAdmin() {
                 ) : (
                   <p className="small text-muted mb-0">
                     На витрине будут все товары профиля (до 500). Цена — из карточки товара.
+                  </p>
+                )}
+
+                <h3 className="h6 mt-4 mb-2">Атрибуты на карточке товара</h3>
+                <p className="small text-muted mb-2">
+                  Для каждой категории отметьте, какие характеристики показывать покупателю. Пока
+                  настройка не сохранена для категории — на витрине видны все атрибуты с значениями.
+                </p>
+                {attributeCategories.length ? (
+                  <div className="online-store-attr-cats">
+                    {attributeCategories.map((cat) => {
+                      const open = attrOpenId === cat.id;
+                      const attrs = cat.attributes || [];
+                      const configured = isAttrConfigured(cat.id);
+                      const selectedCount = configured
+                        ? (attrByCategory[String(cat.id)] || []).length
+                        : attrs.length;
+                      return (
+                        <div
+                          key={cat.id}
+                          className={`online-store-attr-cat${open ? ' is-open' : ''}${
+                            configured ? ' is-configured' : ''
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="online-store-attr-cat-head"
+                            onClick={() => setAttrOpenId(open ? null : cat.id)}
+                          >
+                            <span className="online-store-attr-cat-title">{cat.name}</span>
+                            <span className="online-store-attr-cat-meta text-muted">
+                              {attrs.length
+                                ? configured
+                                  ? `${selectedCount} из ${attrs.length}`
+                                  : `все (${attrs.length})`
+                                : 'нет атрибутов'}
+                            </span>
+                          </button>
+                          {open ? (
+                            <div className="online-store-attr-cat-body">
+                              {!attrs.length ? (
+                                <p className="small text-muted mb-0">
+                                  К категории не привязаны атрибуты. Добавьте их в справочнике
+                                  категорий.
+                                </p>
+                              ) : (
+                                <>
+                                  <div className="online-store-attr-cat-actions">
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-outline-secondary"
+                                      onClick={() => selectAllCategoryAttrs(cat)}
+                                    >
+                                      Все
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-outline-secondary"
+                                      onClick={() => clearCategoryAttrs(cat)}
+                                    >
+                                      Ничего
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-outline-secondary"
+                                      onClick={() => resetCategoryAttrs(cat)}
+                                      title="Снова показывать все без отдельной настройки"
+                                    >
+                                      Сбросить
+                                    </button>
+                                  </div>
+                                  <div className="online-store-attr-list">
+                                    {attrs.map((attr) => (
+                                      <label
+                                        key={attr.id}
+                                        className={`online-store-attr-row${
+                                          isAttrChecked(cat.id, attr.id) ? ' is-on' : ''
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={isAttrChecked(cat.id, attr.id)}
+                                          onChange={() => toggleCategoryAttr(cat, attr.id)}
+                                        />
+                                        <span>{attr.name}</span>
+                                      </label>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="small text-muted mb-0">
+                    Категорий пока нет — создайте их в каталоге, чтобы настроить показ атрибутов.
                   </p>
                 )}
 

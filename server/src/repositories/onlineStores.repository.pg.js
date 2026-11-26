@@ -31,6 +31,7 @@ function mapStore(row) {
     productMode: row.product_mode || 'all',
     themeJson: parseJson(row.theme_json, {}),
     layoutJson: parseJson(row.layout_json, {}),
+    attributeDisplay: parseJson(row.attribute_display_json, { byCategory: {} }),
     customDomain: row.custom_domain || null,
     customDomainStatus: row.custom_domain_status || 'none',
     customDomainVerifiedAt: row.custom_domain_verified_at || null,
@@ -108,6 +109,10 @@ export async function upsertForProfile(profileId, fields) {
   const existing = await findByProfileId(profileId);
   const themeJson = fields.themeJson != null ? JSON.stringify(fields.themeJson) : null;
   const layoutJson = fields.layoutJson != null ? JSON.stringify(fields.layoutJson) : null;
+  const attributeDisplayProvided = fields.attributeDisplayJson !== undefined;
+  const attributeDisplayJson = attributeDisplayProvided
+    ? JSON.stringify(fields.attributeDisplayJson || { byCategory: {} })
+    : null;
 
   const domainFieldsProvided = fields.customDomain !== undefined;
   const customDomain = domainFieldsProvided ? fields.customDomain || null : undefined;
@@ -135,10 +140,14 @@ export async function upsertForProfile(profileId, fields) {
          product_mode = $12,
          theme_json = COALESCE($13::jsonb, theme_json),
          layout_json = COALESCE($14::jsonb, layout_json),
-         custom_domain = CASE WHEN $15::boolean THEN $16 ELSE custom_domain END,
-         custom_domain_status = CASE WHEN $15::boolean THEN $17 ELSE custom_domain_status END,
-         custom_domain_error = CASE WHEN $15::boolean THEN $18 ELSE custom_domain_error END,
-         custom_domain_verified_at = CASE WHEN $15::boolean THEN $19 ELSE custom_domain_verified_at END,
+         attribute_display_json = CASE
+           WHEN $15::boolean THEN COALESCE($16::jsonb, '{}'::jsonb)
+           ELSE attribute_display_json
+         END,
+         custom_domain = CASE WHEN $17::boolean THEN $18 ELSE custom_domain END,
+         custom_domain_status = CASE WHEN $17::boolean THEN $19 ELSE custom_domain_status END,
+         custom_domain_error = CASE WHEN $17::boolean THEN $20 ELSE custom_domain_error END,
+         custom_domain_verified_at = CASE WHEN $17::boolean THEN $21 ELSE custom_domain_verified_at END,
          updated_at = CURRENT_TIMESTAMP
        WHERE profile_id = $1
        RETURNING *`,
@@ -157,6 +166,8 @@ export async function upsertForProfile(profileId, fields) {
         fields.productMode || 'all',
         themeJson,
         layoutJson,
+        attributeDisplayProvided,
+        attributeDisplayJson,
         domainFieldsProvided,
         customDomain,
         customDomainStatus || 'none',
@@ -171,13 +182,14 @@ export async function upsertForProfile(profileId, fields) {
     `INSERT INTO online_stores (
        profile_id, slug, name, template_code, brand_color, logo_url,
        tagline, phone, email, address, published, product_mode,
-       theme_json, layout_json,
+       theme_json, layout_json, attribute_display_json,
        custom_domain, custom_domain_status, custom_domain_error, custom_domain_verified_at
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
        COALESCE($13::jsonb, '{}'::jsonb),
        COALESCE($14::jsonb, '{}'::jsonb),
-       $15, $16, $17, $18
+       COALESCE($15::jsonb, '{}'::jsonb),
+       $16, $17, $18, $19
      )
      RETURNING *`,
     [
@@ -195,6 +207,7 @@ export async function upsertForProfile(profileId, fields) {
       fields.productMode || 'all',
       themeJson,
       layoutJson,
+      attributeDisplayProvided ? attributeDisplayJson : '{}',
       domainFieldsProvided ? customDomain : null,
       domainFieldsProvided ? customDomainStatus || 'none' : 'none',
       domainFieldsProvided ? customDomainError || '' : '',

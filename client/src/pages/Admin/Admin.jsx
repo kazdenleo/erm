@@ -41,6 +41,34 @@ function planCodeRu(c) {
   return c || '—';
 }
 
+function profilePlanCode(p) {
+  return String(p?.plan_code || p?.planCode || '').trim().toLowerCase();
+}
+
+function profilePlanLabel(p, catalogPlans = []) {
+  const code = profilePlanCode(p);
+  const fromCatalog = (catalogPlans || []).find(
+    (x) => String(x.code || x.planCode || '').toLowerCase() === code
+  );
+  if (fromCatalog?.name) return fromCatalog.name;
+  const mapped = planCodeRu(code);
+  if (mapped && mapped !== '—') return mapped;
+  return p?.tariff || '—';
+}
+
+function planBadgeClass(code) {
+  if (code === 'pro') return 'bg-primary';
+  if (code === 'business') return 'bg-info text-dark';
+  if (code === 'start') return 'bg-secondary';
+  return 'bg-light text-dark border';
+}
+
+function profileEndsAt(p) {
+  const status = p?.subscription_status || p?.subscriptionStatus;
+  if (status === 'trial') return p?.trial_ends_at || p?.trialEndsAt || null;
+  return p?.subscription_ends_at || p?.subscriptionEndsAt || null;
+}
+
 function inquiryStatusRu(s) {
   if (s === 'in_progress') return 'В работе';
   if (s === 'completed') return 'Завершён';
@@ -718,6 +746,7 @@ export function Admin() {
             <thead>
               <tr>
                 <th>Название</th>
+                <th>Тариф</th>
                 <th>Контакт</th>
                 <th>Пользователей</th>
                 <th>Организаций</th>
@@ -731,20 +760,39 @@ export function Admin() {
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="empty-state">
+                  <td colSpan={10} className="empty-state">
                     Нет аккаунтов
                   </td>
                 </tr>
               ) : (
-                profiles.map((p) => (
+                profiles.map((p) => {
+                  const planCode = profilePlanCode(p);
+                  const endsAt = profileEndsAt(p);
+                  let endsAtLabel = '';
+                  if (endsAt) {
+                    try {
+                      endsAtLabel = new Date(endsAt).toLocaleDateString('ru-RU');
+                    } catch {
+                      endsAtLabel = formatDt(endsAt);
+                    }
+                  }
+                  return (
                   <tr key={p.id}>
                     <td>
                       <strong>{p.name}</strong>
                       <div className="admin-muted small">
-                        {subscriptionStatusRu(p.subscription_status)}
-                        {' · '}
-                        {planCodeRu(p.plan_code) || p.tariff || '—'}
+                        {subscriptionStatusRu(p.subscription_status || p.subscriptionStatus)}
                       </div>
+                    </td>
+                    <td className="small">
+                      <span className={`badge ${planBadgeClass(planCode)}`}>
+                        {profilePlanLabel(p, catalogPlans)}
+                      </span>
+                      {endsAtLabel ? (
+                        <div className="admin-muted small mt-1" title={formatDt(endsAt)}>
+                          до {endsAtLabel}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="small">
                       {p.contact_full_name || '—'}
@@ -805,7 +853,8 @@ export function Admin() {
                       </Button>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

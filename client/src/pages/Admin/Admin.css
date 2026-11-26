@@ -107,7 +107,13 @@
 }
 .admin-list-item-name { font-weight: 600; }
 .admin-list-item-actions { display: flex; gap: 0.5rem; }
-.admin-muted { color: var(--muted); font-size: 0.875rem; margin-left: 0.25rem; }
+.admin-muted { color: var(--muted); font-size: 0.875rem; }
+
+.admin-accounts-table .badge {
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
 .admin-badge {
   display: inline-block;
   margin-left: 0.5rem;
