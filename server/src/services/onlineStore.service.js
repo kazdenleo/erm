@@ -640,10 +640,10 @@ async function catalogRowsForStore(store) {
            FROM products p
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1 AND p.id = ANY($2::bigint[])
-             AND COALESCE(p.is_archived, false) = false
-             AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'`;
+             AND COALESCE(p.is_archived, false) = false`;
     params = [store.profileId, ids];
   } else {
+    // Товары и комплекты — на витрине продаются оба типа (раньше комплекты отфильтровывались).
     sql = `SELECT p.id, p.sku, p.name, p.description, p.price, p.cost, p.additional_expenses, p.min_price,
                   p.images, p.quantity, p.user_category_id, uc.name AS category_name,
                   p.mp_ozon_description, p.mp_wb_description, p.mp_ym_description
@@ -651,9 +651,8 @@ async function catalogRowsForStore(store) {
            LEFT JOIN user_categories uc ON uc.id = p.user_category_id
            WHERE p.profile_id = $1
              AND COALESCE(p.is_archived, false) = false
-             AND LOWER(TRIM(COALESCE(p.product_type::text, 'product'))) <> 'kit'
            ORDER BY COALESCE(uc.name, 'ЯЯЯ') ASC, p.name ASC
-           LIMIT 2000`;
+           LIMIT 5000`;
     params = [store.profileId];
   }
 
