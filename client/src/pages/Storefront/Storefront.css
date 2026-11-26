@@ -10,6 +10,7 @@
   --sf-surface: #ffffff;
   --sf-radius: 16px;
   --sf-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --sf-product-aspect: 3 / 4;
   min-height: 100vh;
   background:
     radial-gradient(1200px 480px at 10% -10%, color-mix(in srgb, var(--sf-brand) 16%, transparent), transparent 60%),
@@ -22,6 +23,10 @@
 .sf-root[data-font-heading='serif'] .sf-hero h1,
 .sf-root[data-font-heading='serif'] .sf-brand-name,
 .sf-root[data-font-heading='display'] .sf-hero h1 {
+  font-family: 'Source Serif 4', Georgia, serif;
+}
+
+.sf-root[data-font-body='serif'] {
   font-family: 'Source Serif 4', Georgia, serif;
 }
 
@@ -501,7 +506,7 @@
 
 .sf-card-media {
   position: relative;
-  aspect-ratio: 1;
+  aspect-ratio: var(--sf-product-aspect);
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--sf-brand) 8%, #eef2f7), #e8eef5);
   overflow: hidden;
@@ -806,7 +811,7 @@
   width: 100%;
   border-radius: var(--sf-radius);
   background: linear-gradient(145deg, #eef2f7, #e2e8f0);
-  aspect-ratio: 1;
+  aspect-ratio: var(--sf-product-aspect);
   object-fit: cover;
   box-shadow: var(--sf-shadow);
 }
@@ -827,8 +832,9 @@
 
 .sf-pdp-thumb {
   flex: 0 0 auto;
-  width: 64px;
-  height: 64px;
+  width: 52px;
+  aspect-ratio: var(--sf-product-aspect);
+  height: auto;
   padding: 0;
   border: 2px solid transparent;
   border-radius: 10px;

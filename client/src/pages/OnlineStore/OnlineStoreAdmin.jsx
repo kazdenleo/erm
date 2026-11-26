@@ -18,6 +18,28 @@ const TEMPLATES_FALLBACK = [
   { code: 'catalog', name: 'Каталог', blurb: 'Плотный список' },
 ];
 
+const BLOCK_TYPES_FALLBACK = [
+  { type: 'hero', name: 'Шапка / герой', blurb: 'Название, слоган и кнопка' },
+  { type: 'banner', name: 'Баннер', blurb: 'Картинка с ссылкой' },
+  { type: 'featured', name: 'Подборка товаров', blurb: 'Выбранные SKU с витрины' },
+  { type: 'catalog', name: 'Каталог', blurb: 'Сетка или список товаров' },
+  { type: 'rich_text', name: 'Текст', blurb: 'Произвольный текстовый блок' },
+  { type: 'contacts', name: 'Контакты', blurb: 'Телефон, email, адрес магазина' },
+];
+
+const DEFAULT_THEME = {
+  brandColor: '#0f766e',
+  accentColor: '#0f766e',
+  backgroundColor: '#f8fafc',
+  surfaceColor: '#ffffff',
+  textColor: '#0f172a',
+  mutedColor: '#64748b',
+  fontHeading: 'system',
+  fontBody: 'system',
+  borderRadius: 14,
+  logoUrl: '',
+};
+
 function normalizeSlugInput(v) {
   return String(v || '')
     .trim()
@@ -26,6 +48,54 @@ function normalizeSlugInput(v) {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
+}
+
+function normalizeThemeState(raw, brandFallback = '#0f766e') {
+  const t = raw && typeof raw === 'object' ? raw : {};
+  const hex = (v, def) => (/^#[0-9a-fA-F]{6}$/i.test(String(v || '')) ? String(v).toLowerCase() : def);
+  const radius = Number(t.borderRadius);
+  return {
+    brandColor: hex(t.brandColor, brandFallback || DEFAULT_THEME.brandColor),
+    accentColor: hex(t.accentColor, hex(t.brandColor, brandFallback || DEFAULT_THEME.accentColor)),
+    backgroundColor: hex(t.backgroundColor, DEFAULT_THEME.backgroundColor),
+    surfaceColor: hex(t.surfaceColor, DEFAULT_THEME.surfaceColor),
+    textColor: hex(t.textColor, DEFAULT_THEME.textColor),
+    mutedColor: hex(t.mutedColor, DEFAULT_THEME.mutedColor),
+    fontHeading: ['system', 'serif', 'display'].includes(t.fontHeading) ? t.fontHeading : 'system',
+    fontBody: ['system', 'serif'].includes(t.fontBody) ? t.fontBody : 'system',
+    borderRadius: Number.isFinite(radius) ? Math.min(24, Math.max(0, Math.round(radius))) : 14,
+    logoUrl: t.logoUrl != null ? String(t.logoUrl) : '',
+  };
+}
+
+function newBlockId(type) {
+  return `${type}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function defaultBlockProps(type) {
+  switch (type) {
+    case 'hero':
+      return {
+        title: '',
+        subtitle: '',
+        showCta: true,
+        ctaLabel: 'Смотреть каталог',
+        ctaHref: '#catalog',
+        compact: false,
+      };
+    case 'banner':
+      return { imageUrl: '', href: '', alt: '' };
+    case 'featured':
+      return { title: 'Подборка', productIds: [] };
+    case 'catalog':
+      return { title: 'Каталог', anchor: 'catalog', density: 'grid' };
+    case 'rich_text':
+      return { title: '', body: '' };
+    case 'contacts':
+      return {};
+    default:
+      return {};
+  }
 }
 
 export function OnlineStoreAdmin() {
@@ -38,6 +108,7 @@ export function OnlineStoreAdmin() {
   const [error, setError] = useState('');
   const [okMsg, setOkMsg] = useState('');
   const [templates, setTemplates] = useState(TEMPLATES_FALLBACK);
+  const [blockTypes, setBlockTypes] = useState(BLOCK_TYPES_FALLBACK);
   const [catalog, setCatalog] = useState([]);
   const [form, setForm] = useState({
     slug: '',
@@ -54,7 +125,9 @@ export function OnlineStoreAdmin() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [search, setSearch] = useState('');
   const [editorEnabled, setEditorEnabled] = useState(false);
+  const [theme, setTheme] = useState(() => normalizeThemeState(DEFAULT_THEME));
   const [layoutBlocks, setLayoutBlocks] = useState([]);
+  const [addBlockType, setAddBlockType] = useState('banner');
   const [customDomainEnabled, setCustomDomainEnabled] = useState(false);
   const [customDomain, setCustomDomain] = useState('');
   const [domainMeta, setDomainMeta] = useState({
@@ -83,6 +156,7 @@ export function OnlineStoreAdmin() {
             : [];
       setCatalog(list);
       if (Array.isArray(mine?.templates) && mine.templates.length) setTemplates(mine.templates);
+      if (Array.isArray(mine?.blockTypes) && mine.blockTypes.length) setBlockTypes(mine.blockTypes);
       setEditorEnabled(!!mine?.editorEnabled);
       setCustomDomainEnabled(!!mine?.customDomainEnabled);
       setAttributeCategories(
@@ -90,11 +164,13 @@ export function OnlineStoreAdmin() {
       );
       const s = mine?.store;
       if (s) {
+        const nextTheme = normalizeThemeState(s.theme, s.brandColor || '#0f766e');
+        setTheme(nextTheme);
         setForm({
           slug: s.slug || '',
           name: s.name || '',
           templateCode: s.templateCode || 'minimal',
-          brandColor: s.brandColor || s.theme?.brandColor || '#0f766e',
+          brandColor: nextTheme.brandColor,
           tagline: s.tagline || '',
           phone: s.phone || '',
           email: s.email || '',
@@ -122,6 +198,7 @@ export function OnlineStoreAdmin() {
           phone: profile?.contact_phone || '',
           email: profile?.contact_email || '',
         }));
+        setTheme(normalizeThemeState(DEFAULT_THEME));
         setLayoutBlocks([]);
         setCustomDomain('');
         setDomainMeta({ status: 'none', error: '', dns: null });
@@ -156,7 +233,50 @@ export function OnlineStoreAdmin() {
     ? `${typeof window !== 'undefined' ? window.location.origin : ''}/s/${form.slug}`
     : '';
 
-  const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const setField = (key, value) => {
+    setForm((f) => ({ ...f, [key]: value }));
+    if (key === 'brandColor') {
+      setTheme((t) => ({ ...t, brandColor: value, accentColor: t.accentColor || value }));
+    }
+  };
+
+  const setThemeField = (key, value) => {
+    setTheme((t) => {
+      const next = { ...t, [key]: value };
+      if (key === 'brandColor') {
+        setForm((f) => ({ ...f, brandColor: value }));
+      }
+      return next;
+    });
+  };
+
+  const blockLabel = (type) =>
+    blockTypes.find((b) => b.type === type)?.name ||
+    BLOCK_TYPES_FALLBACK.find((b) => b.type === type)?.name ||
+    type;
+
+  const updateBlockProps = (idx, patch) => {
+    setLayoutBlocks((prev) =>
+      prev.map((x, i) => (i === idx ? { ...x, props: { ...(x.props || {}), ...patch } } : x))
+    );
+  };
+
+  const addLayoutBlock = () => {
+    const type = String(addBlockType || '').trim();
+    if (!BLOCK_TYPES_FALLBACK.some((b) => b.type === type)) return;
+    setLayoutBlocks((prev) => [
+      ...prev,
+      { id: newBlockId(type), type, enabled: true, props: defaultBlockProps(type) },
+    ]);
+  };
+
+  const removeLayoutBlock = (idx) => {
+    setLayoutBlocks((prev) => {
+      const target = prev[idx];
+      if (target?.type === 'catalog') return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
 
   const toggleProduct = (id) => {
     setSelectedIds((prev) => {
@@ -230,7 +350,12 @@ export function OnlineStoreAdmin() {
         attributeDisplay: { byCategory: attrByCategory },
       };
       if (editorEnabled) {
-        body.theme = { brandColor: form.brandColor };
+        body.theme = {
+          ...theme,
+          brandColor: theme.brandColor || form.brandColor,
+          logoUrl: String(theme.logoUrl || '').trim() || null,
+        };
+        body.logoUrl = String(theme.logoUrl || '').trim() || null;
         body.layout = { version: 1, blocks: layoutBlocks };
       }
       if (customDomainEnabled) {
@@ -244,12 +369,14 @@ export function OnlineStoreAdmin() {
       );
       const s = data?.store;
       if (s) {
+        const nextTheme = normalizeThemeState(s.theme, s.brandColor || form.brandColor);
+        setTheme(nextTheme);
         setForm((f) => ({
           ...f,
           slug: s.slug,
           name: s.name,
           templateCode: s.templateCode,
-          brandColor: s.brandColor || s.theme?.brandColor || f.brandColor,
+          brandColor: nextTheme.brandColor,
           tagline: s.tagline || '',
           phone: s.phone || '',
           email: s.email || '',
@@ -580,104 +707,401 @@ export function OnlineStoreAdmin() {
                   </p>
                 )}
 
-                <h3 className="h6 mt-4 mb-2">Редактор витрины</h3>
+                <h3 className="h6 mt-4 mb-2">Дизайн и раскладка</h3>
                 {editorEnabled ? (
                   <div className="online-store-editor">
-                    <p className="small text-muted mb-2">
-                      Тариф Про: включайте блоки, меняйте порядок и тексты. Витрина собирается из этой
-                      раскладки.
+                    <p className="small text-muted mb-3">
+                      Тариф Про: цвета, шрифты, логотип и блоки витрины. Сохраните — изменения
+                      сразу на публичной странице магазина.
                     </p>
+
+                    <h4 className="h6 mb-2">Оформление</h4>
+                    <div className="online-store-theme-grid">
+                      <label className="online-store-label">
+                        Бренд
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.brandColor}
+                          onChange={(e) => setThemeField('brandColor', e.target.value)}
+                        />
+                      </label>
+                      <label className="online-store-label">
+                        Акцент
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.accentColor}
+                          onChange={(e) => setThemeField('accentColor', e.target.value)}
+                        />
+                      </label>
+                      <label className="online-store-label">
+                        Фон
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.backgroundColor}
+                          onChange={(e) => setThemeField('backgroundColor', e.target.value)}
+                        />
+                      </label>
+                      <label className="online-store-label">
+                        Карточки
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.surfaceColor}
+                          onChange={(e) => setThemeField('surfaceColor', e.target.value)}
+                        />
+                      </label>
+                      <label className="online-store-label">
+                        Текст
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.textColor}
+                          onChange={(e) => setThemeField('textColor', e.target.value)}
+                        />
+                      </label>
+                      <label className="online-store-label">
+                        Приглушённый
+                        <input
+                          type="color"
+                          className="form-control form-control-color"
+                          value={theme.mutedColor}
+                          onChange={(e) => setThemeField('mutedColor', e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="row g-2 mb-3">
+                      <div className="col-md-4">
+                        <label className="online-store-label">
+                          Шрифт заголовков
+                          <select
+                            className="form-select form-select-sm"
+                            value={theme.fontHeading}
+                            onChange={(e) => setThemeField('fontHeading', e.target.value)}
+                          >
+                            <option value="system">Без засечек</option>
+                            <option value="serif">С засечками</option>
+                            <option value="display">Акцидентный</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="col-md-4">
+                        <label className="online-store-label">
+                          Шрифт текста
+                          <select
+                            className="form-select form-select-sm"
+                            value={theme.fontBody}
+                            onChange={(e) => setThemeField('fontBody', e.target.value)}
+                          >
+                            <option value="system">Без засечек</option>
+                            <option value="serif">С засечками</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="col-md-4">
+                        <label className="online-store-label">
+                          Скругление ({theme.borderRadius}px)
+                          <input
+                            type="range"
+                            className="form-range"
+                            min={0}
+                            max={24}
+                            value={theme.borderRadius}
+                            onChange={(e) => setThemeField('borderRadius', Number(e.target.value))}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <label className="online-store-label">
+                      Логотип (URL)
+                      <input
+                        className="form-control form-control-sm"
+                        value={theme.logoUrl || ''}
+                        placeholder="https://… или /uploads/…"
+                        onChange={(e) => setThemeField('logoUrl', e.target.value)}
+                      />
+                    </label>
+
+                    <h4 className="h6 mt-3 mb-2">Блоки страницы</h4>
+                    <div className="online-store-add-block mb-2">
+                      <select
+                        className="form-select form-select-sm"
+                        value={addBlockType}
+                        onChange={(e) => setAddBlockType(e.target.value)}
+                      >
+                        {blockTypes.map((bt) => (
+                          <option key={bt.type} value={bt.type}>
+                            {bt.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary"
+                        onClick={addLayoutBlock}
+                      >
+                        Добавить блок
+                      </button>
+                    </div>
                     <div className="online-store-blocks">
-                      {layoutBlocks.map((b, idx) => (
-                        <div key={b.id || idx} className="online-store-block-row">
-                          <label className="online-store-block-toggle">
-                            <input
-                              type="checkbox"
-                              checked={b.enabled !== false}
-                              onChange={(e) => {
-                                const on = e.target.checked;
-                                setLayoutBlocks((prev) =>
-                                  prev.map((x, i) => (i === idx ? { ...x, enabled: on } : x))
-                                );
-                              }}
-                            />
-                            <strong>{b.type}</strong>
-                          </label>
-                          <div className="online-store-block-actions">
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-secondary"
-                              disabled={idx === 0}
-                              onClick={() =>
-                                setLayoutBlocks((prev) => {
-                                  if (idx <= 0) return prev;
-                                  const next = [...prev];
-                                  [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                                  return next;
-                                })
-                              }
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-secondary"
-                              disabled={idx >= layoutBlocks.length - 1}
-                              onClick={() =>
-                                setLayoutBlocks((prev) => {
-                                  if (idx >= prev.length - 1) return prev;
-                                  const next = [...prev];
-                                  [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                  return next;
-                                })
-                              }
-                            >
-                              ↓
-                            </button>
+                      {layoutBlocks.map((b, idx) => {
+                        const props = b.props || {};
+                        const featuredIds = Array.isArray(props.productIds)
+                          ? props.productIds.map(Number)
+                          : [];
+                        return (
+                          <div key={b.id || idx} className="online-store-block-row">
+                            <div className="online-store-block-top">
+                              <label className="online-store-block-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={b.enabled !== false}
+                                  onChange={(e) => {
+                                    const on = e.target.checked;
+                                    setLayoutBlocks((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, enabled: on } : x))
+                                    );
+                                  }}
+                                />
+                                <strong>{blockLabel(b.type)}</strong>
+                              </label>
+                              <div className="online-store-block-actions">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-secondary"
+                                  disabled={idx === 0}
+                                  onClick={() =>
+                                    setLayoutBlocks((prev) => {
+                                      if (idx <= 0) return prev;
+                                      const next = [...prev];
+                                      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-secondary"
+                                  disabled={idx >= layoutBlocks.length - 1}
+                                  onClick={() =>
+                                    setLayoutBlocks((prev) => {
+                                      if (idx >= prev.length - 1) return prev;
+                                      const next = [...prev];
+                                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  ↓
+                                </button>
+                                {b.type !== 'catalog' ? (
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline-danger"
+                                    onClick={() => removeLayoutBlock(idx)}
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+
+                            {b.type === 'hero' ? (
+                              <div className="online-store-block-fields">
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Заголовок (пусто = название магазина)"
+                                  value={props.title || ''}
+                                  onChange={(e) => updateBlockProps(idx, { title: e.target.value })}
+                                />
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Подзаголовок (пусто = слоган)"
+                                  value={props.subtitle || ''}
+                                  onChange={(e) =>
+                                    updateBlockProps(idx, { subtitle: e.target.value })
+                                  }
+                                />
+                                <div className="row g-2">
+                                  <div className="col-md-6">
+                                    <input
+                                      className="form-control form-control-sm"
+                                      placeholder="Текст кнопки"
+                                      value={props.ctaLabel || ''}
+                                      onChange={(e) =>
+                                        updateBlockProps(idx, { ctaLabel: e.target.value })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="col-md-6">
+                                    <input
+                                      className="form-control form-control-sm"
+                                      placeholder="Ссылка кнопки (#catalog)"
+                                      value={props.ctaHref || ''}
+                                      onChange={(e) =>
+                                        updateBlockProps(idx, { ctaHref: e.target.value })
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                                <div className="d-flex flex-wrap gap-3">
+                                  <label className="online-store-inline-check">
+                                    <input
+                                      type="checkbox"
+                                      checked={props.showCta !== false}
+                                      onChange={(e) =>
+                                        updateBlockProps(idx, { showCta: e.target.checked })
+                                      }
+                                    />
+                                    Показывать кнопку
+                                  </label>
+                                  <label className="online-store-inline-check">
+                                    <input
+                                      type="checkbox"
+                                      checked={props.compact === true}
+                                      onChange={(e) =>
+                                        updateBlockProps(idx, { compact: e.target.checked })
+                                      }
+                                    />
+                                    Компактная шапка
+                                  </label>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {b.type === 'banner' ? (
+                              <div className="online-store-block-fields">
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="URL картинки баннера"
+                                  value={props.imageUrl || ''}
+                                  onChange={(e) =>
+                                    updateBlockProps(idx, { imageUrl: e.target.value })
+                                  }
+                                />
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Ссылка по клику"
+                                  value={props.href || ''}
+                                  onChange={(e) => updateBlockProps(idx, { href: e.target.value })}
+                                />
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Подпись (alt)"
+                                  value={props.alt || ''}
+                                  onChange={(e) => updateBlockProps(idx, { alt: e.target.value })}
+                                />
+                              </div>
+                            ) : null}
+
+                            {b.type === 'featured' ? (
+                              <div className="online-store-block-fields">
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Заголовок подборки"
+                                  value={props.title || ''}
+                                  onChange={(e) => updateBlockProps(idx, { title: e.target.value })}
+                                />
+                                <div className="online-store-featured-pick">
+                                  {catalog.slice(0, 80).map((p) => {
+                                    const id = Number(p.id);
+                                    const on = featuredIds.includes(id);
+                                    return (
+                                      <label
+                                        key={id}
+                                        className={`online-store-pick-row${on ? ' is-on' : ''}`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={on}
+                                          onChange={() => {
+                                            const set = new Set(featuredIds);
+                                            if (set.has(id)) set.delete(id);
+                                            else if (set.size < 24) set.add(id);
+                                            updateBlockProps(idx, {
+                                              productIds: [...set],
+                                            });
+                                          }}
+                                        />
+                                        <span className="online-store-pick-meta">
+                                          <strong>{p.name}</strong>
+                                          <span className="text-muted">{p.sku || '—'}</span>
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                  {!catalog.length ? (
+                                    <div className="text-muted small">Нет товаров для подборки</div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {b.type === 'catalog' ? (
+                              <div className="online-store-block-fields">
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Заголовок каталога"
+                                  value={props.title || ''}
+                                  onChange={(e) => updateBlockProps(idx, { title: e.target.value })}
+                                />
+                                <div className="btn-group" role="group">
+                                  <button
+                                    type="button"
+                                    className={`btn btn-sm ${
+                                      (props.density || 'grid') === 'grid'
+                                        ? 'btn-primary'
+                                        : 'btn-outline-secondary'
+                                    }`}
+                                    onClick={() => updateBlockProps(idx, { density: 'grid' })}
+                                  >
+                                    Сетка
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`btn btn-sm ${
+                                      props.density === 'list'
+                                        ? 'btn-primary'
+                                        : 'btn-outline-secondary'
+                                    }`}
+                                    onClick={() => updateBlockProps(idx, { density: 'list' })}
+                                  >
+                                    Список
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {b.type === 'rich_text' ? (
+                              <div className="online-store-block-fields">
+                                <input
+                                  className="form-control form-control-sm"
+                                  placeholder="Заголовок"
+                                  value={props.title || ''}
+                                  onChange={(e) => updateBlockProps(idx, { title: e.target.value })}
+                                />
+                                <textarea
+                                  className="form-control form-control-sm"
+                                  rows={3}
+                                  placeholder="Текст блока"
+                                  value={props.body || ''}
+                                  onChange={(e) => updateBlockProps(idx, { body: e.target.value })}
+                                />
+                              </div>
+                            ) : null}
+
+                            {b.type === 'contacts' ? (
+                              <p className="small text-muted mb-0">
+                                Берёт телефон, email и адрес из настроек магазина выше.
+                              </p>
+                            ) : null}
                           </div>
-                          {(b.type === 'hero' || b.type === 'rich_text' || b.type === 'featured') && (
-                            <input
-                              className="form-control form-control-sm"
-                              placeholder={
-                                b.type === 'hero'
-                                  ? 'Заголовок героя (пусто = название магазина)'
-                                  : b.type === 'featured'
-                                    ? 'Заголовок подборки'
-                                    : 'Заголовок текста'
-                              }
-                              value={b.props?.title || ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setLayoutBlocks((prev) =>
-                                  prev.map((x, i) =>
-                                    i === idx
-                                      ? { ...x, props: { ...(x.props || {}), title: v } }
-                                      : x
-                                  )
-                                );
-                              }}
-                            />
-                          )}
-                          {b.type === 'rich_text' ? (
-                            <textarea
-                              className="form-control form-control-sm"
-                              rows={2}
-                              placeholder="Текст блока"
-                              value={b.props?.body || ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setLayoutBlocks((prev) =>
-                                  prev.map((x, i) =>
-                                    i === idx
-                                      ? { ...x, props: { ...(x.props || {}), body: v } }
-                                      : x
-                                  )
-                                );
-                              }}
-                            />
-                          ) : null}
-                        </div>
-                      ))}
+                        );
+                      })}
                       {!layoutBlocks.length ? (
                         <div className="text-muted small">
                           Сохраните магазин с шаблоном — появится стартовая раскладка блоков.
@@ -688,8 +1112,8 @@ export function OnlineStoreAdmin() {
                 ) : (
                   <div className="online-store-editor-locked">
                     <p className="mb-2">
-                      Блоки витрины (герой, баннер, подборка, текст, контакты) уже заложены в продукт.
-                      Полный редактор раскладки откроется на тарифе <strong>Про</strong>.
+                      Подробный дизайн витрины (цвета, шрифты, блоки, баннер, подборки) доступен на
+                      тарифе <strong>Про</strong>.
                     </p>
                     <Link className="btn btn-sm btn-outline-primary" to="/pricing?plan=pro">
                       Тариф Про
@@ -819,7 +1243,14 @@ export function OnlineStoreAdmin() {
           </div>
 
           <div className="col-lg-5">
-            <div className="card online-store-card online-store-preview" style={{ '--store-brand': form.brandColor }}>
+            <div
+              className="card online-store-card online-store-preview"
+              style={{
+                '--store-brand': theme.brandColor || form.brandColor,
+                background: theme.backgroundColor || undefined,
+                color: theme.textColor || undefined,
+              }}
+            >
               <div className="card-body">
                 <div className="online-store-preview-badge">Превью · {form.templateCode}</div>
                 <div className="online-store-preview-hero">

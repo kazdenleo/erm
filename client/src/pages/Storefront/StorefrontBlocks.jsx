@@ -303,6 +303,7 @@ export function StorefrontBlocks({
               showCta={props.showCta !== false}
               ctaLabel={props.ctaLabel || 'Смотреть каталог'}
               ctaHref={props.ctaHref || '#catalog'}
+              compact={props.compact === true}
             />
           );
         }

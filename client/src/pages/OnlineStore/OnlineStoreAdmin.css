@@ -137,7 +137,8 @@
 }
 
 .online-store-preview-thumb {
-  height: 48px;
+  aspect-ratio: 3 / 4;
+  height: auto;
   border-radius: 6px;
   background: #f1f5f9;
   margin-bottom: 0.35rem;
@@ -164,6 +165,57 @@
   background: #f8fafc;
   font-size: 0.88rem;
   color: #475569;
+}
+
+.online-store-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 0.55rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.online-store-add-block {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.online-store-add-block .form-select {
+  max-width: 240px;
+}
+
+.online-store-block-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.online-store-block-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+}
+
+.online-store-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.online-store-featured-pick {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.3rem;
 }
 
 .online-store-domain-status {

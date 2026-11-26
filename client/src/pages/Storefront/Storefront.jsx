@@ -44,6 +44,7 @@ function Shell({ store, slug, base, cartItems, children }) {
       className="sf-root"
       data-template={store?.templateCode || 'minimal'}
       data-font-heading={theme.fontHeading || 'system'}
+      data-font-body={theme.fontBody || 'system'}
       style={{
         '--sf-brand': theme.brandColor || store?.brandColor || '#0f766e',
         '--sf-accent': theme.accentColor || theme.brandColor || store?.brandColor || '#0f766e',
