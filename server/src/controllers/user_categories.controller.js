@@ -3,8 +3,14 @@
  * HTTP контроллер для пользовательских категорий
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { query, transaction } from '../config/database.js';
 import logger from '../utils/logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import integrationsService from '../services/integrations.service.js';
 import categoryMarketplaceCommissionsService from '../services/categoryMarketplaceCommissions.service.js';
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
@@ -989,6 +995,83 @@ class UserCategoriesController {
       const scope = { profileId: tid, organizationId };
       const result = await categoryMarketplaceCommissionsService.refreshAllCommissions(scope, 'manual');
       return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async uploadImage(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const owner = await query('SELECT id, profile_id, image_url FROM user_categories WHERE id = $1', [id]);
+      if (!owner.rows.length) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(owner.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const file = req.file;
+      if (!file?.filename) {
+        return res.status(400).json({ ok: false, message: 'Файл изображения не передан' });
+      }
+      const rel = `/uploads/categories/${String(id)}/${file.filename}`;
+      const prev = owner.rows[0].image_url;
+      if (prev && String(prev).startsWith('/uploads/categories/')) {
+        const prevPath = path.resolve(__dirname, '../..', String(prev).replace(/^\//, ''));
+        try {
+          if (fs.existsSync(prevPath)) fs.unlinkSync(prevPath);
+        } catch {
+          /* ignore */
+        }
+      }
+      const result = await query(
+        `UPDATE user_categories
+         SET image_url = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2
+         RETURNING *`,
+        [rel, id]
+      );
+      return res.status(200).json({ ok: true, data: result.rows[0] });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deleteImage(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const owner = await query('SELECT id, profile_id, image_url FROM user_categories WHERE id = $1', [id]);
+      if (!owner.rows.length) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(owner.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const prev = owner.rows[0].image_url;
+      if (prev && String(prev).startsWith('/uploads/categories/')) {
+        const prevPath = path.resolve(__dirname, '../..', String(prev).replace(/^\//, ''));
+        try {
+          if (fs.existsSync(prevPath)) fs.unlinkSync(prevPath);
+        } catch {
+          /* ignore */
+        }
+      }
+      const result = await query(
+        `UPDATE user_categories
+         SET image_url = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+         RETURNING *`,
+        [id]
+      );
+      return res.status(200).json({ ok: true, data: result.rows[0] });
     } catch (error) {
       next(error);
     }

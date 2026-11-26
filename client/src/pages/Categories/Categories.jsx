@@ -257,7 +257,7 @@ export function Categories() {
           `Сопоставление категорий изменено (${mpNames}).\n\n` +
             `Обновить карточки на маркетплейсах у ${countLabel} товар(ов)?\n\n` +
             `Как это работает:\n` +
-            `• Ozon / Яндекс.Маркет — уйдёт новая категория (+ контент из ERP).\n` +
+            `• Ozon / Яндекс.Маркет — уйдёт новая категория (+ контент из MySell).\n` +
             `• Wildberries — API не меняет subjectId у созданной карточки, обновляется контент.\n` +
             `Отправка ставится в очередь на сервере; в ЛК МП изменения появятся не сразу.`
         );
@@ -274,7 +274,7 @@ export function Categories() {
           } catch (pushErr) {
             console.error('[Categories] queue card push failed:', pushErr);
             alert(
-              `Сохранено в ERP, но не удалось поставить отправку на МП:\n${
+              `Сохранено в MySell, но не удалось поставить отправку на МП:\n${
                 pushErr?.response?.data?.message || pushErr?.message || pushErr
               }`
             );
@@ -381,6 +381,9 @@ export function Categories() {
                   <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flex: 1}}>
                     <div style={{flex: 1}}>
                       <div className="category-title-row">
+                        {category.image_url ? (
+                          <img className="category-list-thumb" src={category.image_url} alt="" />
+                        ) : null}
                         <span style={{fontSize: '14px', fontWeight: 500}}>{category.name}</span>
                         <CategoryMpBadges category={category} />
                       </div>

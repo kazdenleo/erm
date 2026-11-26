@@ -152,6 +152,34 @@ export function createCatalogBundleFolderChunkUpload() {
   });
 }
 
+export function createCategoryImageUpload() {
+  const storage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const categoryId = String(req.params.id || '').trim();
+      const uploadsRoot = path.resolve(__dirname, '../../uploads/categories');
+      const dir = path.join(uploadsRoot, categoryId);
+      ensureDirSync(dir);
+      cb(null, dir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = safeExt(file?.originalname || '');
+      const id = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+      cb(null, `${id}${ext}`);
+    },
+  });
+
+  return multer({
+    storage,
+    limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+      const mime = String(file?.mimetype || '').toLowerCase();
+      const ext = safeExt(file?.originalname || '');
+      const ok = mime.startsWith('image/') && !!ext;
+      cb(ok ? null : new Error('Разрешены только изображения (jpg/png/webp/gif).'), ok);
+    },
+  });
+}
+
 export function createCertificatePhotoUpload() {
   const storage = multer.diskStorage({
     destination: (req, _file, cb) => {

@@ -214,6 +214,26 @@ function buildPublicCategories(products) {
   return categories;
 }
 
+async function attachCategoryImages(profileId, categories) {
+  const ids = (categories || [])
+    .map((c) => Number(c.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) return categories || [];
+  const r = await query(
+    `SELECT id, image_url
+     FROM user_categories
+     WHERE profile_id = $1 AND id = ANY($2::bigint[])`,
+    [profileId, ids]
+  );
+  const byId = new Map(
+    (r.rows || []).map((row) => [Number(row.id), row.image_url ? String(row.image_url) : null])
+  );
+  return (categories || []).map((c) => ({
+    ...c,
+    imageUrl: byId.get(Number(c.id)) || null,
+  }));
+}
+
 export function listTemplates() {
   return ONLINE_STORE_TEMPLATES;
 }
@@ -555,7 +575,10 @@ export async function listPublicProducts(slug, { q = '', categoryId = '' } = {})
   const store = await storesRepo.findPublishedBySlug(slug);
   if (!store) err('Магазин не найден или не опубликован', 404);
   const allProducts = await catalogRowsForStore(store);
-  const categories = buildPublicCategories(allProducts);
+  const categories = await attachCategoryImages(
+    store.profileId,
+    buildPublicCategories(allProducts)
+  );
   let products = allProducts;
   const needle = String(q || '').trim().toLowerCase();
   if (needle) {

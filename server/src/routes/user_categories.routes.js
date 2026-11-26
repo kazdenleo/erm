@@ -6,8 +6,10 @@
 import express from 'express';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import userCategoriesController from '../controllers/user_categories.controller.js';
+import { createCategoryImageUpload } from '../middleware/uploads.js';
 
 const router = express.Router();
+const uploadCategoryImage = createCategoryImageUpload();
 
 router.put(
   '/attributes/:attributeId/mp-links',
@@ -44,6 +46,17 @@ router.post('/', wrapAsync(userCategoriesController.create.bind(userCategoriesCo
 
 // Обновить пользовательскую категорию
 router.put('/:id', wrapAsync(userCategoriesController.update.bind(userCategoriesController)));
+
+// Картинка категории (для витрины ИМ)
+router.post(
+  '/:id/image',
+  uploadCategoryImage.single('image'),
+  wrapAsync(userCategoriesController.uploadImage.bind(userCategoriesController))
+);
+router.delete(
+  '/:id/image',
+  wrapAsync(userCategoriesController.deleteImage.bind(userCategoriesController))
+);
 
 // Отправить ТН ВЭД категории на маркетплейсы
 router.post('/:id/tn-ved/push', wrapAsync(userCategoriesController.pushTnVed.bind(userCategoriesController)));

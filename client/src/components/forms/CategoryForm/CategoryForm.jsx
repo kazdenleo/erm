@@ -248,6 +248,10 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leavePromptSaving, setLeavePromptSaving] = useState(false);
   const [okpd2Push, setOkpd2Push] = useState({ loading: false, message: '', error: false });
+  const [imageUrl, setImageUrl] = useState(category?.image_url || '');
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageMsg, setImageMsg] = useState('');
+  const imageInputRef = useRef(null);
   const savedOkpd2Code = String(category?.okpd2_code || '');
   const handlePushOkpd2 = async () => {
     if (!category?.id) return;
@@ -841,6 +845,8 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setPickerValue('');
       setExpandedMapKeys({});
       setSettingsTab('main');
+      setImageUrl(category.image_url || '');
+      setImageMsg('');
     } else {
       setFormData({
         name: '',
@@ -859,6 +865,8 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setPickerValue('');
       setExpandedMapKeys({});
       setSettingsTab('main');
+      setImageUrl('');
+      setImageMsg('');
       setOzonSelectedCategory(null);
       setOzonSearchQuery('');
       setWbSelectedCategory(null);
@@ -867,6 +875,41 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setYmSearchQuery('');
     }
   }, [category]);
+
+  const handleUploadCategoryImage = async (file) => {
+    if (!category?.id || !file) return;
+    setImageBusy(true);
+    setImageMsg('');
+    try {
+      const res = await userCategoriesApi.uploadImage(category.id, file);
+      const next = res?.data?.image_url || '';
+      setImageUrl(next);
+      setImageMsg('Изображение сохранено — покажется на витрине магазина');
+      markDirty();
+    } catch (e) {
+      setImageMsg(e?.response?.data?.message || e?.message || 'Не удалось загрузить');
+    } finally {
+      setImageBusy(false);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  const handleDeleteCategoryImage = async () => {
+    if (!category?.id) return;
+    if (!window.confirm('Убрать изображение категории?')) return;
+    setImageBusy(true);
+    setImageMsg('');
+    try {
+      await userCategoriesApi.deleteImage(category.id);
+      setImageUrl('');
+      setImageMsg('Изображение удалено');
+      markDirty();
+    } catch (e) {
+      setImageMsg(e?.response?.data?.message || e?.message || 'Не удалось удалить');
+    } finally {
+      setImageBusy(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1105,6 +1148,51 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           required
         />
         {errors.name && <div className="error">{errors.name}</div>}
+      </div>
+
+      <div className="field">
+        <label className="label">Изображение для витрины</label>
+        <p className="text-muted small mb-2">
+          Картинка категории на интернет-магазине (плитки каталога). Рекомендуется квадрат от 400×400.
+        </p>
+        {category?.id ? (
+          <div className="category-image-editor">
+            <div className="category-image-preview">
+              {imageUrl ? (
+                <img src={imageUrl} alt="" />
+              ) : (
+                <span className="text-muted small">Нет изображения</span>
+              )}
+            </div>
+            <div className="category-image-actions">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                disabled={imageBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUploadCategoryImage(f);
+                }}
+              />
+              {imageUrl ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  disabled={imageBusy}
+                  onClick={handleDeleteCategoryImage}
+                >
+                  Удалить
+                </Button>
+              ) : null}
+              {imageBusy ? <span className="text-muted small">Сохраняем…</span> : null}
+              {imageMsg ? <span className="small text-muted">{imageMsg}</span> : null}
+            </div>
+          </div>
+        ) : (
+          <p className="text-muted small mb-0">Сначала сохраните категорию — затем можно загрузить картинку.</p>
+        )}
       </div>
 
       <div className="field">

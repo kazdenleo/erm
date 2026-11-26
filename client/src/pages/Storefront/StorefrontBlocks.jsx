@@ -87,33 +87,62 @@ function HeroBlock({ store, title, subtitle, showCta, ctaLabel, ctaHref, compact
 function CategoryNav({ categories, categoryId, onCategory }) {
   if (!categories?.length || !onCategory) return null;
   const total = categories.reduce((s, c) => s + (c.count || 0), 0);
+  const withImages = categories.filter((c) => c.imageUrl && String(c.id) !== 'none');
   return (
-    <div className="sf-cats" role="tablist" aria-label="Категории">
-      <button
-        type="button"
-        role="tab"
-        className={`sf-cat${categoryId ? '' : ' is-active'}`}
-        aria-selected={!categoryId}
-        onClick={() => onCategory('')}
-      >
-        Все <span>{total}</span>
-      </button>
-      {categories.map((c) => {
-        const id = String(c.id);
-        return (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            className={`sf-cat${categoryId === id ? ' is-active' : ''}`}
-            aria-selected={categoryId === id}
-            onClick={() => onCategory(id)}
-          >
-            {c.name} <span>{c.count}</span>
-          </button>
-        );
-      })}
-    </div>
+    <>
+      {withImages.length ? (
+        <div className="sf-cat-tiles" aria-label="Категории с изображениями">
+          {withImages.map((c) => {
+            const id = String(c.id);
+            return (
+              <button
+                key={`tile-${id}`}
+                type="button"
+                className={`sf-cat-tile${categoryId === id ? ' is-active' : ''}`}
+                onClick={() => onCategory(id)}
+              >
+                <span className="sf-cat-tile-media">
+                  <img src={c.imageUrl} alt="" loading="lazy" />
+                </span>
+                <span className="sf-cat-tile-body">
+                  <strong>{c.name}</strong>
+                  <span>{c.count} тов.</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      <div className="sf-cats" role="tablist" aria-label="Категории">
+        <button
+          type="button"
+          role="tab"
+          className={`sf-cat${categoryId ? '' : ' is-active'}`}
+          aria-selected={!categoryId}
+          onClick={() => onCategory('')}
+        >
+          Все <span>{total}</span>
+        </button>
+        {categories.map((c) => {
+          const id = String(c.id);
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              className={`sf-cat${categoryId === id ? ' is-active' : ''}`}
+              aria-selected={categoryId === id}
+              onClick={() => onCategory(id)}
+            >
+              {c.imageUrl ? (
+                <img className="sf-cat-thumb" src={c.imageUrl} alt="" loading="lazy" />
+              ) : null}
+              {c.name} <span>{c.count}</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

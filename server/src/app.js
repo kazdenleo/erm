@@ -66,7 +66,7 @@ app.use(slowRequestLogger(15000));
 // Root endpoint (информация об API)
 app.get('/', (req, res) => {
   res.json({
-    name: 'ERP System API',
+    name: 'MySell System API',
     version: '1.0.0',
     status: 'running',
     environment: config.nodeEnv,
@@ -95,6 +95,7 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 // certificates, inquiries, tmp — через /api с авторизацией (см. routes/secureUploads).
 const uploadsRoot = path.resolve(__dirname, '../uploads');
 app.use('/uploads/products', express.static(path.join(uploadsRoot, 'products')));
+app.use('/uploads/categories', express.static(path.join(uploadsRoot, 'categories')));
 app.use('/uploads/rich-content', express.static(path.join(uploadsRoot, 'rich-content')));
 app.use('/uploads/video-covers', express.static(path.join(uploadsRoot, 'video-covers')));
 app.use('/uploads', (req, res) => {

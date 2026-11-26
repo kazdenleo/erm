@@ -61,7 +61,7 @@ export const userCategoriesApi = {
   },
 
   /**
-   * Связь ERP-атрибута с характеристиками Ozon/WB/ЯМ для конкретной категории.
+   * Связь MySell-атрибута с характеристиками Ozon/WB/ЯМ для конкретной категории.
    * @param {string|number} categoryId
    * @param {string|number} attributeId
    * @param {{ ozon?: object|null, wb?: object|null, ym?: object|null }} mpLinks
@@ -102,8 +102,23 @@ export const userCategoriesApi = {
     return response.data;
   },
 
+  /** Картинка категории для витрины ИМ. */
+  async uploadImage(id, file) {
+    const fd = new FormData();
+    fd.append('image', file);
+    const response = await api.post(`/user-categories/${id}/image`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  async deleteImage(id) {
+    const response = await api.delete(`/user-categories/${id}/image`);
+    return response.data;
+  },
+
   /**
-   * Комиссии Ozon/YM по id сопоставленных категорий (для списка категорий ERP).
+   * Комиссии Ozon/YM по id сопоставленных категорий (для списка категорий MySell).
    * @param {{ ozon?: Array<string|{ id: string, userCategoryId?: number|string }>, ym?: string[], dbOnly?: boolean }} ids
    */
   async previewMarketplaceCommissions(ids = {}) {
