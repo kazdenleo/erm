@@ -2,13 +2,45 @@
  * Обращения в поддержку и идеи (пользователь аккаунта)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { inquiriesApi } from '../../services/inquiries.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import './Support.css';
+
+const MAX_INQUIRY_FILES = 20;
+
+function clipboardImagesToFiles(clipboardData) {
+  if (!clipboardData) return [];
+  const out = [];
+  const items = clipboardData.items ? Array.from(clipboardData.items) : [];
+  for (const item of items) {
+    if (!item || item.kind !== 'file') continue;
+    const type = String(item.type || '');
+    if (!type.startsWith('image/')) continue;
+    const blob = item.getAsFile();
+    if (!blob) continue;
+    const ext = type.includes('png')
+      ? 'png'
+      : type.includes('jpeg') || type.includes('jpg')
+        ? 'jpg'
+        : type.includes('webp')
+          ? 'webp'
+          : type.includes('gif')
+            ? 'gif'
+            : 'png';
+    const name = `clipboard-${Date.now()}-${out.length + 1}.${ext}`;
+    out.push(new File([blob], name, { type: blob.type || type, lastModified: Date.now() }));
+  }
+  if (out.length === 0 && clipboardData.files?.length) {
+    for (const f of Array.from(clipboardData.files)) {
+      if (f && String(f.type || '').startsWith('image/')) out.push(f);
+    }
+  }
+  return out;
+}
 
 export function Support() {
   const { profileId, loading: authLoading, isAdmin, refreshUser } = useAuth();
@@ -19,6 +51,8 @@ export function Support() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [pasteHint, setPasteHint] = useState('');
+  const fileInputRef = useRef(null);
 
   const load = useCallback(async () => {
     if (profileId == null || profileId === '') return;
@@ -38,6 +72,68 @@ export function Support() {
     load();
   }, [load]);
 
+  const [filePreviewUrls, setFilePreviewUrls] = useState([]);
+
+  useEffect(() => {
+    const urls = files.map((f) =>
+      f && String(f.type || '').startsWith('image/') ? URL.createObjectURL(f) : null
+    );
+    setFilePreviewUrls(urls);
+    return () => {
+      for (const url of urls) {
+        if (!url) continue;
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+  }, [files]);
+
+  const addFiles = useCallback((incoming) => {
+    const listIn = Array.isArray(incoming) ? incoming.filter(Boolean) : [];
+    if (listIn.length === 0) return { added: 0, truncated: false };
+    let truncated = false;
+    let added = 0;
+    setFiles((prev) => {
+      const room = Math.max(0, MAX_INQUIRY_FILES - prev.length);
+      if (room <= 0) {
+        truncated = true;
+        return prev;
+      }
+      const slice = listIn.slice(0, room);
+      added = slice.length;
+      if (listIn.length > room) truncated = true;
+      return [...prev, ...slice];
+    });
+    return { added, truncated };
+  }, []);
+
+  const removeFileAt = useCallback((index) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
+
+  const onPasteFiles = useCallback(
+    (e) => {
+      const pasted = clipboardImagesToFiles(e.clipboardData);
+      if (pasted.length === 0) return;
+      e.preventDefault();
+      const { added, truncated } = addFiles(pasted);
+      if (added > 0) {
+        setPasteHint(
+          added === 1 ? 'Изображение из буфера добавлено' : `Добавлено изображений из буфера: ${added}`
+        );
+        setError('');
+      }
+      if (truncated) {
+        setError(`Можно прикрепить не больше ${MAX_INQUIRY_FILES} файлов`);
+      }
+    },
+    [addFiles]
+  );
+
   const submit = async (e) => {
     e.preventDefault();
     const t = text.trim();
@@ -47,6 +143,7 @@ export function Support() {
     }
     setSending(true);
     setError('');
+    setPasteHint('');
     try {
       const fd = new FormData();
       fd.append('body', t);
@@ -59,6 +156,8 @@ export function Support() {
         setText('');
         setFiles([]);
         setKind('support');
+        setPasteHint('');
+        if (fileInputRef.current) fileInputRef.current.value = '';
         await load();
       }
     } catch (err) {
@@ -150,6 +249,7 @@ export function Support() {
             rows={5}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={onPasteFiles}
             placeholder={
               isIdea
                 ? 'Кратко опишите идею: что хотите добавить или изменить и зачем это нужно'
@@ -157,18 +257,57 @@ export function Support() {
             }
           />
         </label>
+        <p className="small text-muted mt-1 mb-0">
+          Скриншот можно вставить из буфера: скопируйте изображение и нажмите Ctrl+V (⌘V) в поле текста.
+        </p>
         <label className="w-100 mt-2">
-          Файлы (фото или видео, до 20 файлов)
+          Файлы (фото или видео, до {MAX_INQUIRY_FILES})
           <input
+            ref={fileInputRef}
             type="file"
             className="form-control mt-1"
             accept="image/*,video/mp4,video/webm,video/quicktime,.mov"
             multiple
-            onChange={(e) => setFiles(Array.from(e.target.files || []))}
+            onChange={(e) => {
+              const picked = Array.from(e.target.files || []);
+              const { truncated } = addFiles(picked);
+              if (truncated) setError(`Можно прикрепить не больше ${MAX_INQUIRY_FILES} файлов`);
+              e.target.value = '';
+            }}
           />
         </label>
+        {pasteHint ? <p className="small text-success mt-1 mb-0">{pasteHint}</p> : null}
         {files.length > 0 && (
-          <p className="small text-muted mt-1">Выбрано файлов: {files.length}</p>
+          <div className="support-attachments mt-2">
+            <p className="small text-muted mb-1">Выбрано файлов: {files.length}</p>
+            <ul className="support-attachments-list">
+              {files.map((f, idx) => {
+                const previewUrl = filePreviewUrls[idx];
+                return (
+                  <li key={`${f.name}-${f.size}-${f.lastModified}-${idx}`} className="support-attachment-item">
+                    {previewUrl ? (
+                      <img src={previewUrl} alt="" className="support-attachment-thumb" />
+                    ) : (
+                      <span className="support-attachment-fileicon" aria-hidden>
+                        ▣
+                      </span>
+                    )}
+                    <span className="support-attachment-name" title={f.name}>
+                      {f.name}
+                    </span>
+                    <button
+                      type="button"
+                      className="support-attachment-remove"
+                      onClick={() => removeFileAt(idx)}
+                      aria-label={`Убрать ${f.name}`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
         {error && <p className="text-danger mt-2 mb-0">{error}</p>}
         <div className="mt-3">
