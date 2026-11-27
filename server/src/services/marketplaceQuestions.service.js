@@ -406,10 +406,12 @@ function mapOzonQuestion(q, profileId) {
     answerText: row.answer_text,
     sourceCreatedAt: row.source_created_at,
   });
-  if (
-    isOzonQuestionProcessedStatus(status) ||
-    (answerText != null && String(answerText).trim() !== '')
-  ) {
+  // PROCESSED сам по себе ≠ есть ответ продавца (в info часто answers_count без answers[]).
+  const answersCount = Number(q.answers_count ?? q.answersCount ?? NaN);
+  const hasAnswerEvidence =
+    (answerText != null && String(answerText).trim() !== '') ||
+    (Number.isFinite(answersCount) && answersCount > 0);
+  if (hasAnswerEvidence) {
     return finalizeQuestionRowAsAnsweredOnMarketplace(row);
   }
   return row;
@@ -752,6 +754,8 @@ async function syncOzon(profileId, _organizationId = null) {
       ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
       : null;
   const limit = 100;
+  let listFetched = false;
+  let premiumPlusDenied = 0;
   try {
     for (const status of OZON_SYNC_STATUSES) {
       let offset = 0;
@@ -761,10 +765,12 @@ async function syncOzon(profileId, _organizationId = null) {
           data = await integrationsService._ozonApiPost(
             '/v1/question/list',
             { filter: { status }, limit, offset },
-            { profileId, ozonOverride }
+            { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
           );
+          listFetched = true;
         } catch (e) {
           if (page === 0) {
+            if (isOzonPremiumPlusQuestionsError(e)) premiumPlusDenied += 1;
             logger.warn('[MarketplaceQuestions] Ozon sync status skipped', {
               profileId,
               status,
@@ -798,8 +804,19 @@ async function syncOzon(profileId, _organizationId = null) {
     }
     throw e;
   }
+  // Все статусы отвалились с Premium Plus — не считаем «пустой успешный» синг (иначе purge снесёт локальные).
+  if (!listFetched && premiumPlusDenied >= OZON_SYNC_STATUSES.length) {
+    const err = new Error(OZON_PREMIUM_PLUS_HINT);
+    err.code = 'OZON_PREMIUM_PLUS_REQUIRED';
+    throw err;
+  }
+  if (!listFetched) {
+    const err = new Error('Ozon: не удалось получить список вопросов (API недоступен или лимит). Повторите позже.');
+    err.statusCode = 502;
+    throw err;
+  }
   await reEnrichOzonQuestionsMissingProduct(profileId);
-  return { imported, externalIds };
+  return { imported, externalIds, listFetched: true };
 }
 
 async function reEnrichOzonQuestionsMissingProduct(profileId) {
@@ -1038,19 +1055,26 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
     try {
       let imported = 0;
       let externalIds = [];
+      let listFetched = true;
       if (mp === 'ozon') {
-        ({ imported, externalIds } = await syncOzon(profileId, opts.organizationId ?? null));
+        ({ imported, externalIds, listFetched = true } = await syncOzon(
+          profileId,
+          opts.organizationId ?? null
+        ));
       } else if (mp === 'wildberries') {
         ({ imported, externalIds } = await syncWildberries(profileId, opts.organizationId ?? null));
       } else if (mp === 'yandex') {
         ({ imported, externalIds } = await syncYandex(profileId, opts.organizationId ?? null));
       }
-      const purgeStats = await purgeAnsweredMissingFromMarketplace(
-        profileId,
-        mp,
-        externalIds,
-        opts.organizationId ?? null
-      );
+      // Пустой список после сбоя API не должен вычищать локальные «ждут ответа».
+      const purgeStats = listFetched
+        ? await purgeAnsweredMissingFromMarketplace(
+            profileId,
+            mp,
+            externalIds,
+            opts.organizationId ?? null
+          )
+        : { deleted: 0, kept: 0 };
       const cleanup = await marketplaceQuestionsRepo.deleteNotNeedingReplyByProfile(profileId);
       results.push({
         marketplace: mp,
@@ -1080,14 +1104,39 @@ async function refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride) {
     const info = await integrationsService._ozonApiPost(
       '/v1/question/info',
       { question_id: questionId },
-      { profileId, ozonOverride }
+      { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
     );
     if (!info || typeof info !== 'object') return null;
-    const merged = {
+    let merged = {
       ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}),
       ...info,
       id: questionId,
     };
+    const answersCount = Number(info.answers_count ?? info.answersCount ?? NaN);
+    const hasAnswersArray = Array.isArray(merged.answers) && merged.answers.length > 0;
+    if (!hasAnswersArray && Number.isFinite(answersCount) && answersCount > 0) {
+      const skuRaw = info.sku ?? info.product_id ?? row.raw_payload?.sku ?? null;
+      const sku = skuRaw != null && Number.isFinite(Number(skuRaw)) ? Number(skuRaw) : null;
+      if (sku != null) {
+        try {
+          const ans = await integrationsService._ozonApiPost(
+            '/v1/question/answer/list',
+            { question_id: questionId, sku },
+            { profileId, ozonOverride, ...OZON_QUESTIONS_INTERACTIVE }
+          );
+          const list = ans?.answers ?? ans?.result?.answers ?? [];
+          if (Array.isArray(list) && list.length > 0) {
+            merged = { ...merged, answers: list };
+          }
+        } catch (e) {
+          logger.warn('[MarketplaceQuestions] Ozon answer/list on archive check failed', {
+            profileId,
+            questionRowId: String(row.id),
+            error: e?.message || String(e),
+          });
+        }
+      }
+    }
     return finalizeOzonQuestionRow(merged, profileId, row);
   } catch (e) {
     logger.warn('[MarketplaceQuestions] Ozon question/info on archive check failed', {
@@ -1119,7 +1168,12 @@ async function purgeAnsweredMissingFromMarketplace(profileId, marketplace, exter
             ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
             : null;
         const refreshed = await refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride);
-        if (refreshed && rowNeedsSellerReply(refreshed)) {
+        // API не ответил — оставляем локально (не сносим из‑за сетевого сбоя).
+        if (!refreshed) {
+          kept += 1;
+          continue;
+        }
+        if (rowNeedsSellerReply(refreshed)) {
           await marketplaceQuestionsRepo.upsertRow(refreshed);
           kept += 1;
           continue;
@@ -1129,7 +1183,11 @@ async function purgeAnsweredMissingFromMarketplace(profileId, marketplace, exter
         continue;
       }
       const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
-      if (refreshed && rowNeedsSellerReply(refreshed)) {
+      if (!refreshed) {
+        kept += 1;
+        continue;
+      }
+      if (rowNeedsSellerReply(refreshed)) {
         await marketplaceQuestionsRepo.upsertRow(refreshed);
         kept += 1;
         continue;
@@ -1143,8 +1201,8 @@ async function purgeAnsweredMissingFromMarketplace(profileId, marketplace, exter
         questionId: row.id,
         error: e?.message || String(e),
       });
-      await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
-      deleted += 1;
+      // При ошибке проверки не удаляем — иначе «пропали вопросы» после сбоя МП.
+      kept += 1;
     }
   }
   return { deleted, kept };
@@ -1551,10 +1609,12 @@ async function submitAnswerWildberries(profileId, row, text, _organizationId = n
     'x-api-key': apiKey,
     'X-Api-Key': apiKey,
   };
+  // В GET state=suppliersPortalSynch значит «новый вопрос»; в PATCH state — только wbRu|none.
+  // Подставлять suppliersPortalSynch в PATCH → 400 «Неизвестный state».
   const stateFromRow =
     row?.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload.state ?? row.raw_payload.status : null;
-  const stateToSend =
-    stateFromRow != null && String(stateFromRow).trim() !== '' ? String(stateFromRow).trim() : 'wbRu';
+  const stateRaw = stateFromRow != null ? String(stateFromRow).trim() : '';
+  const stateToSend = stateRaw === 'none' || stateRaw === 'wbRu' ? stateRaw : 'wbRu';
 
   const parseWbBodyOrNull = (t) => {
     if (!t) return null;

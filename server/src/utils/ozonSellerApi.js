@@ -182,7 +182,12 @@ function enqueueOzonSellerApi(priority, fn) {
   return p;
 }
 
-async function waitClientGapAndCooldown(clientKey, minGapMs) {
+/**
+ * Ждём gap/cooldown ВНЕ exec-lock — иначе high (ответ на вопрос) блокируется на весь cooldown.
+ * @returns {'ready'|'timeout'}
+ */
+async function waitClientGapAndCooldown(clientKey, minGapMs, maxWaitMs = null) {
+  const started = Date.now();
   for (;;) {
     const coolUntil = cooldownUntilByClient.get(clientKey) || 0;
     const last = lastAtByClient.get(clientKey) || 0;
@@ -190,19 +195,48 @@ async function waitClientGapAndCooldown(clientKey, minGapMs) {
     const waitCool = coolUntil - now;
     const waitGap = last + minGapMs - now;
     const wait = Math.max(waitCool, waitGap, 0);
-    if (wait <= 0) return;
-    await sleep(Math.min(wait, 5_000));
+    if (wait <= 0) return 'ready';
+    if (maxWaitMs != null && Date.now() - started + wait > maxWaitMs && Date.now() - started >= maxWaitMs) {
+      return 'timeout';
+    }
+    const slice = maxWaitMs != null
+      ? Math.min(wait, 1_000, Math.max(0, maxWaitMs - (Date.now() - started)))
+      : Math.min(wait, 5_000);
+    if (slice <= 0) return 'timeout';
+    await sleep(slice);
   }
 }
 
+/** Интерактив (ответы/карточка): не держим пользователя в cooldown дольше nginx. */
+const OZON_HIGH_PRIORITY_MAX_COOLDOWN_WAIT_MS = Math.max(
+  2_000,
+  parseInt(process.env.OZON_HIGH_PRIORITY_MAX_COOLDOWN_WAIT_MS || '12000', 10) || 12_000
+);
+
 async function runWithGapAndRetry(
   callFn,
-  { maxAttempts = 5, minGapMs = OZON_SELLER_API_MIN_GAP_MS, clientKey = 'default' } = {}
+  {
+    maxAttempts = 5,
+    minGapMs = OZON_SELLER_API_MIN_GAP_MS,
+    clientKey = 'default',
+    priority = 'normal',
+  } = {}
 ) {
+  const isHigh = priority === 'high';
+  const maxWaitMs = isHigh ? OZON_HIGH_PRIORITY_MAX_COOLDOWN_WAIT_MS : null;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      // Gap/cooldown — вне lock. Lock только на сам HTTP.
+      const gate = await waitClientGapAndCooldown(clientKey, minGapMs, maxWaitMs);
+      if (gate === 'timeout') {
+        throw rateLimitError(new Error('cooldown wait timeout for high-priority call'));
+      }
       return await withOzonSellerApiExecLock(async () => {
-        await waitClientGapAndCooldown(clientKey, minGapMs);
+        // Короткий re-check gap под lock (без долгого cooldown sleep).
+        const recheck = await waitClientGapAndCooldown(clientKey, minGapMs, isHigh ? 2_000 : 5_000);
+        if (recheck === 'timeout') {
+          throw rateLimitError(new Error('exec-lock gap timeout'));
+        }
         try {
           return await callFn();
         } finally {
@@ -220,6 +254,10 @@ async function runWithGapAndRetry(
       }
       const coolMs = Math.min(90_000, OZON_SELLER_API_COOLDOWN_MS + attempt * 15_000);
       noteOzonClientRateLimited(clientKey, coolMs);
+      if (isHigh) {
+        // Интерактиву лучше сразу сказать «подождите», чем ждать 60с до обрыва nginx.
+        throw rateLimitError(e);
+      }
       await sleep(Math.min(30_000, 1500 * 2 ** attempt));
     }
   }
@@ -235,7 +273,7 @@ export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
       () => integrationsService._ozonApiPost(path, body, withRawFlag(ozonApiOpts)),
-      { ...retryOpts, clientKey }
+      { ...retryOpts, clientKey, priority }
     )
   );
 }
@@ -247,6 +285,7 @@ export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
     runWithGapAndRetry(() => integrationsService._ozonApiGet(path, withRawFlag(ozonApiOpts)), {
       ...retryOpts,
       clientKey,
+      priority,
     })
   );
 }
@@ -257,14 +296,15 @@ export async function ozonApiMultipartPostWithRetry(path, formData, ozonApiOpts,
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
       () => integrationsService._ozonApiMultipartPost(path, formData, withRawFlag(ozonApiOpts)),
-      { maxAttempts, minGapMs, clientKey }
+      { maxAttempts, minGapMs, clientKey, priority }
     )
   );
 }
 
 /**
  * Число элементов в ответе списка Seller API.
- * С ~09.2026 поле `total` устаревает → `total_items` (дедлайн 23.11.2026 для product/list, stocks, prices).
+ * Поле `total` отключают 7.12.2026 → используем `total_items`
+ * (/v3/product/list, /v4/product/info/stocks, /v5/product/info/prices).
  * Смотрим result и корень; `count` — у части методов (сертификаты).
  *
  * @param {object|null|undefined} data — тело ответа или data.result
