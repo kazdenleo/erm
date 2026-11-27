@@ -61,7 +61,12 @@ import {
   productsMapFromStockList,
   warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
-import { isProfileProcurementStatusEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import {
+  isProfileProcurementStatusEnabled,
+  isProfileProductSupplierBindingEnabled,
+  getProfileSalesSchemeFlags,
+} from '../../utils/profileFlags.js';
+import { salesSchemeLabel } from '../../constants/marketplaceSalesSchemes.js';
 import { resolveOrderIncomingWarehouseTitle } from '../../utils/warehouseMappingMarketplaces.js';
 import { warehouseMappingsApi } from '../../services/warehouseMappings.api.js';
 import {
@@ -532,6 +537,17 @@ export function Orders() {
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const procurementStatusEnabled = isProfileProcurementStatusEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const schemeFlags = getProfileSalesSchemeFlags(profile);
+  const enabledExtraSchemes = useMemo(() => {
+    const out = [];
+    if (schemeFlags.dbs) out.push('dbs');
+    if (schemeFlags.edbs) out.push('edbs');
+    if (schemeFlags.cnc) out.push('cnc');
+    if (schemeFlags.rfbs) out.push('rfbs');
+    if (schemeFlags.booking) out.push('booking');
+    return out;
+  }, [schemeFlags.dbs, schemeFlags.edbs, schemeFlags.cnc, schemeFlags.rfbs, schemeFlags.booking]);
+  const showSchemeFilter = enabledExtraSchemes.length > 0;
   const { warehouses, loadWarehouses } = useWarehouses();
   const [warehouseMappings, setWarehouseMappings] = useState([]);
   const { organizations } = useOrganizations();
@@ -566,6 +582,8 @@ export function Orders() {
   const [ordersAutoSyncPauseLoaded, setOrdersAutoSyncPauseLoaded] = useState(false);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
+  /** fbs = контур FBS (по умолчанию); all = все схемы; dbs/edbs/cnc/… = только схема */
+  const [salesSchemeFilter, setSalesSchemeFilter] = useState('fbs');
   const [listRefreshing, setListRefreshing] = useState(false);
   const listFilterChangeRef = useRef(false);
   /** Ключ фильтров, под который уже загружен текущий `orders` (чтобы не показывать «пусто» во время смены вкладки). */
@@ -896,11 +914,14 @@ export function Orders() {
       };
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       if (statusFilter !== 'all') params.status = statusFilter;
+      if (salesSchemeFilter && salesSchemeFilter !== 'fbs') {
+        params.salesScheme = salesSchemeFilter;
+      }
       const query = String(orderSearchQuery || '').trim();
       if (query) params.search = query;
       return params;
     },
-    [currentPage, pageSize, marketplaceFilter, statusFilter, orderSearchQuery]
+    [currentPage, pageSize, marketplaceFilter, statusFilter, salesSchemeFilter, orderSearchQuery]
   );
 
   const currentListKey = useMemo(
@@ -908,11 +929,12 @@ export function Orders() {
       [
         marketplaceFilter,
         statusFilter,
+        salesSchemeFilter,
         String(orderSearchQuery || '').trim(),
         String(pageSize),
         String(currentPage),
       ].join('|'),
-    [marketplaceFilter, statusFilter, orderSearchQuery, pageSize, currentPage]
+    [marketplaceFilter, statusFilter, salesSchemeFilter, orderSearchQuery, pageSize, currentPage]
   );
 
   const listFiltersSettled = loadedListKey === currentListKey && !listRefreshing;
@@ -2039,6 +2061,8 @@ export function Orders() {
       ...(procurementStatusEnabled ? ['in_procurement'] : []),
       'in_assembly',
       'assembled',
+      'ready_for_pickup',
+      'out_for_delivery',
       'shipped',
       'in_transit',
       'delivered',
@@ -3560,6 +3584,44 @@ export function Orders() {
           </button>
         </div>
 
+        {showSchemeFilter ? (
+          <div className="erp-filter-row" role="group" aria-label="Фильтр по схеме продаж">
+            <button
+              type="button"
+              className={`erp-filter-btn${salesSchemeFilter === 'fbs' ? ' erp-filter-btn--active' : ''}`}
+              onClick={() => {
+                beginListFilterChange();
+                setSalesSchemeFilter('fbs');
+              }}
+            >
+              <span className="erp-filter-btn__label">FBS</span>
+            </button>
+            {enabledExtraSchemes.map((sch) => (
+              <button
+                key={sch}
+                type="button"
+                className={`erp-filter-btn${salesSchemeFilter === sch ? ' erp-filter-btn--active' : ''}`}
+                onClick={() => {
+                  beginListFilterChange();
+                  setSalesSchemeFilter(sch);
+                }}
+              >
+                <span className="erp-filter-btn__label">{salesSchemeLabel(sch)}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`erp-filter-btn${salesSchemeFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
+              onClick={() => {
+                beginListFilterChange();
+                setSalesSchemeFilter('all');
+              }}
+            >
+              <span className="erp-filter-btn__label">Все схемы</span>
+            </button>
+          </div>
+        ) : null}
+
         {renderOrdersListPager('top')}
 
         <div className={`orders-list${listRefreshing ? ' orders-list--refreshing' : ''}`}>
@@ -3800,16 +3862,35 @@ export function Orders() {
                       const mpNorm = normalizeMarketplaceForUI(first.marketplace);
                       const meta = allMarketplaces.find((m) => m.code === mpNorm);
                       const label = meta?.name ?? String(first.marketplace ?? '—');
-                      if (meta?.badgeClass && meta.shortLabel) {
-                        return (
-                          <span className={`mp-badge ${meta.badgeClass}`} title={label} aria-label={label}>
-                            {meta.shortLabel}
-                          </span>
-                        );
-                      }
+                      const sch = String(first.salesScheme || first.sales_scheme || '')
+                        .trim()
+                        .toLowerCase();
+                      const schLabel = sch ? salesSchemeLabel(sch) : null;
+                      const jitBadge =
+                        schemeFlags.jitFbs &&
+                        (!sch || sch === 'fbs') &&
+                        String(first.status || '').toLowerCase() === 'in_procurement';
                       return (
-                        <span className="mp-badge mp-unknown" title={label} aria-label={label}>
-                          ?
+                        <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {meta?.badgeClass && meta.shortLabel ? (
+                            <span className={`mp-badge ${meta.badgeClass}`} title={label} aria-label={label}>
+                              {meta.shortLabel}
+                            </span>
+                          ) : (
+                            <span className="mp-badge mp-unknown" title={label} aria-label={label}>
+                              ?
+                            </span>
+                          )}
+                          {schLabel && sch !== 'fbs' ? (
+                            <span className="mp-badge mp-unknown" title={`Схема ${schLabel}`}>
+                              {schLabel}
+                            </span>
+                          ) : null}
+                          {jitBadge ? (
+                            <span className="mp-badge mp-unknown" title="JIT под FBS">
+                              JIT
+                            </span>
+                          ) : null}
                         </span>
                       );
                     })()}

@@ -5900,6 +5900,41 @@ class OrdersService {
   }
 
   /**
+   * Локальная смена статуса (DBS/C&C и т.п.) без вызова API маркетплейса.
+   */
+  async updateOrderStatus(marketplace, orderId, status, { profileId = null } = {}) {
+    if (!marketplace || orderId == null || !status) return null;
+    const next = String(status).trim().toLowerCase();
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      const order = await this.repository.findByMarketplaceAndOrderId(
+        marketplace,
+        String(orderId),
+        profileId
+      );
+      if (!order) return null;
+      if (order.orderGroupId) {
+        await this.repository.updateStatusByOrderGroupId(order.orderGroupId, next, profileId);
+        return { ...order, status: next };
+      }
+      return await this.repository.updateByMarketplaceAndOrderId(
+        marketplace,
+        String(orderId),
+        { status: next },
+        profileId
+      );
+    }
+    const { readData, writeData } = await import('../utils/storage.js');
+    const data = await readData('orders');
+    const orders = (data?.orders && [...data.orders]) || [];
+    const key = `${marketplace}|${orderId}`;
+    const order = orders.find((o) => `${o.marketplace}|${o.orderId}` === key);
+    if (!order) return null;
+    order.status = next;
+    await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
+    return order;
+  }
+
+  /**
    * Отметить заказ как отгруженный: статус 'shipped' (ручные заказы без поставки FBS).
    * Для FBS списание — при закрытии поставки; здесь движения только для ручного сценария.
    */

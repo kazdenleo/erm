@@ -110,6 +110,11 @@ class OrdersController {
       const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
       const status = req.query?.status ? String(req.query.status).trim() : null;
       const search = req.query?.search ? String(req.query.search).trim() : null;
+      const salesScheme = req.query?.salesScheme
+        ? String(req.query.salesScheme).trim().toLowerCase()
+        : req.query?.sales_scheme
+          ? String(req.query.sales_scheme).trim().toLowerCase()
+          : null;
       const limitRaw = req.query?.limit;
       const offsetRaw = req.query?.offset;
       let limit = limitRaw != null ? Number(limitRaw) : null;
@@ -121,9 +126,23 @@ class OrdersController {
       }
       if (limit > ORDER_LIST_MAX_LIMIT) limit = ORDER_LIST_MAX_LIMIT;
       let excludeManual = false;
+      let excludeSalesSchemes = [];
       if (tid != null) {
         const prof = await profilesRepo.findById(tid);
         excludeManual = !prof || prof.allow_private_orders !== true;
+        // FBS-контур (по умолчанию / salesScheme=fbs): прячем схемы, включённые отдельно.
+        // salesScheme=all или конкретная схема — без исключения.
+        if (!salesScheme || salesScheme === 'fbs') {
+          const { schemesExcludedFromFbsPipeline } = await import(
+            '../constants/marketplaceSalesSchemes.js'
+          );
+          excludeSalesSchemes = schemesExcludedFromFbsPipeline({
+            dbs: prof?.dbs_enabled === true,
+            edbs: prof?.edbs_enabled === true,
+            cnc: prof?.cnc_enabled === true,
+            booking: prof?.booking_enabled === true,
+          });
+        }
       }
       const options = {
         ...(tid != null ? { profileId: tid } : {}),
@@ -131,6 +150,8 @@ class OrdersController {
         ...(marketplace ? { marketplace } : {}),
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
+        ...(salesScheme && salesScheme !== 'all' ? { salesScheme } : {}),
+        ...(excludeSalesSchemes.length ? { excludeSalesSchemes } : {}),
         limit,
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
@@ -874,6 +895,56 @@ class OrdersController {
       }
       await ordersService.markOrderAsShipped(marketplace, orderId, req.user?.profileId ?? null);
       return res.status(200).json({ ok: true, data: { message: 'Статус заказа изменён на «Отгружен»' } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Локальный статус для DBS / C&C (без вызова API МП).
+   * PUT /orders/:marketplace/:orderId/scheme-status { status }
+   */
+  async setSchemeStatus(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const nextStatus = String(req.body?.status || '').trim().toLowerCase();
+      const allowed = new Set(['ready_for_pickup', 'out_for_delivery', 'delivered', 'assembled']);
+      if (!allowed.has(nextStatus)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Допустимые статусы: ready_for_pickup, out_for_delivery, delivered, assembled',
+        });
+      }
+      const profileId = req.user?.profileId ?? null;
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, {
+        profileId,
+      });
+      if (!order) {
+        return res.status(404).json({ ok: false, message: 'Заказ не найден' });
+      }
+      const scheme = String(order.salesScheme || order.sales_scheme || '')
+        .trim()
+        .toLowerCase();
+      if (nextStatus === 'ready_for_pickup' && scheme && scheme !== 'cnc') {
+        return res.status(400).json({
+          ok: false,
+          message: '«Готов к выдаче» только для схемы C&C',
+        });
+      }
+      if (nextStatus === 'out_for_delivery' && scheme && !['dbs', 'edbs'].includes(scheme)) {
+        return res.status(400).json({
+          ok: false,
+          message: '«У курьера» только для схем DBS / EDBS',
+        });
+      }
+      const updated = await ordersService.updateOrderStatus(marketplace, orderId, nextStatus, {
+        profileId,
+      });
+      return res.status(200).json({
+        ok: true,
+        data: updated || { status: nextStatus },
+        message: `Статус: ${nextStatus}`,
+      });
     } catch (error) {
       next(error);
     }

@@ -643,6 +643,8 @@ class PricesService {
     const alertMax = this._ozonMoneyAmount(p.alert_max_action_price);
     const priceMinElastic = this._ozonMoneyAmount(p.price_min_elastic);
     const priceMaxElastic = this._ozonMoneyAmount(p.price_max_elastic);
+    // Ozon 2026-11: цена до автодобавления в акцию (Money | number).
+    const actionPriceBeforeAutoAdd = this._ozonMoneyAmount(p.action_price_before_auto_add);
     return {
       ...p,
       id: p.id != null && p.id !== '' ? Number(p.id) : p.id,
@@ -652,6 +654,8 @@ class PricesService {
       alert_max_action_price: alertMax != null ? alertMax : p.alert_max_action_price,
       price_min_elastic: priceMinElastic != null ? priceMinElastic : p.price_min_elastic,
       price_max_elastic: priceMaxElastic != null ? priceMaxElastic : p.price_max_elastic,
+      action_price_before_auto_add:
+        actionPriceBeforeAutoAdd != null ? actionPriceBeforeAutoAdd : p.action_price_before_auto_add,
     };
   }
 
@@ -3440,6 +3444,10 @@ class PricesService {
       // Определяем проценты комиссии в зависимости от источника данных
       let fboPercent = 0;
       let fbsPercent = 0;
+      let dbsPercent = 0;
+      let edbsPercent = 0;
+      let cncPercent = 0;
+      let bookingPercent = 0;
       
       // Сначала проверяем raw_data (самый полный источник)
       if (categoryCommission.raw_data) {
@@ -3483,12 +3491,15 @@ class PricesService {
             fboPercent = parseFloat(rawData.paidStorageKgvp || 0);
             console.log(`[Prices Service] Found paidStorageKgvp (FBO/FBW) in raw_data: ${fboPercent}%`);
           }
-          
-          // Fallback: если не нашли paidStorageKgvp для FBO, пробуем kgvpSupplier
-          if (fboPercent === 0 && rawData.kgvpSupplier !== undefined && rawData.kgvpSupplier !== null) {
-            fboPercent = parseFloat(rawData.kgvpSupplier || 0);
-            console.log(`[Prices Service] Using kgvpSupplier as fallback for FBO: ${fboPercent}%`);
+
+          if (rawData.kgvpSupplier != null) dbsPercent = parseFloat(rawData.kgvpSupplier || 0) || 0;
+          if (rawData.kgvpSupplierExpress != null) {
+            edbsPercent = parseFloat(rawData.kgvpSupplierExpress || 0) || 0;
           }
+          if (rawData.kgvpPickup != null) cncPercent = parseFloat(rawData.kgvpPickup || 0) || 0;
+          if (rawData.kgvpBooking != null) bookingPercent = parseFloat(rawData.kgvpBooking || 0) || 0;
+          
+          // Fallback: если не нашли paidStorageKgvp для FBO — НЕ берём kgvpSupplier (это DBS).
           
           if (fboPercent === 0) {
             console.warn(`[Prices Service] ⚠ WARNING: FBO commission (paidStorageKgvp) not found in raw_data for category ${wbCategoryId}`);
@@ -3558,10 +3569,17 @@ class PricesService {
         fboPercent = parseFloat(categoryCommission.paidStorageKgvp || 0);
         console.log(`[Prices Service] Using cached paidStorageKgvp (FBO) value: ${fboPercent}%`);
       }
-      // Устаревший fallback: раньше FBO ошибочно брали из kgvpSupplier (это DBS)
-      if (fboPercent === 0 && categoryCommission?.kgvpSupplier != null) {
-        fboPercent = parseFloat(categoryCommission.kgvpSupplier || 0);
-        console.warn(`[Prices Service] Fallback kgvpSupplier for FBO (prefer paidStorageKgvp): ${fboPercent}%`);
+      if (!dbsPercent && categoryCommission?.kgvpSupplier != null) {
+        dbsPercent = parseFloat(categoryCommission.kgvpSupplier || 0) || 0;
+      }
+      if (!edbsPercent && categoryCommission?.kgvpSupplierExpress != null) {
+        edbsPercent = parseFloat(categoryCommission.kgvpSupplierExpress || 0) || 0;
+      }
+      if (!cncPercent && categoryCommission?.kgvpPickup != null) {
+        cncPercent = parseFloat(categoryCommission.kgvpPickup || 0) || 0;
+      }
+      if (!bookingPercent && categoryCommission?.kgvpBooking != null) {
+        bookingPercent = parseFloat(categoryCommission.kgvpBooking || 0) || 0;
       }
 
       // Мин. цена WB считается по FBO/FBW (paidStorageKgvp)
@@ -3599,7 +3617,47 @@ class PricesService {
             value: 0,
             delivery_amount: parseWbTariffAmount(fbsLogisticsFirstLiter),
             return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
-          }
+          },
+          ...(dbsPercent > 0
+            ? {
+                DBS: {
+                  percent: dbsPercent,
+                  value: 0,
+                  delivery_amount: 0,
+                  return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
+                },
+              }
+            : {}),
+          ...(edbsPercent > 0
+            ? {
+                EDBS: {
+                  percent: edbsPercent,
+                  value: 0,
+                  delivery_amount: 0,
+                  return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
+                },
+              }
+            : {}),
+          ...(cncPercent > 0
+            ? {
+                CNC: {
+                  percent: cncPercent,
+                  value: 0,
+                  delivery_amount: 0,
+                  return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
+                },
+              }
+            : {}),
+          ...(bookingPercent > 0
+            ? {
+                BOOKING: {
+                  percent: bookingPercent,
+                  value: 0,
+                  delivery_amount: 0,
+                  return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
+                },
+              }
+            : {}),
         },
         fullCommissions: {},
         rawCommissions: {},
@@ -4437,8 +4495,8 @@ class PricesService {
   /**
    * Сохранить рассчитанную минимальную цену и детали расчёта по маркетплейсу в БД.
    * @param {object|null} [calculationDetails]
-   * @param {{ scheme?: 'FBS'|'FBO', alsoPrimary?: boolean }} [opts]
-   *   scheme — писать в min_price_fbs / min_price_fbo;
+   * @param {{ scheme?: string, alsoPrimary?: boolean }} [opts]
+   *   scheme — FBS/FBO → колонки; DBS/EDBS/CNC/RFBS/BOOKING → scheme_min_prices JSONB;
    *   alsoPrimary (default true) — синхронизировать legacy min_price (Ozon/YM←FBS, WB←FBO).
    */
   async saveProductMarketplacePrice(productId, marketplace, minPrice, calculationDetails = null, opts = {}) {
@@ -4601,6 +4659,10 @@ class PricesService {
     }
     const detailsJson = toStore != null ? JSON.stringify(toStore) : null;
 
+    const extraSchemeKey = ['DBS', 'EDBS', 'CNC', 'RFBS', 'BOOKING'].includes(scheme)
+      ? scheme.toLowerCase()
+      : null;
+
     try {
       if (scheme === 'FBS' || scheme === 'FBO') {
         const priceCol = scheme === 'FBS' ? 'min_price_fbs' : 'min_price_fbo';
@@ -4632,6 +4694,22 @@ class PricesService {
             [productId, marketplace, num, detailsJson]
           );
         }
+      } else if (extraSchemeKey) {
+        const entry = JSON.stringify({
+          min: Number(num),
+          details: toStore,
+          updatedAt: new Date().toISOString(),
+        });
+        await query(
+          `INSERT INTO product_marketplace_prices
+             (product_id, marketplace, min_price, scheme_min_prices, updated_at)
+           VALUES ($1, $2, $3, jsonb_build_object($4::text, $5::jsonb), CURRENT_TIMESTAMP)
+           ON CONFLICT (product_id, marketplace) DO UPDATE SET
+             scheme_min_prices = COALESCE(product_marketplace_prices.scheme_min_prices, '{}'::jsonb)
+               || jsonb_build_object($4::text, $5::jsonb),
+             updated_at = CURRENT_TIMESTAMP`,
+          [productId, marketplace, num, extraSchemeKey, entry]
+        );
       } else {
         await query(
           `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, calculation_details, updated_at)
@@ -4641,14 +4719,20 @@ class PricesService {
         );
       }
     } catch (err) {
-      if (err.message && (err.message.includes('calculation_details') || err.message.includes('min_price_fbs') || err.message.includes('min_price_fbo'))) {
+      if (
+        err.message &&
+        (err.message.includes('calculation_details') ||
+          err.message.includes('min_price_fbs') ||
+          err.message.includes('min_price_fbo') ||
+          err.message.includes('scheme_min_prices'))
+      ) {
         await query(
           `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, updated_at)
            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
            ON CONFLICT (product_id, marketplace) DO UPDATE SET min_price = $3, updated_at = CURRENT_TIMESTAMP`,
           [productId, marketplace, num]
         );
-        logger.warn('[Prices Service] Scheme/details columns missing — run migration 156. Saved min_price only.');
+        logger.warn('[Prices Service] Scheme/details columns missing — run migration 156/270. Saved min_price only.');
       } else {
         throw err;
       }
@@ -4720,6 +4804,77 @@ class PricesService {
     } catch (err) {
       logger.warn('[Prices Service] getStoredPricesByProductIds failed (table may not exist):', err.message);
       return {};
+    }
+  }
+
+  /**
+   * Мин. цены доп. схем (DBS/EDBS/C&C/…), если включены в профиле.
+   * Не затрагивает FBS/FBO.
+   */
+  async _saveEnabledExtraSchemeMinPrices({
+    productId,
+    marketplace,
+    basePrice,
+    calculator,
+    product,
+    profit,
+    taxProfile,
+    wbAcquiringPercent = null,
+    wbGemServicesPercent = null,
+    sppPercent = null,
+    profileId = null,
+  }) {
+    const pid = profileId != null ? Number(profileId) : null;
+    if (!Number.isFinite(pid) || pid <= 0 || !calculator) return;
+    let flags = {};
+    try {
+      const r = await query(
+        `SELECT dbs_enabled, edbs_enabled, cnc_enabled, rfbs_enabled, booking_enabled
+         FROM profiles WHERE id = $1 LIMIT 1`,
+        [pid]
+      );
+      flags = r.rows?.[0] || {};
+    } catch {
+      return;
+    }
+    const schemes = [];
+    if (flags.dbs_enabled === true) schemes.push('DBS');
+    if (flags.edbs_enabled === true) schemes.push('EDBS');
+    if (flags.cnc_enabled === true) schemes.push('CNC');
+    if (flags.rfbs_enabled === true) schemes.push('RFBS');
+    if (flags.booking_enabled === true) schemes.push('BOOKING');
+    if (!schemes.length) return;
+
+    for (const scheme of schemes) {
+      try {
+        const price = calculateMinPrice(
+          basePrice,
+          calculator,
+          marketplace,
+          profit,
+          product,
+          wbAcquiringPercent,
+          wbGemServicesPercent,
+          taxProfile,
+          scheme,
+          sppPercent
+        );
+        if (price == null) continue;
+        await this.saveProductMarketplacePrice(
+          productId,
+          marketplace,
+          price,
+          { ...calculator, price_scheme: scheme },
+          { scheme, alsoPrimary: false }
+        );
+      } catch (e) {
+        logger.warn('[Prices Service] extra scheme min price failed', {
+          productId,
+          marketplace,
+          scheme,
+          error: e?.message,
+        });
+      }
     }
   }
 
@@ -5059,6 +5214,19 @@ class PricesService {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
               markPriced('wb');
             }
+            await this._saveEnabledExtraSchemeMinPrices({
+              productId,
+              marketplace: 'wb',
+              basePrice,
+              calculator: wbCalc,
+              product,
+              profit,
+              taxProfile,
+              wbAcquiringPercent,
+              wbGemServicesPercent,
+              sppPercent: wbSppPercent,
+              profileId: product.profile_id ?? product.profileId,
+            });
             if (priceFbo == null && priceFbs == null) {
               errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
             } else if (priceFbo == null) {
@@ -5114,6 +5282,19 @@ class PricesService {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
               markPriced('wb');
             }
+            await this._saveEnabledExtraSchemeMinPrices({
+              productId,
+              marketplace: 'wb',
+              basePrice,
+              calculator: wbCalc,
+              product,
+              profit,
+              taxProfile,
+              wbAcquiringPercent,
+              wbGemServicesPercent,
+              sppPercent: wbSppPercent,
+              profileId: product.profile_id ?? product.profileId,
+            });
             if (priceFbo != null || priceFbs != null) {
               errors.wb = `${data?.error || 'WB live tariffs'} — пересчёт из кэша с тарифом возврата`;
               logger.warn(`[Prices Service] recalc WB product ${productId} via cache fallback`, errors.wb);

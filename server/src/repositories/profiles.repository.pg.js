@@ -664,6 +664,30 @@ class ProfilesRepositoryPG {
       const v = updates.fbo_enabled ?? updates.fboEnabled;
       set('fbo_enabled', v === true || v === '1' || v === 'true');
     }
+    if (updates.dbs_enabled !== undefined || updates.dbsEnabled !== undefined) {
+      const v = updates.dbs_enabled ?? updates.dbsEnabled;
+      set('dbs_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.edbs_enabled !== undefined || updates.edbsEnabled !== undefined) {
+      const v = updates.edbs_enabled ?? updates.edbsEnabled;
+      set('edbs_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.cnc_enabled !== undefined || updates.cncEnabled !== undefined) {
+      const v = updates.cnc_enabled ?? updates.cncEnabled;
+      set('cnc_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.rfbs_enabled !== undefined || updates.rfbsEnabled !== undefined) {
+      const v = updates.rfbs_enabled ?? updates.rfbsEnabled;
+      set('rfbs_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.booking_enabled !== undefined || updates.bookingEnabled !== undefined) {
+      const v = updates.booking_enabled ?? updates.bookingEnabled;
+      set('booking_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.jit_fbs_enabled !== undefined || updates.jitFbsEnabled !== undefined) {
+      const v = updates.jit_fbs_enabled ?? updates.jitFbsEnabled;
+      set('jit_fbs_enabled', v === true || v === '1' || v === 'true');
+    }
     if (updates.partsapi_keys !== undefined || updates.partsapiKeys !== undefined) {
       const raw = updates.partsapi_keys ?? updates.partsapiKeys;
       set('partsapi_keys', JSON.stringify(normalizePartsApiKeys(raw)));

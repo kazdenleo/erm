@@ -11,6 +11,7 @@ import {
   extractMinPriceCommissionPercent,
   hasUsableCommissionPercent,
   normalizePriceScheme,
+  isExtraSellerPriceScheme,
   MIN_USABLE_COMMISSION_PERCENT,
 } from '../utils/commissionGuards.js';
 import {
@@ -55,7 +56,14 @@ export function calculateMinPrice(
   const commissions = calculator.commissions;
   // WB: логистика уже в logistics_base/liter — delivery_amount из комиссии не добавляем.
   let commission;
-  if (marketplace === 'wb') {
+  if (isExtraSellerPriceScheme(priceScheme)) {
+    const extra =
+      commissions[priceScheme] ||
+      commissions.DBS ||
+      commissions.FBS ||
+      commissions.FBO;
+    commission = marketplace === 'wb' ? { ...extra, delivery_amount: 0 } : extra;
+  } else if (marketplace === 'wb') {
     const wbBase = priceScheme === 'FBS'
       ? (commissions.FBS || commissions.FBO)
       : (commissions.FBO || commissions.FBS);

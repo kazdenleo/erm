@@ -10,6 +10,7 @@ import {
   netMarginPercentFromProfit,
   formatMarginPercent,
 } from './marketplacePriceMath.js';
+import { salesSchemeLabel } from '../../constants/marketplaceSalesSchemes.js';
 
 /**
  * @param {object} props
@@ -299,6 +300,28 @@ export function MarketplacePriceCells({
             onOpenMinDetailsFbs || onOpenMinDetails,
             bothSchemes ? 'FBS' : showFbs && !showFbo ? 'FBS' : null
           )}
+          {(() => {
+            const extra = pack.schemeMinPrices || {};
+            const entries = Object.entries(extra).filter(([, v]) => v && (v.min != null || Number.isFinite(Number(v))));
+            if (!entries.length) return null;
+            return (
+              <div
+                className="mp-price-muted"
+                style={{ fontSize: 11, lineHeight: 1.3, marginTop: 4 }}
+                title="Мин. цены доп. схем (Настройки → схемы работы)"
+              >
+                {entries.map(([key, val]) => {
+                  const n = Number(val?.min ?? val);
+                  if (!Number.isFinite(n)) return null;
+                  return (
+                    <div key={key}>
+                      {salesSchemeLabel(key)}: {n} ₽
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </td>
       )}
       {showFbo && (

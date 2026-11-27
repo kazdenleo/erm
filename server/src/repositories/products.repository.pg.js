@@ -670,6 +670,26 @@ async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, mar
     return;
   }
 
+  // Нельзя вешать артикул чужого комплекта на обычный товар/комплектующую —
+  // иначе продажи/себестоимость комплекта уезжают на карточку с cost одной детали.
+  if (sku) {
+    const clash = await client.query(
+      `SELECT k.id, k.sku
+       FROM products k
+       WHERE k.id <> $1
+         AND LOWER(TRIM(COALESCE(k.sku, ''))) = LOWER(TRIM($2))
+         AND ${kitCatalogProductSql('k')}
+       LIMIT 1`,
+      [productId, sku]
+    );
+    if (clash.rows?.[0]) {
+      console.warn(
+        `[product_skus] skip ${mp} sku="${sku}" for product ${productId}: belongs to kit ${clash.rows[0].id} (${clash.rows[0].sku})`
+      );
+      return;
+    }
+  }
+
   try {
     await client.query(
       `INSERT INTO product_skus (product_id, marketplace, sku, marketplace_product_id)
@@ -1851,12 +1871,12 @@ class ProductsRepositoryPG {
                     pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual,
                     min_price_fbs, min_price_fbo,
                     calculation_details_fbs, calculation_details_fbo,
-                    max_price
+                    max_price, scheme_min_prices
              FROM product_marketplace_prices WHERE product_id = ANY($1)`,
             [productIds]
           );
         } catch (colErr) {
-          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual') || colErr.message.includes('min_price_fbs') || colErr.message.includes('min_price_fbo') || colErr.message.includes('max_price'))) {
+          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual') || colErr.message.includes('min_price_fbs') || colErr.message.includes('min_price_fbo') || colErr.message.includes('max_price') || colErr.message.includes('scheme_min_prices'))) {
             try {
               pricesResult = await query(
                 `SELECT product_id, marketplace, min_price, calculation_details, updated_at,
@@ -1915,6 +1935,15 @@ class ProductsRepositoryPG {
           const mpStrategyId = row.pricing_strategy_id != null ? Number(row.pricing_strategy_id) : null;
           const sellingManual = row.selling_price_manual === true;
           const maxPrice = row.max_price != null ? parseFloat(row.max_price) : null;
+          let schemeMinPrices = row.scheme_min_prices;
+          if (typeof schemeMinPrices === 'string') {
+            try {
+              schemeMinPrices = JSON.parse(schemeMinPrices);
+            } catch {
+              schemeMinPrices = {};
+            }
+          }
+          if (!schemeMinPrices || typeof schemeMinPrices !== 'object') schemeMinPrices = {};
           const pack = {
             min: price,
             minFbs: priceFbs,
@@ -1922,6 +1951,7 @@ class ProductsRepositoryPG {
             details,
             detailsFbs,
             detailsFbo,
+            schemeMinPrices,
             selling,
             before,
             discount,
@@ -1937,6 +1967,7 @@ class ProductsRepositoryPG {
             pricesByProduct[key].ozonDetailsFbs = detailsFbs ?? details;
             pricesByProduct[key].ozonDetailsFbo = detailsFbo;
             pricesByProduct[key].ozonPack = pack;
+            pricesByProduct[key].ozonSchemeMinPrices = schemeMinPrices;
           } else if (row.marketplace === 'wb') {
             pricesByProduct[key].wb = price;
             pricesByProduct[key].wbFbs = priceFbs;
@@ -1945,6 +1976,7 @@ class ProductsRepositoryPG {
             pricesByProduct[key].wbDetailsFbs = detailsFbs;
             pricesByProduct[key].wbDetailsFbo = detailsFbo ?? details;
             pricesByProduct[key].wbPack = pack;
+            pricesByProduct[key].wbSchemeMinPrices = schemeMinPrices;
           } else if (row.marketplace === 'ym') {
             pricesByProduct[key].ym = price;
             pricesByProduct[key].ymFbs = priceFbs ?? (price != null ? price : null);
@@ -1953,6 +1985,7 @@ class ProductsRepositoryPG {
             pricesByProduct[key].ymDetailsFbs = detailsFbs ?? details;
             pricesByProduct[key].ymDetailsFbo = detailsFbo;
             pricesByProduct[key].ymPack = pack;
+            pricesByProduct[key].ymSchemeMinPrices = schemeMinPrices;
           }
           if (row.updated_at && (!pricesByProduct[key].updated_at || new Date(row.updated_at) > new Date(pricesByProduct[key].updated_at))) {
             pricesByProduct[key].updated_at = row.updated_at;

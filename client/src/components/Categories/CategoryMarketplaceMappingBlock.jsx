@@ -7,7 +7,7 @@ import {
   resolveMpCommissionEntry,
 } from '../../utils/marketplaceCategoryCommissions';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
+import { getProfileSalesSchemeFlags } from '../../utils/profileFlags.js';
 
 const MP_BADGE_CLASS = {
   wb: 'wb',
@@ -24,7 +24,7 @@ function mpBadgeClass(marketplace) {
 
 export function CommissionSchemesRow({ marketplace, schemes, note }) {
   const { profile } = useAuth();
-  const flags = { fbs: isProfileFbsEnabled(profile), fbo: isProfileFboEnabled(profile) };
+  const flags = getProfileSalesSchemeFlags(profile);
   const hasSchemes = schemes?.length > 0;
   const workingKeys = new Set(getMpWorkingSchemeKeys(marketplace, flags));
   const sourceNote = stripPriceCalcSchemeNote(note);

@@ -176,6 +176,13 @@ router.put(
   wrapAsync(ordersController.markShipped.bind(ordersController))
 );
 
+// Локальный статус DBS / C&C (готов к выдаче / у курьера / доставлен)
+router.put(
+  '/:marketplace/:orderId/scheme-status',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.setSchemeStatus.bind(ordersController))
+);
+
 // Удалить заказ (для ручных заказов; при группе удаляется вся группа)
 router.delete(
   '/:marketplace/:orderId',

@@ -26,6 +26,7 @@ import {
 } from '../utils/ozonSellerApi.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 import { notifyOrderChanges } from './telegramNotify.service.js';
+import { detectSalesSchemeFromOrderPayload } from '../constants/marketplaceSalesSchemes.js';
 
 /** Ключи Ozon из конфига синка — в общую очередь Seller API (пауза + retry 429). */
 function ozonApiOptsFromConfig(config) {
@@ -2156,7 +2157,8 @@ async function fetchOzonOrderByPostingNumber(config, postingNumberRaw) {
     deliveryAddress: marketplaceWarehouseBindKey(
       order.delivery_method?.warehouse_id ?? order.delivery_method?.warehouseId,
       order.delivery_method?.warehouse_name ?? order.delivery_method?.warehouseName
-    )
+    ),
+    salesScheme: detectSalesSchemeFromOrderPayload('ozon', order) || 'fbs',
   };
 }
 
@@ -2244,6 +2246,7 @@ function mapOzonPostingToSyncRows(order) {
         order?.delivery_method?.warehouse_id ?? order?.delivery_method?.warehouseId,
         order?.delivery_method?.warehouse_name ?? order?.delivery_method?.warehouseName
       ),
+      salesScheme: detectSalesSchemeFromOrderPayload('ozon', order) || 'fbs',
       ...(assemblySticker ? { assemblyStickerNumber: assemblySticker } : {})
     };
   });
@@ -2518,6 +2521,8 @@ function wbCodesIndicateCancel(codes) {
 function wbCodesIndicateTransit(codes) {
   const transit = new Set([
     'SORTED',
+    // С 12.11.2026 для трансграничных: delivering_by_carrier вместо accepted/sent_to_carrier.
+    'DELIVERING_BY_CARRIER',
     'ACCEPTED_BY_CARRIER',
     'SENT_TO_CARRIER',
     'READY_FOR_PICKUP',
@@ -2533,6 +2538,9 @@ function wbCodesIndicateTransit(codes) {
 function wbStringInTransit(wb) {
   const transit = new Set([
     'sorted',
+    // С 12.11.2026 для трансграничных: delivering_by_carrier вместо accepted/sent_to_carrier
+    // (старые значения остаются для заданий, созданных до этой даты).
+    'delivering_by_carrier',
     'accepted_by_carrier',
     'sent_to_carrier',
     'ready_for_pickup',
@@ -2926,7 +2934,8 @@ async function fetchWildberriesFBSOrders(config, { skipTitles = false } = {}) {
         deliveryAddress: marketplaceWarehouseBindKey(
           order.warehouseId ?? order.warehouse_id,
           Array.isArray(order.offices) ? (order.offices[0] || '') : (order.offices || '')
-        )
+        ),
+        salesScheme: detectSalesSchemeFromOrderPayload('wb', order) || 'fbs',
       };
     });
   } catch (error) {
@@ -3025,7 +3034,8 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
       deliveryAddress: marketplaceWarehouseBindKey(
         order.warehouseId ?? order.warehouse_id,
         Array.isArray(order.offices) ? (order.offices[0] || '') : (order.offices || '')
-      )
+      ),
+      salesScheme: detectSalesSchemeFromOrderPayload('wb', order) || 'fbs',
     };
   });
 
@@ -4008,7 +4018,8 @@ function mapYandexBusinessOrderToInternal(order) {
       customerPhone: '',
       // Для резервирования важнее "ключ склада", чем адрес покупателя.
       // Если есть campaignId — пишем его, чтобы warehouse_mappings мог сопоставить YM→фактический склад.
-      deliveryAddress: ymWarehouseKey || deliveryAddressHuman
+      deliveryAddress: ymWarehouseKey || deliveryAddressHuman,
+      salesScheme: detectSalesSchemeFromOrderPayload('ym', order) || 'fbs',
     };
   });
 }
@@ -4119,7 +4130,8 @@ export default ordersSyncService;
 export {
   getYandexBusinessAndCampaigns,
   normalizeYandexApiKey,
-  yandexExtractLinePriceRub
+  yandexExtractLinePriceRub,
+  resolveWildberriesOrderStatus,
 };
 
 

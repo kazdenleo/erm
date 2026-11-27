@@ -9,6 +9,10 @@ export const orderStatusLabels = {
   in_assembly: 'На сборке',
   in_procurement: 'В закупке',
   assembled: 'Собран',
+  /** C&C: собран и ждёт покупателя */
+  ready_for_pickup: 'Готов к выдаче',
+  /** DBS: передан своему курьеру / в рейс */
+  out_for_delivery: 'У курьера',
   in_transit: 'Отгружен',
   shipped: 'В доставке',
   delivered: 'Доставлен',

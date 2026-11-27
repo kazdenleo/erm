@@ -15,6 +15,7 @@ import {
   FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK,
   FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK,
 } from '../../utils/profileFlags.js';
+import { EXTRA_SALES_SCHEME_FLAGS } from '../../constants/marketplaceSalesSchemes.js';
 import {
   NOTIFICATION_CHANNEL_MODES,
   NOTIFICATION_CHANNELS,
@@ -64,6 +65,12 @@ export function Settings() {
     manual_orders_warehouse_id: '',
     fbs_enabled: true,
     fbo_enabled: false,
+    dbs_enabled: false,
+    edbs_enabled: false,
+    cnc_enabled: false,
+    rfbs_enabled: false,
+    booking_enabled: false,
+    jit_fbs_enabled: false,
     fbo_deduction_warehouse_id: '',
     require_reserved_stock_for_assembly: false,
     auto_send_to_assembly_on_reserve: false,
@@ -240,6 +247,12 @@ export function Settings() {
           : null,
         fbs_enabled: form.fbs_enabled !== false,
         fbo_enabled: form.fbo_enabled,
+        dbs_enabled: form.dbs_enabled === true,
+        edbs_enabled: form.edbs_enabled === true,
+        cnc_enabled: form.cnc_enabled === true,
+        rfbs_enabled: form.rfbs_enabled === true,
+        booking_enabled: form.booking_enabled === true,
+        jit_fbs_enabled: form.jit_fbs_enabled === true,
         fbo_deduction_warehouse_id: form.fbo_enabled ? form.fbo_deduction_warehouse_id || null : null,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         auto_send_to_assembly_on_reserve: form.auto_send_to_assembly_on_reserve,
@@ -1021,6 +1034,38 @@ export function Settings() {
                   <strong>Работать по FBO</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Мин. цены FBO на странице «Цены»; при поставках FBO подставляется склад списания остатков.
+                  </span>
+                </span>
+              </label>
+              {EXTRA_SALES_SCHEME_FLAGS.map((scheme) => (
+                <label key={scheme.flag} className="settings-account-toggle">
+                  <input
+                    type="checkbox"
+                    checked={form[scheme.flag] === true}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, [scheme.flag]: e.target.checked }))
+                    }
+                  />
+                  <span>
+                    <strong>{scheme.label}</strong>
+                    <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                      {scheme.hint}
+                    </span>
+                  </span>
+                </label>
+              ))}
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.jit_fbs_enabled === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, jit_fbs_enabled: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>JIT под FBS</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Операционный контур: срочная закупка под заказ FBS без отдельного тарифа маркетплейса.
                   </span>
                 </span>
               </label>

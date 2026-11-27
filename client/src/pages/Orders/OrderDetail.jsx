@@ -8,6 +8,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { productCardPath } from '../../utils/productCardPath.js';
 import { isProfilePrivateOrdersEnabled } from '../../utils/profileFlags.js';
+import { salesSchemeLabel } from '../../constants/marketplaceSalesSchemes.js';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
@@ -229,11 +230,13 @@ export function OrderCardActions({
   marketplace,
   orderId,
   status,
+  salesScheme,
   onDeleted,
   onCancelled,
   onError,
   onSupplierOrdered,
   onOpenManualProcurement,
+  onStatusChanged,
 }) {
   const { profile } = useAuth();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
@@ -241,7 +244,17 @@ export function OrderCardActions({
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [supplierOrderLoading, setSupplierOrderLoading] = useState(false);
   const [supplierSubmitLoading, setSupplierSubmitLoading] = useState(false);
-  const busy = cancelLoading || deleteLoading || supplierOrderLoading || supplierSubmitLoading;
+  const [schemeStatusLoading, setSchemeStatusLoading] = useState(false);
+  const busy =
+    cancelLoading ||
+    deleteLoading ||
+    supplierOrderLoading ||
+    supplierSubmitLoading ||
+    schemeStatusLoading;
+  const scheme = String(salesScheme || '').trim().toLowerCase();
+  const isCnc = scheme === 'cnc';
+  const isDbsLike = scheme === 'dbs' || scheme === 'edbs';
+  const st = String(status || '').trim().toLowerCase();
   const showCancel = orderCanShowCancel(marketplace, status);
   const showSupplierOrder =
     supplierSyncEnabled && isOrderStatusEligibleForSupplierOrder(marketplace, status);
@@ -317,11 +330,68 @@ export function OrderCardActions({
     }
   };
 
+  const handleSchemeStatus = async (nextStatus, confirmText) => {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setSchemeStatusLoading(true);
+    try {
+      await ordersApi.setSchemeStatus(marketplace, orderId, nextStatus);
+      onStatusChanged?.(nextStatus);
+    } catch (e) {
+      onError?.(e.response?.data?.message || e.message || 'Не удалось сменить статус');
+    } finally {
+      setSchemeStatusLoading(false);
+    }
+  };
+
   if (!marketplace || !orderId) return null;
 
   return (
     <section className="order-detail-actions" aria-label="Действия с заказом">
       <div className="order-detail-actions__buttons">
+        {isCnc && (st === 'assembled' || st === 'in_assembly' || st === 'new') ? (
+          <Button
+            variant="primary"
+            size="small"
+            disabled={busy}
+            onClick={() =>
+              handleSchemeStatus('ready_for_pickup', 'Отметить заказ готовым к выдаче покупателю?')
+            }
+          >
+            {schemeStatusLoading ? '…' : 'Готов к выдаче'}
+          </Button>
+        ) : null}
+        {isCnc && st === 'ready_for_pickup' ? (
+          <Button
+            variant="primary"
+            size="small"
+            disabled={busy}
+            onClick={() => handleSchemeStatus('delivered', 'Покупатель забрал заказ?')}
+          >
+            {schemeStatusLoading ? '…' : 'Выдан покупателю'}
+          </Button>
+        ) : null}
+        {isDbsLike && (st === 'assembled' || st === 'in_assembly' || st === 'new') ? (
+          <Button
+            variant="primary"
+            size="small"
+            disabled={busy}
+            onClick={() =>
+              handleSchemeStatus('out_for_delivery', 'Передать заказ курьеру / в доставку?')
+            }
+          >
+            {schemeStatusLoading ? '…' : 'Передать курьеру'}
+          </Button>
+        ) : null}
+        {isDbsLike && st === 'out_for_delivery' ? (
+          <Button
+            variant="primary"
+            size="small"
+            disabled={busy}
+            onClick={() => handleSchemeStatus('delivered', 'Заказ доставлен покупателю?')}
+          >
+            {schemeStatusLoading ? '…' : 'Доставлен'}
+          </Button>
+        ) : null}
         {showSupplierOrder ? (
           <>
             <Button variant="primary" size="small" onClick={handleSendToProcurement} disabled={busy}>
@@ -1050,6 +1120,15 @@ export function OrderDetail() {
   const detail = data?.detail;
   const localLines = data?.localLines;
   const ermStatus = data?.ermStatus;
+  const salesSchemeRaw =
+    localLines?.[0]?.salesScheme ??
+    localLines?.[0]?.sales_scheme ??
+    data?.salesScheme ??
+    data?.sales_scheme ??
+    detail?.salesScheme ??
+    detail?.sales_scheme ??
+    null;
+  const salesSchemeText = salesSchemeLabel(salesSchemeRaw);
 
   return (
     <div className="card order-detail">
@@ -1060,6 +1139,9 @@ export function OrderDetail() {
         <h1 className="title" style={{ margin: '12px 0 0' }}>
           Заказ {orderId}
           <span className="order-detail-marketplace"> ({mpName})</span>
+          {salesSchemeRaw ? (
+            <span className="order-detail-marketplace"> · схема {salesSchemeText}</span>
+          ) : null}
         </h1>
       </div>
 
@@ -1067,12 +1149,19 @@ export function OrderDetail() {
         marketplace={marketplace}
         orderId={orderId}
         status={data?.ermStatus}
+        salesScheme={salesSchemeRaw}
         onDeleted={() => navigate('/orders')}
         onCancelled={() => {
           ordersApi
             .getOrderDetail(marketplace, orderId)
             .then((result) => setData(result))
             .catch((e) => setError(e.response?.data?.message || e.message || 'Ошибка загрузки заказа'));
+        }}
+        onStatusChanged={() => {
+          ordersApi
+            .getOrderDetail(marketplace, orderId)
+            .then((result) => setData(result))
+            .catch(() => {});
         }}
         onError={(msg) => setError(msg)}
         onOpenManualProcurement={() => setManualProcOpen(true)}
@@ -1653,6 +1742,12 @@ export function WildberriesDetail({ detail, localLines, assemblyStickerNumber = 
           ) : null}
           <dt>Цена</dt><dd>{detail.priceRub != null ? detail.priceRub : detail.price} ₽</dd>
           <dt>Тип доставки</dt><dd>{detail.deliveryType || '—'}</dd>
+          {(detail.salesScheme || detail.sales_scheme) && (
+            <>
+              <dt>Схема продаж</dt>
+              <dd>{salesSchemeLabel(detail.salesScheme || detail.sales_scheme)}</dd>
+            </>
+          )}
           {detail.supplyId && <><dt>Поставка</dt><dd>{detail.supplyId}</dd></>}
         </dl>
       </section>

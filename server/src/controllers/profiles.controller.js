@@ -170,6 +170,30 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.fbo_enabled ?? b.fboEnabled;
     out.fbo_enabled = v === true || v === '1' || v === 'true';
   }
+  if (b.dbs_enabled !== undefined || b.dbsEnabled !== undefined) {
+    const v = b.dbs_enabled ?? b.dbsEnabled;
+    out.dbs_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.edbs_enabled !== undefined || b.edbsEnabled !== undefined) {
+    const v = b.edbs_enabled ?? b.edbsEnabled;
+    out.edbs_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.cnc_enabled !== undefined || b.cncEnabled !== undefined) {
+    const v = b.cnc_enabled ?? b.cncEnabled;
+    out.cnc_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.rfbs_enabled !== undefined || b.rfbsEnabled !== undefined) {
+    const v = b.rfbs_enabled ?? b.rfbsEnabled;
+    out.rfbs_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.booking_enabled !== undefined || b.bookingEnabled !== undefined) {
+    const v = b.booking_enabled ?? b.bookingEnabled;
+    out.booking_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.jit_fbs_enabled !== undefined || b.jitFbsEnabled !== undefined) {
+    const v = b.jit_fbs_enabled ?? b.jitFbsEnabled;
+    out.jit_fbs_enabled = v === true || v === '1' || v === 'true';
+  }
   if (b.partsapi_keys !== undefined || b.partsapiKeys !== undefined) {
     out.partsapi_keys = normalizePartsApiKeys(b.partsapi_keys ?? b.partsapiKeys);
   }

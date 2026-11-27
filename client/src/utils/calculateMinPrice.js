@@ -16,6 +16,8 @@ import {
 
 export const MIN_USABLE_COMMISSION_PERCENT = 0.01;
 
+const EXTRA_SELLER_SCHEMES = new Set(['DBS', 'EDBS', 'CNC', 'RFBS', 'BOOKING']);
+
 export function extractMinPriceCommissionPercent(calculator, marketplace, scheme = null) {
   const commissions = calculator?.commissions;
   if (!commissions || typeof commissions !== 'object') return null;
@@ -26,6 +28,12 @@ export function extractMinPriceCommissionPercent(calculator, marketplace, scheme
     raw = commissions.FBS?.percent ?? commissions.FBO?.percent;
   } else if (want === 'FBO' || want === 'FBY' || want === 'FBW') {
     raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
+  } else if (EXTRA_SELLER_SCHEMES.has(want)) {
+    raw =
+      commissions[want]?.percent ??
+      commissions.DBS?.percent ??
+      commissions.FBS?.percent ??
+      commissions.FBO?.percent;
   } else if (mp === 'wb' || mp === 'wildberries') {
     raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
   } else {
@@ -45,6 +53,11 @@ export function normalizePriceScheme(scheme, marketplace) {
   const s = String(scheme || '').toUpperCase();
   if (s === 'FBS') return 'FBS';
   if (s === 'FBO' || s === 'FBY' || s === 'FBW') return 'FBO';
+  if (s === 'DBS' || s === 'DBW') return 'DBS';
+  if (s === 'EDBS' || s === 'EXPRESS') return 'EDBS';
+  if (s === 'CNC' || s === 'C&C' || s === 'PICKUP') return 'CNC';
+  if (s === 'RFBS' || s === 'REALFBS') return 'RFBS';
+  if (s === 'BOOKING' || s === 'БРОНЬ') return 'BOOKING';
   const mp = String(marketplace || '').toLowerCase();
   return mp === 'wb' || mp === 'wildberries' ? 'FBO' : 'FBS';
 }
@@ -135,7 +148,14 @@ export function calculateMinPrice(
 
   const commissions = calculator.commissions;
   let commission;
-  if (marketplace === 'wb') {
+  if (EXTRA_SELLER_SCHEMES.has(priceScheme)) {
+    const extra =
+      commissions[priceScheme] ||
+      commissions.DBS ||
+      commissions.FBS ||
+      commissions.FBO;
+    commission = marketplace === 'wb' ? { ...extra, delivery_amount: 0 } : extra;
+  } else if (marketplace === 'wb') {
     const wbBase = priceScheme === 'FBS'
       ? (commissions.FBS || commissions.FBO)
       : (commissions.FBO || commissions.FBS);

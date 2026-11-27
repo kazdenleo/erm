@@ -23,6 +23,12 @@ export function accountSettingsFromProfile(profile) {
         ? true
         : isProfileBoolFlag(profile.fbs_enabled ?? profile.fbsEnabled),
     fbo_enabled: isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled),
+    dbs_enabled: isProfileBoolFlag(profile.dbs_enabled ?? profile.dbsEnabled),
+    edbs_enabled: isProfileBoolFlag(profile.edbs_enabled ?? profile.edbsEnabled),
+    cnc_enabled: isProfileBoolFlag(profile.cnc_enabled ?? profile.cncEnabled),
+    rfbs_enabled: isProfileBoolFlag(profile.rfbs_enabled ?? profile.rfbsEnabled),
+    booking_enabled: isProfileBoolFlag(profile.booking_enabled ?? profile.bookingEnabled),
+    jit_fbs_enabled: isProfileBoolFlag(profile.jit_fbs_enabled ?? profile.jitFbsEnabled),
     fbo_deduction_warehouse_id:
       profile.fbo_deduction_warehouse_id != null && profile.fbo_deduction_warehouse_id !== ''
         ? String(profile.fbo_deduction_warehouse_id)
@@ -163,6 +169,50 @@ export function isProfileFbsEnabled(profile) {
 export function isProfileFboEnabled(profile) {
   if (profile == null) return false;
   return isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled);
+}
+
+export function isProfileDbsEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.dbs_enabled ?? profile.dbsEnabled);
+}
+
+export function isProfileEdbsEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.edbs_enabled ?? profile.edbsEnabled);
+}
+
+export function isProfileCncEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.cnc_enabled ?? profile.cncEnabled);
+}
+
+export function isProfileRfbsEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.rfbs_enabled ?? profile.rfbsEnabled);
+}
+
+export function isProfileBookingEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.booking_enabled ?? profile.bookingEnabled);
+}
+
+export function isProfileJitFbsEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.jit_fbs_enabled ?? profile.jitFbsEnabled);
+}
+
+/** Флаги схем продаж для комиссий / UI. */
+export function getProfileSalesSchemeFlags(profile) {
+  return {
+    fbs: isProfileFbsEnabled(profile),
+    fbo: isProfileFboEnabled(profile),
+    dbs: isProfileDbsEnabled(profile),
+    edbs: isProfileEdbsEnabled(profile),
+    cnc: isProfileCncEnabled(profile),
+    rfbs: isProfileRfbsEnabled(profile),
+    booking: isProfileBookingEnabled(profile),
+    jitFbs: isProfileJitFbsEnabled(profile),
+  };
 }
 
 /** Привязка товаров к поставщику включена (по умолчанию нет). */

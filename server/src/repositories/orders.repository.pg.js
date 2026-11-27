@@ -64,6 +64,9 @@ function rowToCamel(row) {
     customerName: row.customer_name,
     customerPhone: row.customer_phone,
     deliveryAddress: row.delivery_address,
+    salesScheme: row.sales_scheme != null && String(row.sales_scheme).trim() !== ''
+      ? String(row.sales_scheme).trim().toLowerCase()
+      : null,
     customerId: row.customer_id != null && row.customer_id !== '' ? String(row.customer_id) : null,
     createdAt: row.created_at,
     inProcessAt: row.in_process_at,
@@ -158,7 +161,19 @@ function pickedItemsJson(pickedItems) {
 
 class OrdersRepositoryPG {
   buildFindAllFilters(options = {}) {
-    const { marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds } = options;
+    const {
+      marketplace,
+      status,
+      productId,
+      search,
+      profileId,
+      excludeManual,
+      includeArchived,
+      warehouseIds,
+      salesScheme,
+      excludeSalesSchemes,
+      fbsPipelineOnly,
+    } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
@@ -198,9 +213,40 @@ class OrdersRepositoryPG {
       } else if (stNorm === 'in_assembly') {
         whereSql += ` AND ( o.status = $${paramIndex++} OR ( o.marketplace = 'wb' AND o.status = 'wb_assembly' ) )`;
         params.push(st);
+      } else if (stNorm === 'ready_for_pickup') {
+        whereSql += ` AND o.status = $${paramIndex++}`;
+        params.push('ready_for_pickup');
+      } else if (stNorm === 'out_for_delivery') {
+        whereSql += ` AND o.status = $${paramIndex++}`;
+        params.push('out_for_delivery');
       } else {
         whereSql += ` AND o.status = $${paramIndex++}`;
         params.push(st);
+      }
+    }
+    if (salesScheme) {
+      const scheme = String(salesScheme).trim().toLowerCase();
+      if (scheme && scheme !== 'all') {
+        if (scheme === 'fbs') {
+          // FBS-пайплайн: явный fbs или схема ещё не размечена
+          whereSql += ` AND (o.sales_scheme IS NULL OR LOWER(TRIM(o.sales_scheme)) = 'fbs')`;
+        } else {
+          whereSql += ` AND LOWER(TRIM(COALESCE(o.sales_scheme, ''))) = $${paramIndex++}`;
+          params.push(scheme);
+        }
+      }
+    }
+    const excludeSchemes = Array.isArray(excludeSalesSchemes)
+      ? excludeSalesSchemes.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
+      : [];
+    if (fbsPipelineOnly === true || excludeSchemes.length > 0) {
+      const list = fbsPipelineOnly === true
+        ? ['dbs', 'edbs', 'cnc', 'booking', ...(excludeSchemes || [])]
+        : excludeSchemes;
+      const uniq = [...new Set(list)];
+      if (uniq.length > 0) {
+        whereSql += ` AND (o.sales_scheme IS NULL OR LOWER(TRIM(o.sales_scheme)) <> ALL($${paramIndex++}::text[]))`;
+        params.push(uniq);
       }
     }
     if (productId) {
@@ -240,7 +286,7 @@ class OrdersRepositoryPG {
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.returned_to_new_at,
+        o.returned_to_new_at, o.sales_scheme,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
@@ -726,6 +772,11 @@ class OrdersRepositoryPG {
     const rawWh = order.warehouseId ?? order.warehouse_id ?? null;
     const whNum = rawWh != null && String(rawWh).trim() !== '' ? Number(rawWh) : NaN;
     const warehouseId = Number.isFinite(whNum) && whNum >= 1 ? Math.trunc(whNum) : null;
+    const rawScheme = order.salesScheme ?? order.sales_scheme ?? null;
+    const salesScheme =
+      rawScheme != null && String(rawScheme).trim() !== ''
+        ? String(rawScheme).trim().toLowerCase().slice(0, 20)
+        : null;
     return [
       pid,
       marketplace,
@@ -745,7 +796,8 @@ class OrdersRepositoryPG {
       createdAt,
       inProcessAt,
       shipmentDate,
-      returnedToNewAt
+      returnedToNewAt,
+      salesScheme,
     ];
   }
 
@@ -760,8 +812,8 @@ class OrdersRepositoryPG {
         profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
         customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date, returned_to_new_at,
-        terminal_status_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text, $12, $13, $14, $15, $16, $17, $18, $19,
+        sales_scheme, terminal_status_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text, $12, $13, $14, $15, $16, $17, $18, $19, $20,
         CASE WHEN LOWER(TRIM($11::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END
       )
       ON CONFLICT (profile_id, marketplace, order_id) DO UPDATE SET
@@ -802,6 +854,7 @@ class OrdersRepositoryPG {
         in_process_at = COALESCE(EXCLUDED.in_process_at, orders.in_process_at),
         shipment_date = COALESCE(EXCLUDED.shipment_date, orders.shipment_date),
         returned_to_new_at = COALESCE(EXCLUDED.returned_to_new_at, orders.returned_to_new_at),
+        sales_scheme = COALESCE(EXCLUDED.sales_scheme, orders.sales_scheme),
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
         assembly_sticker_number = orders.assembly_sticker_number,
@@ -822,7 +875,7 @@ class OrdersRepositoryPG {
     const cols = `profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
         customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date, returned_to_new_at,
-        terminal_status_at`;
+        sales_scheme, terminal_status_at`;
     const setClause = `
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
@@ -861,6 +914,7 @@ class OrdersRepositoryPG {
         in_process_at = COALESCE(EXCLUDED.in_process_at, orders.in_process_at),
         shipment_date = COALESCE(EXCLUDED.shipment_date, orders.shipment_date),
         returned_to_new_at = COALESCE(EXCLUDED.returned_to_new_at, orders.returned_to_new_at),
+        sales_scheme = COALESCE(EXCLUDED.sales_scheme, orders.sales_scheme),
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
         assembly_sticker_number = orders.assembly_sticker_number,
@@ -873,9 +927,9 @@ class OrdersRepositoryPG {
       chunk.forEach((order, idx) => {
         const p = this._orderToUpsertParams(order);
         params.push(...p);
-        const base = idx * 19 + 1;
+        const base = idx * 20 + 1;
         placeholders.push(
-          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::text, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17}, $${base + 18}, CASE WHEN LOWER(TRIM($${base + 10}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END)`
+          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::text, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17}, $${base + 18}, $${base + 19}, CASE WHEN LOWER(TRIM($${base + 10}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END)`
         );
       });
       await query(`

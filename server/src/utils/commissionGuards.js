@@ -30,9 +30,11 @@ export function ymWeightGramsToKg(weightRaw) {
   return Math.round((n / 1000) * 1000) / 1000;
 }
 
+const EXTRA_SELLER_SCHEMES = new Set(['DBS', 'EDBS', 'CNC', 'RFBS', 'BOOKING']);
+
 /**
  * Процент комиссии для calculateMinPrice.
- * @param {'FBS'|'FBO'|null|undefined} [scheme] — явная схема; иначе дефолт: WB→FBO, остальные→FBS
+ * @param {string|null|undefined} [scheme] — FBS|FBO|DBS|EDBS|CNC|RFBS|BOOKING
  * @returns {number|null}
  */
 export function extractMinPriceCommissionPercent(calculator, marketplace, scheme = null) {
@@ -45,6 +47,12 @@ export function extractMinPriceCommissionPercent(calculator, marketplace, scheme
     raw = commissions.FBS?.percent ?? commissions.FBO?.percent;
   } else if (want === 'FBO' || want === 'FBY' || want === 'FBW') {
     raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
+  } else if (EXTRA_SELLER_SCHEMES.has(want)) {
+    raw =
+      commissions[want]?.percent ??
+      commissions.DBS?.percent ??
+      commissions.FBS?.percent ??
+      commissions.FBO?.percent;
   } else if (mp === 'wb' || mp === 'wildberries') {
     raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
   } else {
@@ -60,13 +68,22 @@ export function hasUsableCommissionPercent(calculator, marketplace, scheme = nul
   return p != null && p >= MIN_USABLE_COMMISSION_PERCENT;
 }
 
-/** Нормализация схемы: FBS | FBO */
+/** Нормализация схемы: FBS | FBO | DBS | EDBS | CNC | RFBS | BOOKING */
 export function normalizePriceScheme(scheme, marketplace) {
   const s = String(scheme || '').toUpperCase();
   if (s === 'FBS') return 'FBS';
   if (s === 'FBO' || s === 'FBY' || s === 'FBW') return 'FBO';
+  if (s === 'DBS' || s === 'DBW') return 'DBS';
+  if (s === 'EDBS' || s === 'EXPRESS') return 'EDBS';
+  if (s === 'CNC' || s === 'C&C' || s === 'PICKUP') return 'CNC';
+  if (s === 'RFBS' || s === 'REALFBS') return 'RFBS';
+  if (s === 'BOOKING') return 'BOOKING';
   const mp = String(marketplace || '').toLowerCase();
   return mp === 'wb' || mp === 'wildberries' ? 'FBO' : 'FBS';
+}
+
+export function isExtraSellerPriceScheme(scheme) {
+  return EXTRA_SELLER_SCHEMES.has(String(scheme || '').toUpperCase());
 }
 
 /**

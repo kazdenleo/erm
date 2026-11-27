@@ -2,6 +2,11 @@
  * Комиссии маркетплейсов по схемам продаж для сопоставленных категорий.
  */
 
+import {
+  getMpCommissionKeysForWorkingSchemes,
+  describeWorkingSchemes as describeWorkingSchemesFromFlags,
+} from '../constants/marketplaceSalesSchemes.js';
+
 /** Схемы WB — те же поля, что в Integrations → Wildberries → Комиссия */
 export const WB_COMMISSION_SCHEMES = [
   { key: 'kgvpBooking', label: 'Бронирование', shortLabel: 'Бронь' },
@@ -62,31 +67,34 @@ export function getWbCommissionSchemesForDisplay(reportItem) {
   };
 }
 
-/** Ключи схем комиссии FBS / FBO в данных каждого маркетплейса */
-const MP_SCHEME_KEYS = {
-  wb: { fbs: 'kgvpMarketplace', fbo: 'paidStorageKgvp' },
-  ozon: { fbs: 'FBS', fbo: 'FBO' },
-  ym: { fbs: 'FBS', fbo: 'FBY' },
-};
-
 /**
- * Схемы комиссии, по которым работает аккаунт (Настройки → «Работать по FBS / FBO»).
+ * Схемы комиссии, по которым работает аккаунт (Настройки → схемы продаж).
  * @param {string} marketplace
- * @param {{ fbs?: boolean, fbo?: boolean }} flags
+ * @param {{ fbs?: boolean, fbo?: boolean, dbs?: boolean, edbs?: boolean, cnc?: boolean, rfbs?: boolean, booking?: boolean }} flags
  * @returns {string[]}
  */
-export function getMpWorkingSchemeKeys(marketplace, { fbs = true, fbo = false } = {}) {
-  const mp = String(marketplace || '').toLowerCase();
-  const map = MP_SCHEME_KEYS[mp === 'wildberries' ? 'wb' : mp === 'yandex' ? 'ym' : mp];
-  if (!map) return [];
-  return [fbs && map.fbs, fbo && map.fbo].filter(Boolean);
+export function getMpWorkingSchemeKeys(marketplace, flags = {}) {
+  return getMpCommissionKeysForWorkingSchemes(marketplace, {
+    fbs: flags.fbs !== false,
+    fbo: flags.fbo === true,
+    dbs: flags.dbs === true,
+    edbs: flags.edbs === true,
+    cnc: flags.cnc === true,
+    rfbs: flags.rfbs === true,
+    booking: flags.booking === true,
+  });
 }
 
-export function describeWorkingSchemes({ fbs = true, fbo = false } = {}) {
-  if (fbs && fbo) return 'Работаете по FBS и FBO — эти комиссии идут в мин. цены (Настройки аккаунта).';
-  if (fbs) return 'Работаете по FBS — эта комиссия идёт в мин. цены (Настройки аккаунта).';
-  if (fbo) return 'Работаете по FBO — эта комиссия идёт в мин. цены (Настройки аккаунта).';
-  return 'В Настройках аккаунта не включены ни FBS, ни FBO.';
+export function describeWorkingSchemes(flags = {}) {
+  return describeWorkingSchemesFromFlags({
+    fbs: flags.fbs !== false,
+    fbo: flags.fbo === true,
+    dbs: flags.dbs === true,
+    edbs: flags.edbs === true,
+    cnc: flags.cnc === true,
+    rfbs: flags.rfbs === true,
+    booking: flags.booking === true,
+  });
 }
 
 /** Убирает из пояснения устаревшую фразу о схеме для мин. цен (приходит из кэша комиссий). */
@@ -96,7 +104,7 @@ export function stripPriceCalcSchemeNote(note) {
   return out || null;
 }
 
-/** Собрать уникальные id категорий Ozon/YM из обогащённого списка ERP-категорий */
+/** Собрать уникальные id категорий Ozon/YM из обогащённого списка MySell-категорий */
 export function collectCommissionPreviewIds(categories) {
   /** @type {Map<string, number|string|null>} */
   const ozon = new Map();

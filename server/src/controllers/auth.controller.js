@@ -549,6 +549,12 @@ export const authController = {
                 allow_product_supplier_binding: profile.allow_product_supplier_binding === true,
                 fbs_enabled: profile.fbs_enabled !== false,
                 fbo_enabled: profile.fbo_enabled === true,
+                dbs_enabled: profile.dbs_enabled === true,
+                edbs_enabled: profile.edbs_enabled === true,
+                cnc_enabled: profile.cnc_enabled === true,
+                rfbs_enabled: profile.rfbs_enabled === true,
+                booking_enabled: profile.booking_enabled === true,
+                jit_fbs_enabled: profile.jit_fbs_enabled === true,
                 fbo_deduction_warehouse_id:
                   profile.fbo_deduction_warehouse_id != null
                     ? Number(profile.fbo_deduction_warehouse_id)

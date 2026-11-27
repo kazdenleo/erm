@@ -262,6 +262,14 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Локальный статус для DBS/C&C: ready_for_pickup | out_for_delivery | delivered | assembled */
+  setSchemeStatus: async (marketplace, orderId, status) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.put(`/orders/${mp}/${id}/scheme-status`, { status });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Отменить заказ на стороне МП (если поддерживается API) и локально.
    */
