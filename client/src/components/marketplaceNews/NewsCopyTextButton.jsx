@@ -51,9 +51,9 @@ function CheckIcon({ size = 18 }) {
 }
 
 /**
- * @param {{ title?: string, body?: string, className?: string }} props
+ * @param {{ title?: string, body?: string, className?: string, onCopied?: () => void }} props
  */
-export function NewsCopyTextButton({ title = '', body = '', className = '' }) {
+export function NewsCopyTextButton({ title = '', body = '', className = '', onCopied }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef(null);
 
@@ -72,6 +72,13 @@ export function NewsCopyTextButton({ title = '', body = '', className = '' }) {
     const ok = await copyTextToClipboard(payload);
     if (!ok) return;
     setCopied(true);
+    if (typeof onCopied === 'function') {
+      try {
+        onCopied();
+      } catch {
+        /* ignore */
+      }
+    }
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setCopied(false), 1600);
   };

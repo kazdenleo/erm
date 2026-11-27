@@ -111,20 +111,25 @@ export function PlatformMarketplaceNews() {
     }
   };
 
-  const openNews = async (item) => {
-    setOpenItem(item);
+  const markNewsRead = async (item, { syncOpenItem = false } = {}) => {
     if (item?.isRead || !item?.id) return;
     try {
       const res = await platformMarketplaceNewsApi.markRead(item.id);
       const updated = res?.data;
-      if (updated) {
-        setOpenItem(updated);
-        setItems((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
-        setUnreadCount((c) => Math.max(0, c - 1));
+      if (!updated) return;
+      setItems((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
+      setUnreadCount((c) => Math.max(0, c - 1));
+      if (syncOpenItem) {
+        setOpenItem((cur) => (cur?.id === updated.id ? { ...cur, ...updated } : cur));
       }
     } catch {
-      // просмотр всё равно доступен
+      // копирование / просмотр всё равно доступны
     }
+  };
+
+  const openNews = async (item) => {
+    setOpenItem(item);
+    await markNewsRead(item, { syncOpenItem: true });
   };
 
   const closeNews = () => setOpenItem(null);
@@ -266,6 +271,9 @@ export function PlatformMarketplaceNews() {
                   className="platform-mp-news-copy--card"
                   title={item.title}
                   body={item.body || item.summary || ''}
+                  onCopied={() => {
+                    void markNewsRead(item);
+                  }}
                 />
               </div>
               <button
