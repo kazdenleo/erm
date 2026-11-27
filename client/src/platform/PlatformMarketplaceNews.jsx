@@ -242,12 +242,11 @@ export function PlatformMarketplaceNews() {
       ) : (
         <ul className="platform-mp-news__list">
           {items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className={`platform-mp-news__card${item.isRead ? '' : ' platform-mp-news__card--unread'}`}
-                onClick={() => openNews(item)}
-              >
+            <li
+              key={item.id}
+              className={`platform-mp-news__card${item.isRead ? '' : ' platform-mp-news__card--unread'}`}
+            >
+              <div className="platform-mp-news__card-top">
                 <div className="platform-mp-news__meta">
                   {!item.isRead ? <span className="platform-mp-news__dot" aria-label="Непрочитано" /> : null}
                   <span className={`platform-mp-news__badge platform-mp-news__badge--${item.source}`}>
@@ -263,6 +262,17 @@ export function PlatformMarketplaceNews() {
                   <time dateTime={item.publishedAt || undefined}>{formatDate(item.publishedAt)}</time>
                   {item.isRead ? <span className="platform-mp-news__read-label">прочитано</span> : null}
                 </div>
+                <NewsCopyTextButton
+                  className="platform-mp-news-copy--card"
+                  title={item.title}
+                  body={item.body || item.summary || ''}
+                />
+              </div>
+              <button
+                type="button"
+                className="platform-mp-news__card-open"
+                onClick={() => openNews(item)}
+              >
                 <h2 className="platform-mp-news__title">{item.title}</h2>
                 {item.summary ? <p className="platform-mp-news__summary">{item.summary}</p> : null}
                 <span className="platform-mp-news__open-hint">Открыть полностью</span>
