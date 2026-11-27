@@ -2,7 +2,16 @@
  * Разбор ответов API маркетплейсов в строки marketplace_fbo_orders (одна строка — позиция заказа).
  */
 
+/** Statistics API: warehouseType = «Склад WB» | «Склад продавца» (не путать с warehouseName «Склад WB РФ»). */
 export const WB_FBO_WAREHOUSE_TYPE = 'Склад WB';
+
+export function isWbFboWarehouseType(warehouseType) {
+  const s = String(warehouseType || '').trim();
+  if (!s) return false;
+  if (s === WB_FBO_WAREHOUSE_TYPE) return true;
+  // На случай расширения enum (СГТ и т.п.) — FBO всё ещё «Склад WB…», не «Склад продавца».
+  return s.startsWith('Склад WB') && !/продавца/i.test(s);
+}
 
 function num(v) {
   const n = Number(v);
@@ -53,7 +62,7 @@ export function mergeLines(lines) {
   return [...map.values()];
 }
 
-/** Ozon /v2/posting/fbo/list → строки; цена — products[].price (цена продавца после его скидки). */
+/** Ozon /v3/posting/fbo/list → строки; цена — products[].price (цена продавца после его скидки). */
 export function mapOzonPostings(postings) {
   const lines = [];
   for (const p of postings || []) {
@@ -87,7 +96,7 @@ export function mapOzonPostings(postings) {
 export function mapWbOrders(rows) {
   const byId = new Map();
   for (const o of rows || []) {
-    if (o?.warehouseType !== WB_FBO_WAREHOUSE_TYPE || !o?.date) continue;
+    if (!isWbFboWarehouseType(o?.warehouseType) || !o?.date) continue;
     const orderId = str(o.srid, 128) || str(`${o.gNumber}:${o.nmId}:${o.date}`, 128);
     if (!orderId) continue;
     const cancelled = o.isCancel === true;

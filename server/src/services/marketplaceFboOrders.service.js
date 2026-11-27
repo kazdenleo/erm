@@ -1,6 +1,6 @@
 /**
  * Заказы FBO почти в реальном времени (в отличие от finance-отчётов, которые запаздывают на недели):
- * Ozon /v2/posting/fbo/list, WB Statistics /api/v1/supplier/orders (только «Склад WB»),
+ * Ozon /v3/posting/fbo/list, WB Statistics /api/v1/supplier/orders (только «Склад WB»),
  * Яндекс FBY /v2/campaigns/{id}/stats/orders.
  */
 
@@ -22,7 +22,8 @@ const BACKFILL_DAYS = 90;
 /** Окно повторной загрузки после backfill — чтобы подтянуть отмены и смену статусов. */
 const REFRESH_DAYS = { ozon: 14, wb: 3, ym: 30 };
 const CHUNK_DAYS = 30;
-const OZON_PAGE = 1000;
+/** Ozon /v3/posting/fbo/list: limit 1..100, пагинация через cursor. */
+const OZON_PAGE = 100;
 const WB_STATS_API = 'https://statistics-api.wildberries.ru';
 const WB_PAGE_MAX_ROWS = 80000;
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -57,21 +58,32 @@ function dateChunks(from, to, days) {
 async function fetchOzonFboPostings({ profileId, organizationId, since, to }) {
   const postings = [];
   for (const [a, b] of dateChunks(since, to, CHUNK_DAYS)) {
-    for (let offset = 0; offset < 100 * OZON_PAGE; offset += OZON_PAGE) {
+    let cursor = '';
+    for (let page = 0; page < 500; page += 1) {
       const r = await ozonApiPostWithRetry(
-        '/v2/posting/fbo/list',
+        '/v3/posting/fbo/list',
         {
-          dir: 'ASC',
+          cursor,
           filter: { since: a.toISOString(), to: b.toISOString() },
           limit: OZON_PAGE,
-          offset,
+          sort_dir: 'ASC',
           with: { analytics_data: true, financial_data: false },
         },
         { profileId, organizationId }
       );
-      const list = Array.isArray(r?.result) ? r.result : r?.result?.postings || [];
+      const list = Array.isArray(r?.postings)
+        ? r.postings
+        : Array.isArray(r?.result?.postings)
+          ? r.result.postings
+          : Array.isArray(r?.result)
+            ? r.result
+            : [];
       postings.push(...list);
-      if (list.length < OZON_PAGE) break;
+      const hasNext = r?.has_next === true || r?.result?.has_next === true;
+      const nextCursor = r?.cursor ?? r?.result?.cursor ?? '';
+      if (!hasNext || !list.length) break;
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = String(nextCursor);
     }
   }
   return postings;
