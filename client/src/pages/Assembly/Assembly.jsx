@@ -1973,8 +1973,9 @@ export function Assembly() {
                 <th>Маркетплейс</th>
                 <th>Состав</th>
                 <th className="assembly-col-order-id">ID заказа</th>
-                <th>Товар</th>
+                <th className="assembly-col-article">Артикул</th>
                 <th className="assembly-col-cell">Ячейка</th>
+                <th>Товар</th>
                 <th>Кол-во</th>
                 <th className="assembly-col-sticker">Стикер</th>
                 <th>Действия</th>
@@ -2004,26 +2005,13 @@ export function Assembly() {
                         {apiOrderId || primary.orderId}
                       </Link>
                     </td>
-                    <td>
+                    <td className="assembly-col-article">
                       <div className="assembly-table-lines">
                         {rows.map((o, i) => {
-                          const erpPid = assemblyLineProductId(o);
-                          const name = o.productName || o.product_name || '—';
-                          const q = o.quantity ?? 1;
+                          const article = assemblyOrderArticleKey(o) || '—';
                           return (
-                            <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
-                              {erpPid ? (
-                                <Link
-                                  to={productCardPath(erpPid)}
-                                  className="assembly-product-link"
-                                  title="Открыть карточку товара"
-                                >
-                                  {name}
-                                </Link>
-                              ) : (
-                                name
-                              )}
-                              <span className="assembly-table-line-qty">{` — ${q} шт`}</span>
+                            <div key={`${String(o.orderId)}-art-${i}`} className="assembly-table-line">
+                              {article}
                             </div>
                           );
                         })}
@@ -2056,6 +2044,31 @@ export function Assembly() {
                       ) : (
                         <span className="assembly-cell-empty">—</span>
                       )}
+                    </td>
+                    <td>
+                      <div className="assembly-table-lines">
+                        {rows.map((o, i) => {
+                          const erpPid = assemblyLineProductId(o);
+                          const name = o.productName || o.product_name || '—';
+                          const q = o.quantity ?? 1;
+                          return (
+                            <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
+                              {erpPid ? (
+                                <Link
+                                  to={productCardPath(erpPid)}
+                                  className="assembly-product-link"
+                                  title="Открыть карточку товара"
+                                >
+                                  {name}
+                                </Link>
+                              ) : (
+                                name
+                              )}
+                              <span className="assembly-table-line-qty">{` — ${q} шт`}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </td>
                     <td>{qtyCell}</td>
                     <td className="assembly-col-sticker">

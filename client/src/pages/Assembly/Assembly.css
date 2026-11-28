@@ -732,6 +732,13 @@
   text-align: left;
 }
 
+.assembly-col-article {
+  white-space: nowrap;
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+  min-width: 6rem;
+}
+
 .assembly-col-cell {
   white-space: nowrap;
   vertical-align: top;
