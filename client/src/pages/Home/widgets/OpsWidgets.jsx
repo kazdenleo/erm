@@ -63,7 +63,7 @@ export function OrdersWidget({ profileId }) {
     setLoading(true);
     setError(null);
     ordersApi
-      .getStatusCounts()
+      .getStatusCounts({ salesScheme: 'all' })
       .then((counts) => {
         if (!alive) return;
         setCount(ORDER_NEED_PROCESS_STATUSES.reduce((acc, st) => acc + (Number(counts?.[st]) || 0), 0));
