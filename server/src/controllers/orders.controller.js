@@ -26,6 +26,7 @@ import {
   getRequestAccessScope,
   isWarehouseAllowed,
 } from '../utils/userAccessScope.js';
+import { schemesExcludedFromFbsPipeline } from '../constants/marketplaceSalesSchemes.js';
 
 const profilesRepo = repositoryFactory.getProfilesRepository();
 const warehousesRepo = repositoryFactory.getWarehousesRepository();
@@ -36,6 +37,37 @@ async function applyAccessScopeToOrderOptions(req, options) {
     options.warehouseIds = scope.warehouseIds;
   }
   return scope;
+}
+
+function parseSalesSchemeQuery(req) {
+  const raw = req.query?.salesScheme ?? req.query?.sales_scheme;
+  if (raw == null || String(raw).trim() === '') return null;
+  return String(raw).trim().toLowerCase();
+}
+
+/**
+ * Те же profile-фильтры, что у GET /orders: ручные заказы и FBS-контур (DBS/C&C).
+ * salesScheme=all или конкретная схема — без исключения из FBS-пайплайна.
+ */
+async function applyProfileOrderListFilters(tid, salesScheme, options) {
+  if (tid == null) return options;
+  const prof = await profilesRepo.findById(tid);
+  if (!prof || prof.allow_private_orders !== true) {
+    options.excludeManual = true;
+  }
+  if (!salesScheme || salesScheme === 'fbs') {
+    const excludeSalesSchemes = schemesExcludedFromFbsPipeline({
+      dbs: prof?.dbs_enabled === true,
+      edbs: prof?.edbs_enabled === true,
+      cnc: prof?.cnc_enabled === true,
+      booking: prof?.booking_enabled === true,
+    });
+    if (excludeSalesSchemes.length) options.excludeSalesSchemes = excludeSalesSchemes;
+  }
+  if (salesScheme && salesScheme !== 'all') {
+    options.salesScheme = salesScheme;
+  }
+  return options;
 }
 
 async function validateManualOrderWarehouseId(profileId, warehouseId, accessScope = null) {
@@ -110,11 +142,7 @@ class OrdersController {
       const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
       const status = req.query?.status ? String(req.query.status).trim() : null;
       const search = req.query?.search ? String(req.query.search).trim() : null;
-      const salesScheme = req.query?.salesScheme
-        ? String(req.query.salesScheme).trim().toLowerCase()
-        : req.query?.sales_scheme
-          ? String(req.query.sales_scheme).trim().toLowerCase()
-          : null;
+      const salesScheme = parseSalesSchemeQuery(req);
       const limitRaw = req.query?.limit;
       const offsetRaw = req.query?.offset;
       let limit = limitRaw != null ? Number(limitRaw) : null;
@@ -125,36 +153,15 @@ class OrdersController {
         hasPaging = true;
       }
       if (limit > ORDER_LIST_MAX_LIMIT) limit = ORDER_LIST_MAX_LIMIT;
-      let excludeManual = false;
-      let excludeSalesSchemes = [];
-      if (tid != null) {
-        const prof = await profilesRepo.findById(tid);
-        excludeManual = !prof || prof.allow_private_orders !== true;
-        // FBS-контур (по умолчанию / salesScheme=fbs): прячем схемы, включённые отдельно.
-        // salesScheme=all или конкретная схема — без исключения.
-        if (!salesScheme || salesScheme === 'fbs') {
-          const { schemesExcludedFromFbsPipeline } = await import(
-            '../constants/marketplaceSalesSchemes.js'
-          );
-          excludeSalesSchemes = schemesExcludedFromFbsPipeline({
-            dbs: prof?.dbs_enabled === true,
-            edbs: prof?.edbs_enabled === true,
-            cnc: prof?.cnc_enabled === true,
-            booking: prof?.booking_enabled === true,
-          });
-        }
-      }
       const options = {
         ...(tid != null ? { profileId: tid } : {}),
-        ...(excludeManual ? { excludeManual: true } : {}),
         ...(marketplace ? { marketplace } : {}),
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
-        ...(salesScheme && salesScheme !== 'all' ? { salesScheme } : {}),
-        ...(excludeSalesSchemes.length ? { excludeSalesSchemes } : {}),
         limit,
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
+      await applyProfileOrderListFilters(tid, salesScheme, options);
       await applyAccessScopeToOrderOptions(req, options);
       const fullReserveEnrich = req.query?.enrichReserve === 'full';
       const listOptions = {
@@ -212,7 +219,8 @@ class OrdersController {
 
   /**
    * Счётчики по статусам (для кнопок фильтра) без пагинации.
-   * GET /orders/status-counts?marketplace=...&search=...
+   * GET /orders/status-counts?marketplace=...&search=...&salesScheme=...
+   * Те же фильтры схемы/профиля, что у списка заказов — иначе бейдж «Собран» расходится с вкладкой.
    */
   async getStatusCounts(req, res, next) {
     try {
@@ -225,19 +233,14 @@ class OrdersController {
       const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
       const search = req.query?.search ? String(req.query.search).trim() : null;
       const status = req.query?.status ? String(req.query.status).trim() : null;
-
-      let excludeManual = false;
-      if (tid != null) {
-        const prof = await profilesRepo.findById(tid);
-        excludeManual = !prof || prof.allow_private_orders !== true;
-      }
+      const salesScheme = parseSalesSchemeQuery(req);
 
       const options = {
         ...(tid != null ? { profileId: tid } : {}),
-        ...(excludeManual ? { excludeManual: true } : {}),
         ...(marketplace ? { marketplace } : {}),
         ...(search ? { search } : {}),
       };
+      await applyProfileOrderListFilters(tid, salesScheme, options);
       await applyAccessScopeToOrderOptions(req, options);
 
       const [data, byMarketplace] = await Promise.all([

@@ -1033,6 +1033,10 @@ export function Orders() {
         const params = {};
         if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
         if (statusFilter && statusFilter !== 'all') params.status = statusFilter;
+        // Как у списка: FBS по умолчанию (без param), иначе salesScheme=dbs|all|…
+        if (salesSchemeFilter && salesSchemeFilter !== 'fbs') {
+          params.salesScheme = salesSchemeFilter;
+        }
         const q = String(orderSearchQuery || '').trim();
         if (q) params.search = q;
         const data = await ordersApi.getStatusCounts(params);
@@ -1047,7 +1051,7 @@ export function Orders() {
         // Не блокируем UI счётчиков на ошибке — просто оставляем прошлые значения.
       }
     },
-    [marketplaceFilter, statusFilter, orderSearchQuery]
+    [marketplaceFilter, statusFilter, salesSchemeFilter, orderSearchQuery]
   );
 
   /** Список + кнопки статусов (после «В закупку», «На сборку» и т.п.). */

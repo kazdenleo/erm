@@ -9,6 +9,7 @@ import {
   ORDER_PRODUCT_LATERAL_SUBQUERY_SQL,
   orderLineMatchesCatalogProductIdSql,
 } from '../constants/orderProductMatchSql.js';
+import { applySalesSchemeSql } from '../utils/orderListSchemeSql.js';
 
 const ORDER_RESERVED_QTY_SQL = orderReservedQtyCorrelatedSubquerySql('sm', 'o');
 
@@ -174,7 +175,7 @@ class OrdersRepositoryPG {
       excludeSalesSchemes,
       fbsPipelineOnly,
     } = options;
-    const params = [];
+    let params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
     const pid = normalizeProfileId(profileId);
@@ -224,31 +225,11 @@ class OrdersRepositoryPG {
         params.push(st);
       }
     }
-    if (salesScheme) {
-      const scheme = String(salesScheme).trim().toLowerCase();
-      if (scheme && scheme !== 'all') {
-        if (scheme === 'fbs') {
-          // FBS-пайплайн: явный fbs или схема ещё не размечена
-          whereSql += ` AND (o.sales_scheme IS NULL OR LOWER(TRIM(o.sales_scheme)) = 'fbs')`;
-        } else {
-          whereSql += ` AND LOWER(TRIM(COALESCE(o.sales_scheme, ''))) = $${paramIndex++}`;
-          params.push(scheme);
-        }
-      }
-    }
-    const excludeSchemes = Array.isArray(excludeSalesSchemes)
-      ? excludeSalesSchemes.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
-      : [];
-    if (fbsPipelineOnly === true || excludeSchemes.length > 0) {
-      const list = fbsPipelineOnly === true
-        ? ['dbs', 'edbs', 'cnc', 'booking', ...(excludeSchemes || [])]
-        : excludeSchemes;
-      const uniq = [...new Set(list)];
-      if (uniq.length > 0) {
-        whereSql += ` AND (o.sales_scheme IS NULL OR LOWER(TRIM(o.sales_scheme)) <> ALL($${paramIndex++}::text[]))`;
-        params.push(uniq);
-      }
-    }
+    ({ whereSql, params, paramIndex } = applySalesSchemeSql(whereSql, params, paramIndex, {
+      salesScheme,
+      excludeSalesSchemes,
+      fbsPipelineOnly,
+    }));
     if (productId) {
       whereSql += ` AND o.product_id = $${paramIndex++}`;
       params.push(productId);
@@ -266,10 +247,8 @@ class OrdersRepositoryPG {
    * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
    */
   async findAll(options = {}) {
-    const { limit, offset, marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds } = options;
-    const { whereSql, params, paramIndex: startParamIndex } = this.buildFindAllFilters({
-      marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds
-    });
+    const { limit, offset, ...filterOptions } = options;
+    const { whereSql, params, paramIndex: startParamIndex } = this.buildFindAllFilters(filterOptions);
     let paramIndex = startParamIndex;
     let limitOffsetSql = ' ORDER BY o.created_at DESC, o.in_process_at DESC';
     if (limit) {
@@ -421,15 +400,10 @@ class OrdersRepositoryPG {
    * Для WB техстатусы до резолва считаем как `new`, чтобы соответствовать UI-логике.
    */
   async countGroupsByStatus(options = {}) {
-    const { marketplace, search, profileId, excludeManual, warehouseIds } = options;
     const { whereSql, params } = this.buildFindAllFilters({
-      marketplace,
+      ...options,
       status: null,
       productId: null,
-      search,
-      profileId,
-      excludeManual,
-      warehouseIds,
     });
 
     const sql = `
@@ -439,6 +413,7 @@ class OrdersRepositoryPG {
             WHEN o.marketplace = 'wb'
               AND (LOWER(COALESCE(o.status, '')) = 'wb_status_unknown' OR o.status = '__wb_status_pending__')
               THEN 'new'
+            WHEN o.marketplace = 'wb' AND o.status = 'wb_assembly' THEN 'in_assembly'
             WHEN o.status IS NULL OR TRIM(COALESCE(o.status, '')) = '' THEN 'unknown'
             ELSE o.status
           END AS st,
@@ -469,15 +444,12 @@ class OrdersRepositoryPG {
    * Без фильтра marketplace: иначе при выбранном Яндексе «Все» = только Яндекс.
    */
   async countGroupsByMarketplace(options = {}) {
-    const { status, search, profileId, excludeManual, warehouseIds } = options;
+    const status = options.status;
     const { whereSql, params } = this.buildFindAllFilters({
+      ...options,
       marketplace: null,
       status: status && String(status).trim() !== '' && String(status).trim() !== 'all' ? status : null,
       productId: null,
-      search,
-      profileId,
-      excludeManual,
-      warehouseIds,
     });
 
     const sql = `
@@ -517,15 +489,12 @@ class OrdersRepositoryPG {
    * Та же логика группировки и фильтра «new», что в findAll со status=new.
    */
   async countNewGroups(options = {}) {
-    const { profileId, excludeManual, warehouseIds } = options;
     const { whereSql, params } = this.buildFindAllFilters({
+      ...options,
       marketplace: null,
       status: 'new',
       productId: null,
       search: null,
-      profileId,
-      excludeManual,
-      warehouseIds,
     });
 
     const result = await query(
