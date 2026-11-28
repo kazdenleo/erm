@@ -22,6 +22,7 @@ import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
 import { pushRecalculatedPrices, reconcileBelowFloor as reconcileMinPricesBelowFloor } from './marketplaceMinPricePush.service.js';
+import { reconcileOzonFbsZeroStocks } from './marketplaceStockReconcile.service.js';
 import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
@@ -406,6 +407,21 @@ function isMinPriceReconcileEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+/**
+ * Сверка остатков Ozon FBS: ERM available > 0, а на МП present = 0 → повторный пуш.
+ * По умолчанию каждые 30 мин в :05/:35 МСК. MARKETPLACE_STOCK_RECONCILE_CRON.
+ */
+function getMarketplaceStockReconcileCron() {
+  const c = process.env.MARKETPLACE_STOCK_RECONCILE_CRON;
+  return c && String(c).trim() ? String(c).trim() : '5,35 * * * *';
+}
+
+function isMarketplaceStockReconcileEnabled() {
+  const v = process.env.MARKETPLACE_STOCK_RECONCILE_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
 /** Ежедневный импорт остатков МП + "в пути"/возвраты. По умолчанию 04:30 МСК; переопределение: MP_INVENTORY_DAILY_CRON */
 function getMarketplaceInventoryDailyCron() {
   const c = process.env.MP_INVENTORY_DAILY_CRON;
@@ -490,7 +506,7 @@ function isTrialEndingNotifyEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-/** Автосбор новостей МП (API / крупные изменения) для супер-админа. Выкл: PLATFORM_MP_NEWS_SYNC_ENABLED=0 */
+/** Автосбор новостей МП (API + тарифы/условия) для супер-админа. Выкл: PLATFORM_MP_NEWS_SYNC_ENABLED=0 */
 function isPlatformMpNewsSyncEnabled() {
   const v = process.env.PLATFORM_MP_NEWS_SYNC_ENABLED;
   if (v == null || String(v).trim() === '') return true;
@@ -1081,6 +1097,33 @@ class SchedulerService {
         logger.info('[Scheduler] Min price reconcile disabled (MARKETPLACE_MIN_PRICE_RECONCILE_ENABLED)');
       }
 
+      let stockReconcileJob = null;
+      const stockReconcileCron = getMarketplaceStockReconcileCron();
+      if (isMarketplaceStockReconcileEnabled()) {
+        stockReconcileJob = cron.schedule(
+          stockReconcileCron,
+          async () => {
+            logger.info('[Scheduler] Ozon FBS stock reconcile (zero present)...');
+            try {
+              const res = await reconcileOzonFbsZeroStocks();
+              logger.info('[Scheduler] Ozon FBS stock reconcile done', res);
+            } catch (error) {
+              logger.error('[Scheduler] Ozon FBS stock reconcile failed:', error);
+              await addRuntimeNotification({
+                type: 'job_failed',
+                severity: 'error',
+                source: 'scheduler',
+                title: 'Сбой сверки остатков Ozon FBS',
+                message: `reconcileOzonFbsZeroStocks failed: ${error?.message || String(error)}`,
+              });
+            }
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+      } else {
+        logger.info('[Scheduler] Ozon FBS stock reconcile disabled (MARKETPLACE_STOCK_RECONCILE_ENABLED)');
+      }
+
       // Ежедневная проверка API — в диспетчере по TZ профиля (см. profile-nightly-dispatch).
       const apiCheckJob = null;
 
@@ -1645,6 +1688,16 @@ class SchedulerService {
         });
       }
 
+      if (stockReconcileJob) {
+        this.jobs.push({
+          name: 'ozon-fbs-stock-reconcile',
+          job: stockReconcileJob,
+          schedule: stockReconcileCron,
+          description:
+            'Сверка остатков Ozon FBS: при available>0 в ERM и present=0 на МП — повторный пуш. MARKETPLACE_STOCK_RECONCILE_CRON',
+        });
+      }
+
       this.jobs.push({
         name: 'marketplace-api-check',
         job: null,
@@ -1944,7 +1997,7 @@ class SchedulerService {
           job: platformMpNewsSyncJob,
           schedule: platformMpNewsSyncCron,
           description:
-            'Новости МП (API / крупные изменения) для супер-админа. PLATFORM_MP_NEWS_SYNC_CRON, по умолчанию 30 6 * * * (МСК)',
+            'Новости МП (API + тарифы/условия seller-каналов) для супер-админа. PLATFORM_MP_NEWS_SYNC_CRON, по умолчанию 30 6 * * * (МСК)',
         });
       }
 
@@ -1958,6 +2011,7 @@ class SchedulerService {
       mpBrandDirectoryJob.start();
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
+      if (stockReconcileJob) stockReconcileJob.start();
       ozonAdsMembershipJob.start();
       adsAutomationJob.start();
       if (questionsSyncJob) {

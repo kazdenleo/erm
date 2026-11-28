@@ -96,6 +96,65 @@ async function loadProductContext(productId) {
   };
 }
 
+/**
+ * Если у компонента в product_skus висит оффер родительского комплекта,
+ * пуш остатка компонента перезаписывает карточку комплекта на МП (фантомный stock).
+ * Такие SKU отфильтровываем на время пуша.
+ */
+async function stripKitOwnedOffersFromComponentSkus(productId, product, productSkus) {
+  const isKit = product?.is_kit === true || product?.isKit === true;
+  if (isKit || !Array.isArray(productSkus) || productSkus.length === 0) {
+    return { productSkus: productSkus || [], stripped: [], kitIds: [] };
+  }
+
+  let kitOffers;
+  try {
+    const res = await query(
+      `SELECT k.id AS kit_id, ps.marketplace, ps.sku, ps.marketplace_product_id
+       FROM kit_components kc
+       JOIN products k ON k.id = kc.kit_product_id
+       JOIN product_skus ps ON ps.product_id = k.id
+       WHERE kc.component_product_id = $1`,
+      [productId]
+    );
+    kitOffers = res.rows || [];
+  } catch {
+    return { productSkus, stripped: [], kitIds: [] };
+  }
+  if (!kitOffers.length) {
+    return { productSkus, stripped: [], kitIds: [] };
+  }
+
+  const stripped = [];
+  const kept = [];
+  const kitIds = new Set();
+  for (const row of productSkus) {
+    const mp = normalizeMpKey(row.marketplace);
+    const sku = row.sku != null ? String(row.sku).trim() : '';
+    const mpid =
+      row.marketplace_product_id != null ? String(row.marketplace_product_id).trim() : '';
+    const clash = kitOffers.find((k) => {
+      if (normalizeMpKey(k.marketplace) !== mp) return false;
+      if (sku && k.sku != null && String(k.sku).trim() === sku) return true;
+      if (
+        mpid &&
+        k.marketplace_product_id != null &&
+        String(k.marketplace_product_id).trim() === mpid
+      ) {
+        return true;
+      }
+      return false;
+    });
+    if (clash) {
+      stripped.push({ marketplace: row.marketplace, sku: row.sku, kitId: clash.kit_id });
+      kitIds.add(Number(clash.kit_id));
+    } else {
+      kept.push(row);
+    }
+  }
+  return { productSkus: kept, stripped, kitIds: [...kitIds].filter((n) => Number.isFinite(n)) };
+}
+
 function normalizeMpKey(marketplace) {
   const m = String(marketplace || '').toLowerCase().trim();
   if (m === 'wildberries') return 'wb';
@@ -282,20 +341,27 @@ function isStockPushRateLimitError(err) {
 function scheduleRateLimitRetry(productId, opts, failedResults) {
   const retryCount = Math.max(0, Math.floor(Number(opts._retryCount) || 0));
   if (retryCount >= 5) return;
-  const hasRateLimit = (failedResults || []).some(
-    (r) => r && r.ok === false && !r.skipped && isStockPushRateLimitError({ message: r.error, code: r.code })
+  const failed = (failedResults || []).filter((r) => r && r.ok === false && !r.skipped);
+  if (failed.length === 0) return;
+  const hasRateLimit = failed.some((r) =>
+    isStockPushRateLimitError({ message: r.error, code: r.code })
   );
-  if (!hasRateLimit) return;
+  // После не-429 ошибки тоже дожимаем, если хотели отправить qty>0 —
+  // иначе Ozon остаётся на старом 0 до ручного пуша / сверки.
+  const wantsPositive = failed.some((r) => Math.max(0, Number(r.pushQuantity) || 0) > 0);
+  if (!hasRateLimit && !wantsPositive) return;
   const delayMs = Math.min(60_000, 4000 * 2 ** retryCount);
-  logger.warn('[MP Stock Push] schedule retry after rate limit', {
+  logger.warn('[MP Stock Push] schedule retry after failed push', {
     productId,
     retryCount: retryCount + 1,
     delayMs,
+    rateLimit: hasRateLimit,
+    wantsPositive,
   });
   setTimeout(() => {
     scheduleWarehouseStockMarketplaceSync(productId, {
       ...opts,
-      source: `${opts.source || 'unknown'}:rate_limit_retry`,
+      source: `${opts.source || 'unknown'}:${hasRateLimit ? 'rate_limit_retry' : 'failed_push_retry'}`,
       _retryCount: retryCount + 1,
     });
   }, delayMs);
@@ -353,6 +419,32 @@ async function syncWarehouseStockToMarketplacesUnlocked(productId, opts = {}) {
   const ctx = ctxEarly;
   if (!ctx) {
     return { skipped: true, reason: 'product_not_found', organizationId };
+  }
+
+  const strippedOffers = await stripKitOwnedOffersFromComponentSkus(
+    productId,
+    ctx.product,
+    ctx.productSkus
+  );
+  if (strippedOffers.stripped.length > 0) {
+    ctx.productSkus = strippedOffers.productSkus;
+    logger.warn(
+      '[MP Stock Push] компонент не пушит оффер комплекта (чужой product_skus)',
+      {
+        productId,
+        sku: ctx.product?.sku,
+        stripped: strippedOffers.stripped,
+        kitIds: strippedOffers.kitIds
+      }
+    );
+    for (const kitId of strippedOffers.kitIds) {
+      if (Number(kitId) === Number(productId)) continue;
+      scheduleWarehouseStockMarketplaceSync(kitId, {
+        source: 'component_kit_offer_clash',
+        organizationId,
+        warehouseId: opts.warehouseId ?? null
+      });
+    }
   }
 
   const profileIdFromProduct = ctx.product.profile_id ?? ctx.product.profileId ?? profileId ?? null;

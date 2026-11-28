@@ -16,6 +16,7 @@ import {
 import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 import { parseMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
 import { normalizeBarcodeRows, parseBarcodesMarketplacesColumn } from '../utils/productBarcodes.js';
+import { resolveOzonStockPushTargets } from '../utils/ozonStockPushTargets.js';
 
 export { parseMarketplaceWarehouseId };
 
@@ -174,46 +175,7 @@ export async function pushStockToMarketplace(ctx) {
   return { marketplace: mp, ok: false, skipped: true, reason: 'unsupported_marketplace' };
 }
 
-async function pushOzon(ctx, quantity, organizationId, profileId) {
-  const cfg = await mpConfig({ organizationId, profileId }, 'ozon');
-  if (!integrationsService._hasOzonCredentials(cfg)) {
-    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_credentials' };
-  }
-
-  const ozonSku = ctx.productSkus?.find((s) => s.marketplace === 'ozon');
-  const offerId = (ozonSku?.sku || ctx.product?.sku_ozon || ctx.product?.sku || '').trim();
-  const productId =
-    ozonSku?.marketplace_product_id != null
-      ? Number(ozonSku.marketplace_product_id)
-      : ctx.product?.ozon_product_id != null
-        ? Number(ctx.product.ozon_product_id)
-        : null;
-  const mpWarehouseId = parseMarketplaceWarehouseId(ctx.mapping?.marketplace_warehouse_id);
-
-  if (!offerId && !productId) {
-    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_product_sku' };
-  }
-  if (!mpWarehouseId) {
-    return {
-      marketplace: 'ozon',
-      ok: false,
-      skipped: true,
-      reason: String(ctx.mapping?.marketplace_warehouse_id ?? '').trim()
-        ? 'invalid_warehouse_mapping'
-        : 'no_warehouse_mapping'
-    };
-  }
-  const warehouseIdNum = Number(mpWarehouseId);
-  if (!Number.isFinite(warehouseIdNum) || warehouseIdNum <= 0) {
-    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'invalid_warehouse_mapping' };
-  }
-
-  const stockRow = { stock: quantity, warehouse_id: warehouseIdNum };
-  if (offerId) stockRow.offer_id = offerId;
-  if (productId && Number.isFinite(productId)) stockRow.product_id = productId;
-
-  const ozonApiOpts = { profileId, organizationId };
-
+async function pushOzonStockRow(stockRow, { quantity, productId, offerId, mpWarehouseId, ozonApiOpts }) {
   // Пока идёт FBS-синк заказов — не занимаем Client-Id stock-пушами.
   while (isOzonOrdersSyncWindowActive()) {
     await sleep(100);
@@ -245,12 +207,71 @@ async function pushOzon(ctx, quantity, organizationId, profileId) {
     noteOzonClientRateLimited(ozonApiOpts);
     const waitMs = Math.min(30_000, 2000 * 2 ** attempt);
     logger.warn(
-      `[MP Stock Push] Ozon stocks rate limited product=${ctx.product?.id} qty=${quantity}, retry in ${Math.round(waitMs / 1000)}s`
+      `[MP Stock Push] Ozon stocks rate limited product=${productId} qty=${quantity}, retry in ${Math.round(waitMs / 1000)}s`
     );
     await sleep(waitMs);
   }
-  logger.info(`[MP Stock Push] Ozon OK product=${ctx.product?.id} offer=${offerId} qty=${quantity} wh=${mpWarehouseId}`);
-  return { marketplace: 'ozon', ok: true, quantity, warehouseId: mpWarehouseId, response: data };
+  logger.info(
+    `[MP Stock Push] Ozon OK product=${productId} offer=${offerId || '—'} qty=${quantity} wh=${mpWarehouseId}`
+  );
+  return data;
+}
+
+async function pushOzon(ctx, quantity, organizationId, profileId) {
+  const cfg = await mpConfig({ organizationId, profileId }, 'ozon');
+  if (!integrationsService._hasOzonCredentials(cfg)) {
+    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_credentials' };
+  }
+
+  const targets = resolveOzonStockPushTargets(ctx);
+  const mpWarehouseId = parseMarketplaceWarehouseId(ctx.mapping?.marketplace_warehouse_id);
+
+  if (targets.length === 0) {
+    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_product_sku' };
+  }
+  if (!mpWarehouseId) {
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      skipped: true,
+      reason: String(ctx.mapping?.marketplace_warehouse_id ?? '').trim()
+        ? 'invalid_warehouse_mapping'
+        : 'no_warehouse_mapping'
+    };
+  }
+  const warehouseIdNum = Number(mpWarehouseId);
+  if (!Number.isFinite(warehouseIdNum) || warehouseIdNum <= 0) {
+    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'invalid_warehouse_mapping' };
+  }
+
+  const ozonApiOpts = { profileId, organizationId };
+  const responses = [];
+  const offerIds = [];
+  for (const target of targets) {
+    const stockRow = { stock: quantity, warehouse_id: warehouseIdNum };
+    if (target.offerId) stockRow.offer_id = target.offerId;
+    if (target.productId != null) stockRow.product_id = target.productId;
+    const data = await pushOzonStockRow(stockRow, {
+      quantity,
+      productId: ctx.product?.id,
+      offerId: target.offerId,
+      mpWarehouseId,
+      ozonApiOpts,
+    });
+    responses.push({ source: target.source, offerId: target.offerId, productId: target.productId, data });
+    if (target.offerId) offerIds.push(target.offerId);
+  }
+
+  return {
+    marketplace: 'ozon',
+    ok: true,
+    quantity,
+    warehouseId: mpWarehouseId,
+    offerId: offerIds[0] || null,
+    offerIds,
+    response: responses[0]?.data ?? null,
+    responses,
+  };
 }
 
 async function pushWildberries(ctx, quantity, organizationId, profileId) {
