@@ -732,6 +732,22 @@
   text-align: left;
 }
 
+.assembly-col-cell {
+  white-space: nowrap;
+  vertical-align: top;
+  min-width: 7rem;
+}
+
+.assembly-col-cell .assembly-table-line {
+  display: flex;
+  align-items: center;
+  min-height: 1.35em;
+}
+
+.assembly-cell-empty {
+  color: var(--muted, #666);
+}
+
 .assembly-col-order-id,
 .assembly-col-sticker {
   min-width: 11.5rem;

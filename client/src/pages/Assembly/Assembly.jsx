@@ -1974,6 +1974,7 @@ export function Assembly() {
                 <th>Состав</th>
                 <th className="assembly-col-order-id">ID заказа</th>
                 <th>Товар</th>
+                <th className="assembly-col-cell">Ячейка</th>
                 <th>Кол-во</th>
                 <th className="assembly-col-sticker">Стикер</th>
                 <th>Действия</th>
@@ -2023,20 +2024,38 @@ export function Assembly() {
                                 name
                               )}
                               <span className="assembly-table-line-qty">{` — ${q} шт`}</span>
-                              {lineAddresses.enabled ? (
-                                <AddressBadge
-                                  address={lineAddressText(o)}
-                                  title={
-                                    assemblyLinePickProductIds(o).includes(erpPid)
-                                      ? 'Адрес хранения'
-                                      : 'Ячейки комплектующих'
-                                  }
-                                />
-                              ) : null}
                             </div>
                           );
                         })}
                       </div>
+                    </td>
+                    <td className="assembly-col-cell">
+                      {lineAddresses.enabled ? (
+                        <div className="assembly-table-lines">
+                          {rows.map((o, i) => {
+                            const erpPid = assemblyLineProductId(o);
+                            const address = lineAddressText(o);
+                            return (
+                              <div key={`${String(o.orderId)}-cell-${i}`} className="assembly-table-line">
+                                {address ? (
+                                  <AddressBadge
+                                    address={address}
+                                    title={
+                                      assemblyLinePickProductIds(o).includes(erpPid)
+                                        ? 'Адрес хранения'
+                                        : 'Ячейки комплектующих'
+                                    }
+                                  />
+                                ) : (
+                                  <span className="assembly-cell-empty">—</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <span className="assembly-cell-empty">—</span>
+                      )}
                     </td>
                     <td>{qtyCell}</td>
                     <td className="assembly-col-sticker">
